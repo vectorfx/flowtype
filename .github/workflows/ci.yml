@@ -28,4 +28,4 @@ jobs:
         shell: pwsh
         run: |
           $version = [Diagnostics.FileVersionInfo]::GetVersionInfo('Flowtype.exe').FileVersion
-          if ($version -ne '1.3.2.0') { throw "Unexpected version: $version" }
+          if ($version -ne '1.3.3.0') { throw "Unexpected version: $version" }

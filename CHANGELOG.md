@@ -1,5 +1,11 @@
 # Version history
 
+## 1.3.3
+
+- Fix startup crash (recorder initialized before use)
+- Embed Flowtype icon in the executable and tray
+- Show an error dialog if startup fails
+
 ## 1.3.2
 
 - Removed Flow Quality (~574 MB) local model option — Instant only offline; use Groq for cloud accuracy

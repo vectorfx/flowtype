@@ -25,8 +25,8 @@ using System.Windows.Forms;
 using System.Media;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.3.0")]
 
 namespace Flowtype
 {
@@ -1425,7 +1425,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
             return client;
         }
 
@@ -1556,7 +1556,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1681,7 +1681,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(2);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
             return client;
         }
 
@@ -2131,7 +2131,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -3258,12 +3258,12 @@ namespace Flowtype
             apiKey = store.LoadApiKey();
             openRouterKey = store.LoadOpenRouterKey();
             groqKey = store.LoadGroqKey();
-            recorder.MicGain = settings.MicGain;
             history = new HistoryStore(store.HistoryPath);
             dispatcher = new Control();
             dispatcher.CreateControl();
             overlay = new RecordingOverlay();
             recorder = new WaveRecorder();
+            recorder.MicGain = settings.MicGain;
             whisperEngine = new WhisperEngine();
             hook = new GlobalKeyHook(settings.Hotkey);
             hook.HotkeyChanged += OnHotkeyChanged;
@@ -3864,15 +3864,26 @@ namespace Flowtype
         [STAThread]
         public static void Main()
         {
-            Run(AppDomain.CurrentDomain.BaseDirectory);
+            try { Run(AppDomain.CurrentDomain.BaseDirectory); }
+            catch (Exception exception)
+            {
+                try
+                {
+                    MessageBox.Show(
+                        "Flowtype could not start:\r\n\r\n" + exception.Message,
+                        "Flowtype",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
+                catch { }
+            }
         }
 
         [STAThread]
         public static void Run(string appDirectory)
         {
             AppDirectory = appDirectory;
-            try { ProductIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
-            catch { ProductIcon = SystemIcons.Application; }
+            LoadProductIcon();
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             bool created;
             using (Mutex mutex = new Mutex(true, MutexName, out created))
@@ -3892,6 +3903,23 @@ namespace Flowtype
                 using (FlowtypeContext context = new FlowtypeContext(activation)) Application.Run(context);
                 GC.KeepAlive(mutex);
             }
+        }
+
+        private static void LoadProductIcon()
+        {
+            try
+            {
+                string iconPath = Path.Combine(AppDirectory ?? "", "assets", "Flowtype.ico");
+                if (File.Exists(iconPath))
+                {
+                    using (FileStream stream = File.OpenRead(iconPath))
+                        ProductIcon = new Icon(stream);
+                    return;
+                }
+            }
+            catch { }
+            try { ProductIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+            catch { ProductIcon = SystemIcons.Application; }
         }
     }
 }

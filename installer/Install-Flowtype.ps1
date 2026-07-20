@@ -41,13 +41,16 @@ try {
         throw 'Flowtype.exe is missing.'
     }
     $installedVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($outputExe).FileVersion
-    if ($installedVersion -notmatch '^1\.3\.2\.') {
-        throw "Expected Flowtype 1.3.2.x but found $installedVersion. Extract the new ZIP into an empty folder and retry."
+    if ($installedVersion -notmatch '^1\.3\.3\.') {
+        throw "Expected Flowtype 1.3.3.x but found $installedVersion. Extract the new ZIP into an empty folder and retry."
     }
 
     $shell = New-Object -ComObject WScript.Shell
     $target = $outputExe
     $arguments = ''
+
+    $iconPath = Join-Path $destination 'assets\Flowtype.ico'
+    $shortcutIcon = if (Test-Path -LiteralPath $iconPath) { "$iconPath,0" } else { "$outputExe,0" }
 
     foreach ($shortcutPath in @(
         (Join-Path $desktop 'Flowtype.lnk'),
@@ -57,7 +60,7 @@ try {
         $shortcut.TargetPath = $target
         $shortcut.Arguments = $arguments
         $shortcut.WorkingDirectory = $destination
-        $shortcut.IconLocation = "$outputExe,0"
+        $shortcut.IconLocation = $shortcutIcon
         $shortcut.Description = 'System-wide push-to-talk dictation'
         $shortcut.Save()
     }
@@ -79,8 +82,8 @@ try {
     }
 
     [Windows.Forms.MessageBox]::Show(
-        "Flowtype 1.3.2 is installed and the new executable is running.`r`n`r`nHold Win + Ctrl together to dictate anywhere.",
-        'Flowtype 1.3.2 installed',
+        "Flowtype 1.3.3 is installed and the new executable is running.`r`n`r`nHold Win + Ctrl together to dictate anywhere.",
+        'Flowtype 1.3.3 installed',
         [Windows.Forms.MessageBoxButtons]::OK,
         [Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null

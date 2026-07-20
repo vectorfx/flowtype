@@ -2,36 +2,60 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $root 'src\Flowtype.cs'
 $output = Join-Path $root 'Flowtype.exe'
+$icon = Join-Path $root 'assets\Flowtype.ico'
 
 if (-not (Test-Path -LiteralPath $source)) {
     throw "Missing source file: $source"
 }
 
-$assemblyNames = @(
-    'System',
-    'System.Core',
-    'System.Drawing',
-    'System.Windows.Forms',
-    'System.Net.Http',
-    'System.Web.Extensions',
-    'System.IO.Compression',
-    'System.IO.Compression.FileSystem',
-    'System.Security'
-)
-
-$references = foreach ($assemblyName in $assemblyNames) {
-    Add-Type -AssemblyName $assemblyName -ErrorAction Stop
-    $assembly = [AppDomain]::CurrentDomain.GetAssemblies() |
-        Where-Object { $_.GetName().Name -eq $assemblyName } |
-        Select-Object -First 1
-    if ($null -eq $assembly -or [String]::IsNullOrWhiteSpace($assembly.Location)) {
-        throw "Windows loaded $assemblyName but did not provide its compiler path."
-    }
-    $assembly.Location
+$framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
+if (-not (Test-Path -LiteralPath $framework)) {
+    $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319'
 }
 
-$references = @($references | Select-Object -Unique)
-Add-Type -Path $source -ReferencedAssemblies $references -OutputAssembly $output -OutputType WindowsApplication
+function Resolve-FrameworkAssembly {
+    param([string]$Name)
+    $direct = Join-Path $framework $Name
+    if (Test-Path -LiteralPath $direct) { return $direct }
+    $gacRoot = Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL'
+    $folderName = [IO.Path]::GetFileNameWithoutExtension($Name)
+    $matches = Get-ChildItem -Path (Join-Path $gacRoot $folderName) -Recurse -Filter $Name -ErrorAction SilentlyContinue
+    if ($matches) { return $matches[0].FullName }
+    throw "Could not resolve assembly: $Name"
+}
+
+$assemblyNames = @(
+    'System.dll',
+    'System.Core.dll',
+    'System.Drawing.dll',
+    'System.Windows.Forms.dll',
+    'System.Net.Http.dll',
+    'System.Web.Extensions.dll',
+    'System.IO.Compression.dll',
+    'System.IO.Compression.FileSystem.dll',
+    'System.Security.dll'
+)
+
+$refArgs = foreach ($assemblyName in $assemblyNames) {
+    "/reference:$(Resolve-FrameworkAssembly $assemblyName)"
+}
+
+$csc = Join-Path $framework 'csc.exe'
+if (-not (Test-Path -LiteralPath $csc)) {
+    throw 'Could not find csc.exe. Install .NET Framework 4.x developer tools.'
+}
+
+$iconArgs = @()
+if (Test-Path -LiteralPath $icon) {
+    $iconArgs = @("/win32icon:$icon")
+} else {
+    Write-Warning "Missing $icon - run: python assets/build_icon.py"
+}
+
+& $csc /nologo /target:winexe /out:$output @iconArgs @refArgs $source
+if ($LASTEXITCODE -ne 0) {
+    throw "csc.exe failed with exit code $LASTEXITCODE"
+}
 
 $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($output).FileVersion
 Write-Host "Built Flowtype $version at $output"
