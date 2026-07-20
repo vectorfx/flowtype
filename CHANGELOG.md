@@ -1,5 +1,14 @@
 # Version history
 
+## 1.3.2
+
+- Removed Flow Quality (~574 MB) local model option — Instant only offline; use Groq for cloud accuracy
+- Settings and upgrade path auto-migrate away from legacy large models
+- Simplified Local settings tab
+- Fixed latency strip record timing
+- Microphone health: live level meter + 3-second test in Settings
+- Tray shortcut to fix the last dictated word in the dictionary
+
 ## 1.3.1
 
 - Turbo transcription path for faster long dictations
@@ -8,7 +17,6 @@
 - Completion sound + inserted preview toast
 - Latency diagnostics in Settings
 - Non-blocking dictation while previous result processes
-- Clear warnings that Flow Quality (~574 MB) is very slow
 
 ## 1.3.0
 

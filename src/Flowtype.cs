@@ -25,8 +25,8 @@ using System.Windows.Forms;
 using System.Media;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.2.0")]
 
 namespace Flowtype
 {
@@ -115,9 +115,9 @@ namespace Flowtype
             if (String.Equals(CleanupProvider, "OpenRouter", StringComparison.OrdinalIgnoreCase) &&
                 String.Equals(OpenRouterModel, "openrouter/free", StringComparison.OrdinalIgnoreCase))
                 CleanupProvider = "BuiltIn";
-            if (String.IsNullOrWhiteSpace(LocalModelQuality))
-                LocalModelQuality = WhisperModelPath != null && WhisperModelPath.IndexOf("large-v3-turbo", StringComparison.OrdinalIgnoreCase) >= 0 ? "Flow Quality" : "Instant";
+            if (String.IsNullOrWhiteSpace(LocalModelQuality)) LocalModelQuality = "Instant";
             if (String.Equals(LocalModelQuality, "Fast", StringComparison.OrdinalIgnoreCase)) LocalModelQuality = "Instant";
+            if (String.Equals(LocalModelQuality, "Flow Quality", StringComparison.OrdinalIgnoreCase)) LocalModelQuality = "Instant";
             if (String.IsNullOrWhiteSpace(OllamaUrl)) OllamaUrl = "http://localhost:11434";
             if (String.IsNullOrWhiteSpace(GroqApiUrl)) GroqApiUrl = "https://api.groq.com/openai/v1";
             if (String.IsNullOrWhiteSpace(GroqTranscriptionModel)) GroqTranscriptionModel = "whisper-large-v3-turbo";
@@ -179,6 +179,7 @@ namespace Flowtype
         public static long LastTranscribeMs;
         public static long LastCleanMs;
         public static long LastTotalMs;
+        public static event Action StatsUpdated;
 
         public static string Summary
         {
@@ -188,6 +189,21 @@ namespace Flowtype
                 return "Last: record " + LastRecordMs + " ms · transcribe " + LastTranscribeMs +
                     " ms · clean " + LastCleanMs + " ms · total " + LastTotalMs + " ms";
             }
+        }
+
+        private static void NotifyChanged()
+        {
+            Action handler = StatsUpdated;
+            if (handler != null) handler();
+        }
+
+        public static void Update(long recordMs, long transcribeMs, long cleanMs, long totalMs)
+        {
+            LastRecordMs = recordMs;
+            LastTranscribeMs = transcribeMs;
+            LastCleanMs = cleanMs;
+            LastTotalMs = totalMs;
+            NotifyChanged();
         }
     }
 
@@ -1409,7 +1425,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.1");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
             return client;
         }
 
@@ -1540,7 +1556,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.1");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1665,7 +1681,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(2);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.1");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
             return client;
         }
 
@@ -2014,6 +2030,11 @@ namespace Flowtype
 
         public LocalEngineInstaller(string appDirectory) { this.appDirectory = appDirectory; }
 
+        public async Task<LocalInstallResult> InstallAsync(Action<int, string> progress)
+        {
+            return await InstallAsync("Instant", progress);
+        }
+
         public async Task<LocalInstallResult> InstallAsync(string quality, Action<int, string> progress)
         {
             string root = Path.Combine(appDirectory, "tools", "whisper");
@@ -2021,10 +2042,9 @@ namespace Flowtype
             Directory.CreateDirectory(root);
             Directory.CreateDirectory(modelRoot);
             string zipPath = Path.Combine(root, "whisper-win-x64.zip");
-            bool flowQuality = String.Equals(quality, "Flow Quality", StringComparison.OrdinalIgnoreCase);
-            string modelName = flowQuality ? "ggml-large-v3-turbo-q5_0.bin" : "ggml-base.en-q5_1.bin";
+            string modelName = "ggml-base.en-q5_1.bin";
             string modelPath = Path.Combine(modelRoot, modelName);
-            long minimumModelBytes = flowQuality ? 500000000L : 50000000L;
+            long minimumModelBytes = 50000000L;
 
             string bundledRoot = Path.Combine(root, "bundled-bin");
             string executable = Directory.Exists(bundledRoot)
@@ -2058,7 +2078,7 @@ namespace Flowtype
                     "https://hf.co/ggerganov/whisper.cpp/resolve/main/" + modelName + "?download=true"
                 };
                 await DownloadFromOfficialSources(modelUrls, modelPath, minimumModelBytes, 20, 100,
-                    flowQuality ? "Downloading Flow Quality speech model…" : "Downloading Instant speech model…", progress);
+                    "Downloading Instant speech model…", progress);
             }
             if (!File.Exists(modelPath) || new FileInfo(modelPath).Length < minimumModelBytes)
                 throw new InvalidOperationException("The speech-model download was incomplete. Retry to resume it, or choose an existing .bin model in Settings.");
@@ -2111,7 +2131,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.1");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.2");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2440,12 +2460,14 @@ namespace Flowtype
         private readonly TextBox groqModelBox = new TextBox();
         private readonly TrackBar micGainBar = new TrackBar();
         private readonly Label micGainLabel = new Label();
+        private readonly ProgressBar micLevelBar = new ProgressBar();
+        private readonly Label micTestStatus = new Label();
+        private readonly Button micTestButton = new Button();
         private readonly Label latencyLabel = new Label();
         private readonly CheckBox turboBox = new CheckBox();
         private readonly CheckBox suppressNonSpeechBox = new CheckBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
-        private readonly ComboBox localQualityBox = new ComboBox();
         private readonly Label localStatus = new Label();
         private readonly ProgressBar localProgress = new ProgressBar();
         private readonly Button localInstallButton = new Button();
@@ -2454,17 +2476,23 @@ namespace Flowtype
         private string whisperExe;
         private string whisperServer;
         private string whisperModel;
+        private readonly WaveRecorder micTestRecorder = new WaveRecorder();
+        private readonly Func<bool> microphoneBusy;
+        private System.Windows.Forms.Timer micTestTimer;
+        private float micTestPeak;
+        private string micTestPath;
         public event Action<AppSettings, string, string> SettingsSaved;
         public event Action<string> HotkeyPreviewChanged;
 
-        public SettingsForm(ConfigStore store, AppSettings settings, string appDirectory)
+        public SettingsForm(ConfigStore store, AppSettings settings, string appDirectory, Func<bool> microphoneBusy)
         {
             this.store = store;
             this.appDirectory = appDirectory;
+            this.microphoneBusy = microphoneBusy ?? delegate { return false; };
             Text = "Flowtype Settings";
             Width = 740;
-            Height = 650;
-            MinimumSize = new Size(700, 610);
+            Height = 700;
+            MinimumSize = new Size(700, 660);
             StartPosition = FormStartPosition.CenterScreen;
             Font = AppFonts.Ui(9.5f, FontStyle.Regular);
             BackColor = Color.FromArgb(246, 247, 250);
@@ -2503,6 +2531,12 @@ namespace Flowtype
             CancelButton = cancelButton;
 
             LoadValues(settings);
+            LatencyStats.StatsUpdated += OnLatencyStatsUpdated;
+            FormClosed += delegate
+            {
+                LatencyStats.StatsUpdated -= OnLatencyStatsUpdated;
+                StopMicTest();
+            };
             hotkeyBox.SelectedIndexChanged += delegate
             {
                 Action<string> handler = HotkeyPreviewChanged;
@@ -2576,12 +2610,28 @@ namespace Flowtype
             page.Controls.Add(micGainBar);
             micGainLabel.SetBounds(540, 596, 60, 24);
             page.Controls.Add(micGainLabel);
-            latencyLabel.SetBounds(24, 644, 650, 36);
+            Label micHealthTitle = LabelAt("Microphone health", 24, 636, 200, 24);
+            micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
+            page.Controls.Add(micHealthTitle);
+            micLevelBar.SetBounds(24, 666, 420, 18);
+            micLevelBar.Minimum = 0;
+            micLevelBar.Maximum = 100;
+            micLevelBar.Style = ProgressBarStyle.Continuous;
+            page.Controls.Add(micLevelBar);
+            micTestButton.SetBounds(456, 658, 110, 34);
+            micTestButton.Text = "Test 3s";
+            micTestButton.Click += MicTestClicked;
+            page.Controls.Add(micTestButton);
+            micTestStatus.SetBounds(24, 696, 650, 32);
+            micTestStatus.ForeColor = Color.FromArgb(95, 100, 112);
+            micTestStatus.Text = "Live level while testing. Speak normally for three seconds.";
+            page.Controls.Add(micTestStatus);
+            latencyLabel.SetBounds(24, 736, 650, 36);
             latencyLabel.ForeColor = Color.FromArgb(95, 100, 112);
             latencyLabel.Text = LatencyStats.Summary;
             page.Controls.Add(latencyLabel);
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 688, 640, 40);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 780, 640, 40);
             privacy.ForeColor = Color.FromArgb(95, 100, 112);
             page.Controls.Add(privacy);
             return page;
@@ -2672,53 +2722,39 @@ namespace Flowtype
         private TabPage BuildLocalTab()
         {
             TabPage page = NewTab("Local");
-            Label intro = LabelAt("Local mode records and transcribes entirely on this PC. The speech model stays warm in memory so repeat dictations finish faster.", 24, 22, 650, 42);
+            Label intro = LabelAt("Offline dictation uses the Instant English model (~60 MB). It stays warm in memory for fast repeat dictations. For higher accuracy without a 574 MB download, use Groq in General settings — free API, large-v3-turbo in the cloud.", 24, 22, 650, 56);
             intro.Font = AppFonts.UiLarge(10.5f);
             page.Controls.Add(intro);
-            page.Controls.Add(LabelAt("Speech quality", 24, 82, 170, 24));
-            ConfigureDropDown(localQualityBox, 210, 78, 430);
-            localQualityBox.Items.AddRange(new object[]
-            {
-                "Flow Quality — large-v3-turbo (~574 MB) — very slow, not for daily use",
-                "Instant — base.en (~60 MB) — fast default"
-            });
-            localQualityBox.SelectedIndexChanged += delegate { UpdateLocalStatus(); };
-            page.Controls.Add(localQualityBox);
-            Label qualityNote = LabelAt(
-                "Instant (~60 MB) is the default for everyday dictation — usually ready in 1–3 seconds. Flow Quality (~574 MB) can take many seconds per sentence on typical PCs and is only worth it if you need maximum accuracy on difficult audio. For fast cloud speech with a free API key, use Groq in General settings instead.",
-                24, 118, 650, 68);
-            qualityNote.ForeColor = Color.FromArgb(95, 100, 112);
-            page.Controls.Add(qualityNote);
-            localStatus.SetBounds(24, 192, 650, 48);
+            localStatus.SetBounds(24, 92, 650, 48);
             page.Controls.Add(localStatus);
-            localInstallButton.SetBounds(24, 250, 210, 38);
+            localInstallButton.SetBounds(24, 150, 210, 38);
             localInstallButton.Text = "Install local engine";
             localInstallButton.Click += InstallLocalClicked;
             page.Controls.Add(localInstallButton);
-            localProgress.SetBounds(250, 300, 390, 24);
+            localProgress.SetBounds(250, 200, 390, 24);
             localProgress.Visible = false;
             page.Controls.Add(localProgress);
 
-            chooseWhisperButton.SetBounds(250, 234, 190, 38);
+            chooseWhisperButton.SetBounds(250, 150, 190, 38);
             chooseWhisperButton.Text = "Choose whisper-cli.exe…";
             chooseWhisperButton.Click += ChooseWhisperClicked;
             page.Controls.Add(chooseWhisperButton);
-            chooseModelButton.SetBounds(450, 250, 190, 38);
+            chooseModelButton.SetBounds(450, 150, 190, 38);
             chooseModelButton.Text = "Choose model .bin…";
             chooseModelButton.Click += ChooseModelClicked;
             page.Controls.Add(chooseModelButton);
-            Label manualNote = LabelAt("Downloads resume automatically. If your network blocks GitHub or Hugging Face, download the official files in your browser and select them here.", 24, 266, 650, 42);
+            Label manualNote = LabelAt("Downloads resume automatically. If GitHub or Hugging Face is blocked, download whisper-bin-x64.zip and ggml-base.en-q5_1.bin in your browser, then select them here.", 24, 196, 650, 42);
             manualNote.ForeColor = Color.FromArgb(95, 100, 112);
             page.Controls.Add(manualNote);
 
-            Label polishTitle = LabelAt("Optional local polish with Ollama", 24, 326, 400, 28);
+            Label polishTitle = LabelAt("Optional local polish with Ollama", 24, 256, 400, 28);
             polishTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(polishTitle);
-            Label polishNote = LabelAt("If Ollama is already installed and running, enter one of your local model names. Leave it blank to use Flowtype's fast rule-based cleanup.", 24, 360, 640, 54);
+            Label polishNote = LabelAt("If Ollama is already installed and running, enter one of your local model names. Leave it blank to use Flowtype's fast rule-based cleanup.", 24, 290, 640, 54);
             polishNote.ForeColor = Color.FromArgb(95, 100, 112);
             page.Controls.Add(polishNote);
-            AddTextField(page, "Ollama URL", ollamaUrlBox, 24, 426, false);
-            AddTextField(page, "Ollama model", ollamaModelBox, 24, 482, false);
+            AddTextField(page, "Ollama URL", ollamaUrlBox, 24, 356, false);
+            AddTextField(page, "Ollama model", ollamaModelBox, 24, 412, false);
             return page;
         }
 
@@ -2781,8 +2817,7 @@ namespace Flowtype
             whisperExe = value.WhisperExePath;
             whisperServer = value.WhisperServerPath;
             whisperModel = value.WhisperModelPath;
-            localQualityBox.SelectedIndex = String.Equals(value.LocalModelQuality, "Instant", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(value.LocalModelQuality, "Fast", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            value.LocalModelQuality = "Instant";
             dictionaryBox.Lines = value.Dictionary.ToArray();
             snippetsBox.Lines = value.Snippets.Select(pair => pair.Key + " => " + pair.Value).ToArray();
             UpdateLocalStatus();
@@ -2813,7 +2848,7 @@ namespace Flowtype
             value.WhisperExePath = whisperExe ?? "";
             value.WhisperServerPath = whisperServer ?? "";
             value.WhisperModelPath = whisperModel ?? "";
-            value.LocalModelQuality = localQualityBox.SelectedIndex == 1 ? "Instant" : "Flow Quality";
+            value.LocalModelQuality = "Instant";
             value.OllamaUrl = ollamaUrlBox.Text.Trim();
             value.OllamaModel = ollamaModelBox.Text.Trim();
             value.Dictionary = dictionaryBox.Lines.Select(line => line.Trim()).Where(line => line.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -2856,12 +2891,6 @@ namespace Flowtype
                 MessageBox.Show(this, "Install the local engine before saving Local mode.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            string wantedModel = value.LocalModelQuality == "Instant" ? "base.en" : "large-v3-turbo";
-            if (value.Engine == "Local" && Path.GetFileName(value.WhisperModelPath).IndexOf(wantedModel, StringComparison.OrdinalIgnoreCase) < 0)
-            {
-                MessageBox.Show(this, "Click Upgrade / change model to install the selected local quality level before saving.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
             try
             {
                 store.Save(value);
@@ -2887,8 +2916,7 @@ namespace Flowtype
             ControlBox = false;
             try
             {
-                string quality = localQualityBox.SelectedIndex == 1 ? "Instant" : "Flow Quality";
-                LocalInstallResult result = await new LocalEngineInstaller(appDirectory).InstallAsync(quality, delegate(int percent, string message)
+                LocalInstallResult result = await new LocalEngineInstaller(appDirectory).InstallAsync(delegate(int percent, string message)
                 {
                     if (IsDisposed) return;
                     localProgress.Value = Math.Max(0, Math.Min(100, percent));
@@ -2950,23 +2978,20 @@ namespace Flowtype
                     return;
                 }
                 whisperModel = dialog.FileName;
-                string modelName = Path.GetFileName(dialog.FileName);
-                localQualityBox.SelectedIndex = modelName.IndexOf("base.en", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    modelName.IndexOf("small.en", StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0;
                 UpdateLocalStatus();
             }
         }
 
         private void UpdateLocalStatus()
         {
-            bool ready = !String.IsNullOrWhiteSpace(whisperExe) && File.Exists(whisperExe) && !String.IsNullOrWhiteSpace(whisperModel) && File.Exists(whisperModel);
-            string wanted = localQualityBox.SelectedIndex == 1 ? "base.en" : "large-v3-turbo";
-            bool selectedReady = ready && Path.GetFileName(whisperModel).IndexOf(wanted, StringComparison.OrdinalIgnoreCase) >= 0;
-            localStatus.Text = selectedReady ? "Ready — selected speech model is installed and will be preloaded for low-latency dictation." :
-                (ready ? "A different model is installed. Click Upgrade / change model to install this quality level." :
-                (localQualityBox.SelectedIndex == 1 ? "Not installed — one click downloads about 60 MB." : "Not installed — quality mode downloads about 574 MB."));
-            localStatus.ForeColor = selectedReady ? Color.FromArgb(25, 128, 91) : Color.FromArgb(95, 100, 112);
-            localInstallButton.Text = selectedReady ? "Reinstall / update" : (ready ? "Upgrade / change model" : "Install local engine");
+            bool ready = !String.IsNullOrWhiteSpace(whisperExe) && File.Exists(whisperExe) &&
+                !String.IsNullOrWhiteSpace(whisperModel) && File.Exists(whisperModel);
+            bool instantReady = ready && Path.GetFileName(whisperModel).IndexOf("base.en", StringComparison.OrdinalIgnoreCase) >= 0;
+            localStatus.Text = instantReady ? "Ready — Instant model installed and will stay warm between dictations." :
+                (ready ? "A non-Instant model is selected. Choose ggml-base.en-q5_1.bin or click Install." :
+                "Not installed — one click downloads about 60 MB.");
+            localStatus.ForeColor = instantReady ? Color.FromArgb(25, 128, 91) : Color.FromArgb(95, 100, 112);
+            localInstallButton.Text = instantReady ? "Reinstall / update" : "Install local engine";
         }
 
         private static Label LabelAt(string text, int x, int y, int width, int height)
@@ -3003,6 +3028,110 @@ namespace Flowtype
             box.SetBounds(x + 186, y, 430, 30);
             if (password) box.UseSystemPasswordChar = true;
             parent.Controls.Add(box);
+        }
+
+        private void OnLatencyStatsUpdated()
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(OnLatencyStatsUpdated)); } catch { }
+                return;
+            }
+            latencyLabel.Text = LatencyStats.Summary;
+        }
+
+        private void MicTestClicked(object sender, EventArgs e)
+        {
+            if (micTestRecorder.IsRecording)
+            {
+                StopMicTest();
+                return;
+            }
+            if (microphoneBusy())
+            {
+                MessageBox.Show(this, "Finish or cancel the current dictation before testing the microphone.", "Flowtype",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            micTestPeak = 0f;
+            micLevelBar.Value = 0;
+            micTestStatus.Text = "Listening… speak normally.";
+            micTestButton.Text = "Stop test";
+            micTestPath = Path.Combine(Path.GetTempPath(),
+                "flowtype-mic-test-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".wav");
+            micTestRecorder.MicGain = micGainBar.Value / 10f;
+            micTestRecorder.LevelChanged += OnMicTestLevel;
+            try
+            {
+                micTestRecorder.Start(micTestPath);
+            }
+            catch (Exception exception)
+            {
+                micTestRecorder.LevelChanged -= OnMicTestLevel;
+                micTestButton.Text = "Test 3s";
+                micTestStatus.Text = "Could not open the microphone: " + exception.Message;
+                return;
+            }
+            micTestTimer = new System.Windows.Forms.Timer();
+            micTestTimer.Interval = 3000;
+            micTestTimer.Tick += delegate
+            {
+                micTestTimer.Stop();
+                micTestTimer.Dispose();
+                micTestTimer = null;
+                FinishMicTest();
+            };
+            micTestTimer.Start();
+        }
+
+        private void OnMicTestLevel(float level)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action<float>(OnMicTestLevel), level); } catch { }
+                return;
+            }
+            micTestPeak = Math.Max(micTestPeak, level);
+            micLevelBar.Value = Math.Max(micLevelBar.Minimum, Math.Min(micLevelBar.Maximum, (int)Math.Round(level * 100f)));
+        }
+
+        private void FinishMicTest()
+        {
+            micTestRecorder.LevelChanged -= OnMicTestLevel;
+            try
+            {
+                if (micTestRecorder.IsRecording) micTestRecorder.Stop();
+            }
+            catch { }
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(micTestPath) && File.Exists(micTestPath)) File.Delete(micTestPath);
+            }
+            catch { }
+            micTestPath = "";
+            micTestButton.Text = "Test 3s";
+            micTestButton.Enabled = true;
+            int peakPercent = (int)Math.Round(micTestPeak * 100f);
+            if (micTestPeak < 0.08f)
+                micTestStatus.Text = "Very quiet (" + peakPercent + "% peak) — raise Microphone boost or move closer.";
+            else if (micTestPeak < 0.2f)
+                micTestStatus.Text = "A bit quiet (" + peakPercent + "% peak) — try 1.4×–1.8× boost if words are missed.";
+            else if (micTestPeak > 0.92f)
+                micTestStatus.Text = "Very loud (" + peakPercent + "% peak) — lower boost to avoid clipping.";
+            else micTestStatus.Text = "Good input level (" + peakPercent + "% peak).";
+        }
+
+        private void StopMicTest()
+        {
+            if (micTestTimer != null)
+            {
+                micTestTimer.Stop();
+                micTestTimer.Dispose();
+                micTestTimer = null;
+            }
+            if (micTestRecorder.IsRecording || !String.IsNullOrWhiteSpace(micTestPath)) FinishMicTest();
         }
     }
 
@@ -3089,6 +3218,7 @@ namespace Flowtype
         private readonly NotifyIcon tray;
         private readonly ToolStripMenuItem statusItem;
         private readonly ToolStripMenuItem toggleItem;
+        private readonly ToolStripMenuItem dictionaryFixItem;
         private readonly RecordingOverlay overlay;
         private readonly WaveRecorder recorder;
         private readonly WhisperEngine whisperEngine;
@@ -3104,6 +3234,8 @@ namespace Flowtype
         private int dictationGeneration;
         private ForegroundInfo target;
         private string recordingPath;
+        private string lastDictationWord = "";
+        private Stopwatch recordTimer;
         private bool hotkeyDown;
         private bool chordPolledDown;
         private bool processing;
@@ -3171,6 +3303,9 @@ namespace Flowtype
             settingsItem.Click += delegate { ShowSettings(); };
             ToolStripMenuItem historyItem = new ToolStripMenuItem("History…");
             historyItem.Click += delegate { ShowHistory(); };
+            dictionaryFixItem = new ToolStripMenuItem("Add last word to dictionary…");
+            dictionaryFixItem.Enabled = false;
+            dictionaryFixItem.Click += delegate { AddLastWordToDictionary(); };
             ToolStripMenuItem recoveryItem = new ToolStripMenuItem("Open recovery folder");
             recoveryItem.Click += delegate { OpenFolder(store.RecoveryPath); };
             ToolStripMenuItem quitItem = new ToolStripMenuItem("Quit Flowtype");
@@ -3180,6 +3315,7 @@ namespace Flowtype
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(settingsItem);
             menu.Items.Add(historyItem);
+            menu.Items.Add(dictionaryFixItem);
             menu.Items.Add(recoveryItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
@@ -3210,7 +3346,7 @@ namespace Flowtype
             if (settings.Engine == "Local")
             {
                 WarmLocalEngine();
-                UpgradeToInstantEngine();
+                RemoveLegacyLargeModel();
             }
         }
 
@@ -3333,6 +3469,7 @@ namespace Flowtype
                 recordingPath = Path.Combine(store.RecoveryPath,
                     "Flowtype-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".wav");
                 recorder.Start(recordingPath);
+                recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
                 overlay.ShowRecording(settings.Hotkey);
                 RecordingCue.PlayStart();
@@ -3356,6 +3493,8 @@ namespace Flowtype
                 // finalising the WAV so release always feels immediate.
                 overlay.HideNow();
                 hook.CaptureEscape = false;
+                long recordMs = recordTimer != null ? recordTimer.ElapsedMilliseconds : 0;
+                recordTimer = null;
                 string path = recorder.Stop();
                 toggleItem.Text = "Start dictating";
                 FileInfo file = new FileInfo(path);
@@ -3369,7 +3508,7 @@ namespace Flowtype
                 processing = true;
                 statusItem.Text = "Writing…";
                 int generation = ++dictationGeneration;
-                ProcessRecording(path, generation);
+                ProcessRecording(path, generation, recordMs);
             }
             catch (Exception exception)
             {
@@ -3381,7 +3520,7 @@ namespace Flowtype
             }
         }
 
-        private async void ProcessRecording(string path, int generation)
+        private async void ProcessRecording(string path, int generation, long recordMs)
         {
             string raw = "";
             Stopwatch totalTimer = Stopwatch.StartNew();
@@ -3450,9 +3589,10 @@ namespace Flowtype
                 }
                 TryDelete(path);
                 totalTimer.Stop();
-                LatencyStats.LastTranscribeMs = transcribeMs;
-                LatencyStats.LastCleanMs = cleanMs;
-                LatencyStats.LastTotalMs = totalTimer.ElapsedMilliseconds;
+                LatencyStats.Update(recordMs, transcribeMs, cleanMs, totalTimer.ElapsedMilliseconds);
+                lastDictationWord = LastWord(finalText);
+                if (String.IsNullOrWhiteSpace(lastDictationWord)) lastDictationWord = LastWord(raw);
+                UpdateDictionaryFixItem();
                 RecordingCue.PlayComplete();
                 if (pasted) Notify("Inserted", ShortPreview(finalText), ToolTipIcon.Info);
                 else Notify("Dictation copied", "The original field changed, so Flowtype put the result on your clipboard.", ToolTipIcon.Info);
@@ -3501,6 +3641,81 @@ namespace Flowtype
             tray.Text = "Flowtype — hold " + settings.Hotkey + " to dictate";
         }
 
+        private void UpdateDictionaryFixItem()
+        {
+            if (String.IsNullOrWhiteSpace(lastDictationWord))
+            {
+                dictionaryFixItem.Enabled = false;
+                dictionaryFixItem.Text = "Add last word to dictionary…";
+                return;
+            }
+            dictionaryFixItem.Enabled = true;
+            dictionaryFixItem.Text = "Fix \"" + lastDictationWord + "\" in dictionary…";
+        }
+
+        private static string LastWord(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            string[] words = Regex.Split(text.Trim(), @"\s+");
+            for (int index = words.Length - 1; index >= 0; index--)
+            {
+                string word = Regex.Replace(words[index], @"[^\w'-]", "");
+                if (word.Length > 0) return word;
+            }
+            return "";
+        }
+
+        private void AddLastWordToDictionary()
+        {
+            if (String.IsNullOrWhiteSpace(lastDictationWord)) return;
+            using (Form dialog = new Form())
+            {
+                dialog.Text = "Dictionary fix";
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.StartPosition = FormStartPosition.CenterScreen;
+                dialog.ClientSize = new Size(420, 150);
+                dialog.Font = AppFonts.Ui(9.5f, FontStyle.Regular);
+                dialog.MaximizeBox = false;
+                dialog.MinimizeBox = false;
+                Label prompt = new Label();
+                prompt.Text = "Heard as \"" + lastDictationWord + "\". Correct spelling:";
+                prompt.SetBounds(16, 16, 388, 36);
+                TextBox correctionBox = new TextBox();
+                correctionBox.Text = lastDictationWord;
+                correctionBox.SetBounds(16, 56, 388, 28);
+                Button okButton = new Button();
+                okButton.Text = "Add";
+                okButton.DialogResult = DialogResult.OK;
+                okButton.SetBounds(228, 100, 84, 32);
+                Button cancelButton = new Button();
+                cancelButton.Text = "Cancel";
+                cancelButton.DialogResult = DialogResult.Cancel;
+                cancelButton.SetBounds(320, 100, 84, 32);
+                dialog.Controls.AddRange(new Control[] { prompt, correctionBox, okButton, cancelButton });
+                dialog.AcceptButton = okButton;
+                dialog.CancelButton = cancelButton;
+                if (dialog.ShowDialog() != DialogResult.OK) return;
+                string correction = correctionBox.Text.Trim();
+                if (String.IsNullOrWhiteSpace(correction)) return;
+                settings.Dictionary.RemoveAll(delegate(string entry)
+                {
+                    string[] map = Regex.Split(entry ?? "", @"\s*(?:=>|=)\s*", RegexOptions.None);
+                    return map.Length > 0 && String.Equals(map[0].Trim(), lastDictationWord, StringComparison.OrdinalIgnoreCase);
+                });
+                settings.Dictionary.Add(lastDictationWord + " => " + correction);
+                try
+                {
+                    store.Save(settings);
+                    Notify("Dictionary updated", lastDictationWord + " → " + correction, ToolTipIcon.Info);
+                }
+                catch (Exception exception)
+                {
+                    store.LogError(exception);
+                    Notify("Could not save dictionary", exception.Message, ToolTipIcon.Error);
+                }
+            }
+        }
+
         private void ShowSettings()
         {
             if (settingsForm != null && !settingsForm.IsDisposed)
@@ -3508,7 +3723,8 @@ namespace Flowtype
                 settingsForm.Activate();
                 return;
             }
-            settingsForm = new SettingsForm(store, settings, FlowtypeApp.AppDirectory);
+            settingsForm = new SettingsForm(store, settings, FlowtypeApp.AppDirectory,
+                delegate { return recorder.IsRecording || processing; });
             settingsForm.HotkeyPreviewChanged += delegate(string hotkey)
             {
                 if (String.IsNullOrWhiteSpace(hotkey)) return;
@@ -3573,36 +3789,29 @@ namespace Flowtype
             }
         }
 
-        private async void UpgradeToInstantEngine()
+        private async void RemoveLegacyLargeModel()
         {
-            string marker = Path.Combine(store.Root, "instant-engine-v1.ready");
-            if (File.Exists(marker) || String.IsNullOrWhiteSpace(settings.WhisperModelPath) ||
-                settings.WhisperModelPath.IndexOf("large-v3-turbo", StringComparison.OrdinalIgnoreCase) < 0) return;
             try
             {
-                LocalInstallResult result = await new LocalEngineInstaller(FlowtypeApp.AppDirectory).InstallAsync("Instant",
-                    delegate(int percent, string message)
-                    {
-                        if (!processing && !recorder.IsRecording)
-                            statusItem.Text = "Preparing instant speech engine… " + percent.ToString(CultureInfo.InvariantCulture) + "%";
-                    });
-                while (!shuttingDown && (processing || recorder.IsRecording)) await Task.Delay(120);
-                if (shuttingDown) return;
-                whisperEngine.Unload();
-                settings.WhisperExePath = result.Executable;
-                settings.WhisperServerPath = result.ServerExecutable;
-                settings.WhisperModelPath = result.Model;
-                settings.LocalModelQuality = "Instant";
-                store.Save(settings);
-                File.WriteAllText(marker, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture), new UTF8Encoding(false));
-                await whisperEngine.WarmAsync(settings);
-                if (!processing && !recorder.IsRecording) SetReady();
+                string largePath = Path.Combine(FlowtypeApp.AppDirectory, "tools", "whisper", "models", "ggml-large-v3-turbo-q5_0.bin");
+                if (File.Exists(largePath))
+                {
+                    whisperEngine.Unload();
+                    File.Delete(largePath);
+                }
+                if (!String.IsNullOrWhiteSpace(settings.WhisperModelPath) &&
+                    settings.WhisperModelPath.IndexOf("large-v3-turbo", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    LocalInstallResult result = await new LocalEngineInstaller(FlowtypeApp.AppDirectory).InstallAsync(delegate(int percent, string message) { });
+                    settings.WhisperExePath = result.Executable;
+                    settings.WhisperServerPath = result.ServerExecutable;
+                    settings.WhisperModelPath = result.Model;
+                    settings.LocalModelQuality = "Instant";
+                    store.Save(settings);
+                    await whisperEngine.WarmAsync(settings);
+                }
             }
-            catch (Exception exception)
-            {
-                store.LogError(exception);
-                if (!processing && !recorder.IsRecording) SetReady();
-            }
+            catch (Exception exception) { store.LogError(exception); }
         }
 
         private static string ShortMessage(string value)

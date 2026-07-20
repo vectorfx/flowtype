@@ -41,18 +41,11 @@ First launch needs no API key. The Instant English model is bundled in the Full 
 
 | Engine | Best for | Notes |
 |---|---|---|
-| **Local** (default) | Privacy, offline | Bundled Instant model (~60 MB). Warm server stays loaded between dictations. |
+| **Local** (default) | Privacy, offline | Instant model (~60 MB). Warm server stays loaded between dictations. |
 | **Groq** | Speed + accuracy online | Free API tier at [console.groq.com](https://console.groq.com). Model: `whisper-large-v3-turbo`. |
 | **OpenAI** | Your own OpenAI key | Optional; you pay OpenAI directly. |
 
-### Local model sizes (be honest)
-
-| Quality | Size | Speed | Use when |
-|---|---|---|---|
-| **Instant** | ~60 MB | Fast (1–3 s typical) | Everyday dictation — **use this** |
-| **Flow Quality** | ~574 MB | Slow (many seconds per sentence) | Rare accuracy-critical cases only |
-
-Flow Quality is **not** for daily use on most PCs. If local feels slow, try **Groq** with a free API key instead of downloading the 574 MB model.
+For higher accuracy than local Instant, use **Groq** — same large-v3-turbo class model in the cloud, no 574 MB download, typically faster than any local CPU run.
 
 ### Free Groq setup (recommended cloud option)
 
@@ -78,6 +71,10 @@ In **Settings → General → Performance**:
 
 - **Turbo transcription** — skips expensive word timestamps on long dictations (recommended)
 - **Microphone boost** — software gain + normalization for quiet mics
+- **Microphone health** — live level meter and **Test 3s** to catch quiet-mic issues before blaming whisper
+- **Latency strip** — last dictation breakdown (record · transcribe · clean · total ms)
+
+Right-click the tray icon → **Fix "word" in dictionary…** after a dictation to add a spelling correction without opening Settings.
 - **Latency strip** — shows record / transcribe / clean / total ms for the last dictation
 
 ## Privacy

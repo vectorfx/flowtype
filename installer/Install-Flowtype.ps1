@@ -41,8 +41,8 @@ try {
         throw 'Flowtype.exe is missing.'
     }
     $installedVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($outputExe).FileVersion
-    if ($installedVersion -notmatch '^1\.3\.0\.') {
-        throw "Expected Flowtype 1.3.1.x but found $installedVersion. Extract the new ZIP into an empty folder and retry."
+    if ($installedVersion -notmatch '^1\.3\.2\.') {
+        throw "Expected Flowtype 1.3.2.x but found $installedVersion. Extract the new ZIP into an empty folder and retry."
     }
 
     $shell = New-Object -ComObject WScript.Shell
@@ -79,8 +79,8 @@ try {
     }
 
     [Windows.Forms.MessageBox]::Show(
-        "Flowtype 1.3.1 is installed and the new executable is running.`r`n`r`nHold Win + Ctrl together to dictate anywhere.",
-        'Flowtype 1.3.1 installed',
+        "Flowtype 1.3.2 is installed and the new executable is running.`r`n`r`nHold Win + Ctrl together to dictate anywhere.",
+        'Flowtype 1.3.2 installed',
         [Windows.Forms.MessageBoxButtons]::OK,
         [Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null
