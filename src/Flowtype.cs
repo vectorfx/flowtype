@@ -25,8 +25,8 @@ using System.Windows.Forms;
 using System.Media;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.4.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.4.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.5.0")]
 
 namespace Flowtype
 {
@@ -60,6 +60,7 @@ namespace Flowtype
         public bool SuppressNonSpeech;
         public bool CompletionSound;
         public bool ShowInsertNotification;
+        public string OverlayTheme;
         public List<string> Dictionary;
         public Dictionary<string, string> Snippets;
 
@@ -92,8 +93,9 @@ namespace Flowtype
             value.MicGain = 1.2f;
             value.TurboTranscription = true;
             value.SuppressNonSpeech = false;
-            value.CompletionSound = false;
+            value.CompletionSound = true;
             value.ShowInsertNotification = false;
+            value.OverlayTheme = "Dark";
             value.Dictionary = new List<string>();
             value.Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             return value;
@@ -127,9 +129,26 @@ namespace Flowtype
             if (String.IsNullOrWhiteSpace(GroqTranscriptionModel)) GroqTranscriptionModel = "whisper-large-v3-turbo";
             if (MicGain < 0.5f || MicGain > 3f) MicGain = 1.2f;
             if (String.Equals(Engine, "Groq", StringComparison.OrdinalIgnoreCase)) CleanupProvider = "BuiltIn";
+            if (String.IsNullOrWhiteSpace(OverlayTheme)) OverlayTheme = "Dark";
+            if (!String.Equals(OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayTheme, "Mono", StringComparison.OrdinalIgnoreCase))
+                OverlayTheme = "Dark";
             if (Dictionary == null) Dictionary = new List<string>();
             if (Snippets == null) Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    public static class UiTheme
+    {
+        public static readonly Color Window = Color.FromArgb(244, 244, 245);
+        public static readonly Color Surface = Color.White;
+        public static readonly Color Header = Color.FromArgb(250, 250, 250);
+        public static readonly Color Border = Color.FromArgb(212, 212, 216);
+        public static readonly Color BorderSoft = Color.FromArgb(228, 228, 231);
+        public static readonly Color Text = Color.FromArgb(24, 24, 27);
+        public static readonly Color TextMuted = Color.FromArgb(113, 113, 122);
+        public static readonly Color Accent = Color.FromArgb(39, 39, 42);
+        public static readonly Color AccentHover = Color.FromArgb(63, 63, 70);
     }
 
     public static class AppFonts
@@ -157,23 +176,47 @@ namespace Flowtype
         {
             if (initialized) return;
             initialized = true;
-            string fontPath = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "fonts", "Inter-Regular.ttf");
-            try
+            string root = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "fonts");
+            string[] candidates = new string[]
             {
-                if (File.Exists(fontPath))
+                Path.Combine(root, "JetBrainsMono-Regular.ttf"),
+                Path.Combine(root, "Inter-Regular.ttf")
+            };
+            foreach (string fontPath in candidates)
+            {
+                try
                 {
+                    if (!File.Exists(fontPath)) continue;
                     Collection.AddFontFile(fontPath);
-                    FontFamily family = Collection.Families[0];
-                    ui = new Font(family, 9.5f);
-                    uiLarge = new Font(family, 10.5f);
-                    uiBold = new Font(family, 10f, FontStyle.Bold);
+                    FontFamily family = Collection.Families[Collection.Families.Length - 1];
+                    ui = new Font(family, 9.25f);
+                    uiLarge = new Font(family, 10.25f);
+                    uiBold = new Font(family, 9.75f, FontStyle.Bold);
                     return;
                 }
+                catch { }
+            }
+            try
+            {
+                FontFamily mono = new FontFamily("Cascadia Mono");
+                ui = new Font(mono, 9.25f);
+                uiLarge = new Font(mono, 10.25f);
+                uiBold = new Font(mono, 9.75f, FontStyle.Bold);
+                return;
             }
             catch { }
-            ui = new Font("Segoe UI", 9.5f);
-            uiLarge = new Font("Segoe UI", 10.5f);
-            uiBold = new Font("Segoe UI", 10f, FontStyle.Bold);
+            try
+            {
+                FontFamily mono = new FontFamily("Consolas");
+                ui = new Font(mono, 9.25f);
+                uiLarge = new Font(mono, 10.25f);
+                uiBold = new Font(mono, 9.75f, FontStyle.Bold);
+                return;
+            }
+            catch { }
+            ui = new Font("Segoe UI", 9.25f);
+            uiLarge = new Font("Segoe UI", 10.25f);
+            uiBold = new Font("Segoe UI", 9.75f, FontStyle.Bold);
         }
     }
 
@@ -215,29 +258,44 @@ namespace Flowtype
     {
         private static SoundPlayer startPlayer;
         private static SoundPlayer completePlayer;
-        private static bool attempted;
+
+        public static void Preload()
+        {
+            Ensure(ref startPlayer, "recording-start.wav");
+            Ensure(ref completePlayer, "recording-complete.wav");
+        }
 
         public static void PlayStart()
         {
-            PlayAsset("recording-start.wav", ref startPlayer);
+            Ensure(ref startPlayer, "recording-start.wav");
+            TryPlay(startPlayer);
         }
 
         public static void PlayComplete()
         {
-            PlayAsset("recording-complete.wav", ref completePlayer);
+            Ensure(ref completePlayer, "recording-complete.wav");
+            TryPlay(completePlayer);
         }
 
-        private static void PlayAsset(string fileName, ref SoundPlayer player)
+        private static void Ensure(ref SoundPlayer player, string fileName)
+        {
+            if (player != null) return;
+            try
+            {
+                string path = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "audio", fileName);
+                if (!File.Exists(path)) return;
+                player = new SoundPlayer(path);
+                player.Load();
+            }
+            catch { }
+        }
+
+        private static void TryPlay(SoundPlayer player)
         {
             try
             {
-                if (!attempted) attempted = true;
-                if (player == null)
-                {
-                    string path = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "audio", fileName);
-                    if (File.Exists(path)) player = new SoundPlayer(path);
-                }
-                if (player != null) player.Play();
+                if (player == null) return;
+                player.Play();
             }
             catch { }
         }
@@ -347,8 +405,10 @@ namespace Flowtype
             try
             {
                 if (!File.Exists(SettingsPath)) return AppSettings.Defaults();
-                AppSettings value = serializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath, Encoding.UTF8));
+                string raw = File.ReadAllText(SettingsPath, Encoding.UTF8);
+                AppSettings value = serializer.Deserialize<AppSettings>(raw);
                 if (value == null) value = AppSettings.Defaults();
+                if (raw.IndexOf("CompletionSound", StringComparison.OrdinalIgnoreCase) < 0) value.CompletionSound = true;
                 value.Repair();
                 return value;
             }
@@ -1429,7 +1489,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
             return client;
         }
 
@@ -1560,7 +1620,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1690,7 +1750,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
             boundKey = key;
             return client;
         }
@@ -2159,7 +2219,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2264,15 +2324,21 @@ namespace Flowtype
         private readonly float[] bands = new float[13];
         private int animationTick;
         private bool maxRaised;
+        private string theme = "Dark";
         public event Action MaximumDurationReached;
+
+        public void SetTheme(string value)
+        {
+            theme = String.IsNullOrWhiteSpace(value) ? "Dark" : value.Trim();
+        }
 
         public RecordingOverlay()
         {
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
-            Width = 124;
-            Height = 42;
+            Width = 136;
+            Height = 46;
             timer = new System.Windows.Forms.Timer();
             timer.Interval = 32;
             timer.Tick += delegate
@@ -2328,8 +2394,9 @@ namespace Flowtype
             return path;
         }
 
-        public void ShowRecording(string hotkey)
+        public void ShowRecording(string hotkey, string overlayTheme)
         {
+            SetTheme(overlayTheme);
             level = 0;
             Array.Clear(bands, 0, bands.Length);
             animationTick = 0;
@@ -2388,46 +2455,80 @@ namespace Flowtype
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-                RectangleF shadowBounds = new RectangleF(7, 8, Width - 14, 28);
+                RectangleF shadowBounds = new RectangleF(8, 9, Width - 16, 32);
                 for (int spread = 5; spread >= 1; spread--)
                 {
                     RectangleF glow = new RectangleF(shadowBounds.X - spread * 0.45f, shadowBounds.Y - spread * 0.15f,
                         shadowBounds.Width + spread * 0.9f, shadowBounds.Height + spread * 0.9f);
-                    using (GraphicsPath shadowPath = RoundedRectangle(glow, 10f + spread * 0.35f))
-                    using (SolidBrush shadow = new SolidBrush(Color.FromArgb(5 + spread * 2, 0, 0, 0)))
+                    using (GraphicsPath shadowPath = RoundedRectangle(glow, 14f + spread * 0.35f))
+                    using (SolidBrush shadow = new SolidBrush(Color.FromArgb(4 + spread * 2, 0, 0, 0)))
                         graphics.FillPath(shadow, shadowPath);
                 }
 
-                RectangleF capsule = new RectangleF(5.5f, 4.5f, Width - 11f, 30f);
-                using (GraphicsPath capsulePath = RoundedRectangle(capsule, 10.5f))
+                Color top;
+                Color bottom;
+                Color borderColor;
+                GetThemeColors(out top, out bottom, out borderColor);
+                RectangleF capsule = new RectangleF(6f, 5f, Width - 12f, 34f);
+                using (GraphicsPath capsulePath = RoundedRectangle(capsule, 14f))
                 {
-                    using (LinearGradientBrush surface = new LinearGradientBrush(capsule,
-                        Color.FromArgb(252, 24, 25, 31), Color.FromArgb(252, 14, 15, 19), LinearGradientMode.Vertical))
+                    using (LinearGradientBrush surface = new LinearGradientBrush(capsule, top, bottom, LinearGradientMode.Vertical))
                         graphics.FillPath(surface, capsulePath);
-                    using (Pen border = new Pen(Color.FromArgb(205, 61, 63, 74), 1f))
+                    using (Pen border = new Pen(borderColor, 1.1f))
                         graphics.DrawPath(border, capsulePath);
                 }
 
-                float centerY = 19.5f;
-                float startX = 26f;
+                float centerY = 22f;
+                float startX = 28f;
                 for (int index = 0; index < bands.Length; index++)
                 {
                     float sample = Math.Max(level * 0.04f, Math.Min(1f, bands[index]));
-                    float barHeight = 2.2f + sample * 19.5f;
-                    int alpha = 125 + (int)(130 * sample);
-                    int red = 139 + (int)(31 * sample);
-                    int green = 124 + (int)(30 * sample);
-                    using (Pen bar = new Pen(Color.FromArgb(Math.Min(255, alpha), red, green, 255), 2.35f))
+                    float barHeight = 2.4f + sample * 21f;
+                    Color barColor = GetBarColor(sample);
+                    using (Pen bar = new Pen(barColor, 2.5f))
                     {
                         bar.StartCap = LineCap.Round;
                         bar.EndCap = LineCap.Round;
-                        float x = startX + index * 6f;
+                        float x = startX + index * 6.2f;
                         graphics.DrawLine(bar, x, centerY - barHeight / 2f, x, centerY + barHeight / 2f);
                     }
                 }
 
                 Present(bitmap);
             }
+        }
+
+        private void GetThemeColors(out Color top, out Color bottom, out Color borderColor)
+        {
+            if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
+            {
+                top = Color.FromArgb(255, 255, 255, 255);
+                bottom = Color.FromArgb(255, 244, 244, 245);
+                borderColor = Color.FromArgb(220, 212, 212, 216);
+                return;
+            }
+            if (String.Equals(theme, "Mono", StringComparison.OrdinalIgnoreCase))
+            {
+                top = Color.FromArgb(255, 250, 250, 250);
+                bottom = Color.FromArgb(255, 228, 228, 231);
+                borderColor = Color.FromArgb(230, 24, 24, 27);
+                return;
+            }
+            top = Color.FromArgb(252, 28, 28, 31);
+            bottom = Color.FromArgb(252, 12, 12, 14);
+            borderColor = Color.FromArgb(210, 82, 82, 91);
+        }
+
+        private Color GetBarColor(float sample)
+        {
+            int alpha = 125 + (int)(130 * sample);
+            if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
+                return Color.FromArgb(Math.Min(255, alpha), 39 + (int)(20 * sample), 39 + (int)(20 * sample), 42);
+            if (String.Equals(theme, "Mono", StringComparison.OrdinalIgnoreCase))
+                return Color.FromArgb(Math.Min(255, 160 + (int)(95 * sample)), 24, 24, 27);
+            int red = 139 + (int)(31 * sample);
+            int green = 124 + (int)(30 * sample);
+            return Color.FromArgb(Math.Min(255, alpha), red, green, 255);
         }
 
         private void Present(Bitmap bitmap)
@@ -2496,6 +2597,7 @@ namespace Flowtype
         private readonly CheckBox suppressNonSpeechBox = new CheckBox();
         private readonly CheckBox completionSoundBox = new CheckBox();
         private readonly CheckBox insertNotifyBox = new CheckBox();
+        private readonly ComboBox overlayThemeBox = new ComboBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
         private readonly Label localStatus = new Label();
@@ -2520,17 +2622,54 @@ namespace Flowtype
             this.appDirectory = appDirectory;
             this.microphoneBusy = microphoneBusy ?? delegate { return false; };
             Text = "Flowtype Settings";
-            Width = 740;
-            Height = 760;
-            MinimumSize = new Size(700, 720);
+            Width = 760;
+            Height = 780;
+            MinimumSize = new Size(720, 740);
             StartPosition = FormStartPosition.CenterScreen;
-            Font = AppFonts.Ui(9.5f, FontStyle.Regular);
-            BackColor = Color.FromArgb(246, 247, 250);
+            Font = AppFonts.Ui(9.25f, FontStyle.Regular);
+            BackColor = UiTheme.Window;
+            ForeColor = UiTheme.Text;
             Icon = FlowtypeApp.ProductIcon ?? SystemIcons.Application;
+
+            Panel header = new Panel();
+            header.Dock = DockStyle.Top;
+            header.Height = 68;
+            header.BackColor = UiTheme.Header;
+            header.Padding = new Padding(20, 14, 20, 10);
+            header.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (Pen line = new Pen(UiTheme.Border))
+                    e.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
+            };
+            PictureBox logoBox = new PictureBox();
+            logoBox.Size = new Size(36, 36);
+            logoBox.Location = new Point(20, 14);
+            logoBox.SizeMode = PictureBoxSizeMode.Zoom;
+            logoBox.BackColor = Color.Transparent;
+            try
+            {
+                string logoPath = Path.Combine(appDirectory, "assets", "Flowtype-icon.png");
+                if (File.Exists(logoPath)) logoBox.Image = Image.FromFile(logoPath);
+            }
+            catch { }
+            Label title = new Label();
+            title.Text = "Flowtype";
+            title.Font = AppFonts.Ui(14f, FontStyle.Bold);
+            title.ForeColor = UiTheme.Text;
+            title.SetBounds(64, 16, 200, 28);
+            Label subtitle = new Label();
+            subtitle.Text = "Push-to-talk dictation";
+            subtitle.Font = AppFonts.Ui(9f, FontStyle.Regular);
+            subtitle.ForeColor = UiTheme.TextMuted;
+            subtitle.SetBounds(64, 40, 260, 20);
+            header.Controls.Add(logoBox);
+            header.Controls.Add(title);
+            header.Controls.Add(subtitle);
 
             TabControl tabs = new TabControl();
             tabs.Dock = DockStyle.Fill;
-            tabs.Padding = new Point(18, 7);
+            tabs.Padding = new Point(16, 8);
+            tabs.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
             tabs.TabPages.Add(BuildGeneralTab());
             tabs.TabPages.Add(BuildCloudTab());
             tabs.TabPages.Add(BuildLocalTab());
@@ -2538,26 +2677,39 @@ namespace Flowtype
 
             Panel footer = new Panel();
             footer.Dock = DockStyle.Bottom;
-            footer.Height = 62;
-            footer.BackColor = Color.White;
-            Button saveButton = ButtonAt("Save & apply", 570, 15, 124, 34);
-            saveButton.Anchor = AnchorStyles.Right | AnchorStyles.Top;
-            saveButton.BackColor = Color.FromArgb(77, 91, 240);
-            saveButton.ForeColor = Color.White;
-            saveButton.FlatStyle = FlatStyle.Flat;
-            saveButton.FlatAppearance.BorderSize = 0;
-            saveButton.Click += SaveClicked;
-            Button cancelButton = ButtonAt("Cancel", 464, 15, 96, 34);
-            cancelButton.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+            footer.Height = 58;
+            footer.BackColor = UiTheme.Header;
+            footer.Padding = new Padding(16, 10, 16, 10);
+            footer.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (Pen line = new Pen(UiTheme.Border))
+                    e.Graphics.DrawLine(line, 0, 0, footer.Width, 0);
+            };
+
+            FlowLayoutPanel actions = new FlowLayoutPanel();
+            actions.Dock = DockStyle.Right;
+            actions.FlowDirection = FlowDirection.RightToLeft;
+            actions.WrapContents = false;
+            actions.AutoSize = true;
+            actions.Padding = new Padding(0);
+            actions.Margin = new Padding(0);
+
+            Button saveCloseButton = MakeActionButton("Save & close", true);
+            saveCloseButton.Click += SaveClicked;
+            Button applyButton = MakeActionButton("Apply", false);
+            applyButton.Click += ApplyClicked;
+            Button cancelButton = MakeActionButton("Cancel", false);
             cancelButton.Click += delegate { Close(); };
-            footer.Controls.Add(cancelButton);
-            footer.Controls.Add(saveButton);
+            actions.Controls.Add(saveCloseButton);
+            actions.Controls.Add(applyButton);
+            actions.Controls.Add(cancelButton);
+            footer.Controls.Add(actions);
+
             Controls.Add(tabs);
             Controls.Add(footer);
-            // WinForms docking follows z-order. Keep the action row above the
-            // fill-docked tabs so settings can always be applied at any DPI.
-            footer.BringToFront();
-            AcceptButton = saveButton;
+            Controls.Add(header);
+
+            AcceptButton = saveCloseButton;
             CancelButton = cancelButton;
 
             LoadValues(settings);
@@ -2577,9 +2729,44 @@ namespace Flowtype
         private TabPage NewTab(string name)
         {
             TabPage page = new TabPage(name);
-            page.BackColor = Color.White;
+            page.BackColor = UiTheme.Window;
             page.AutoScroll = true;
+            page.Padding = new Padding(4);
             return page;
+        }
+
+        private static Button MakeActionButton(string text, bool primary)
+        {
+            Button button = new Button();
+            button.Text = text;
+            button.AutoSize = true;
+            button.MinimumSize = new Size(primary ? 118 : 88, 34);
+            button.Padding = new Padding(12, 0, 12, 0);
+            button.Margin = new Padding(6, 0, 0, 0);
+            button.FlatStyle = FlatStyle.Flat;
+            button.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
+            button.Cursor = Cursors.Hand;
+            if (primary)
+            {
+                button.BackColor = UiTheme.Accent;
+                button.ForeColor = Color.White;
+                button.FlatAppearance.BorderColor = UiTheme.Accent;
+            }
+            else
+            {
+                button.BackColor = UiTheme.Surface;
+                button.ForeColor = UiTheme.Text;
+                button.FlatAppearance.BorderColor = UiTheme.Border;
+            }
+            button.FlatAppearance.BorderSize = 1;
+            return button;
+        }
+
+        private static void StyleField(Control control)
+        {
+            control.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
+            control.ForeColor = UiTheme.Text;
+            control.BackColor = UiTheme.Surface;
         }
 
         private TabPage BuildGeneralTab()
@@ -2606,10 +2793,14 @@ namespace Flowtype
             ConfigureDropDown(styleBox, 210, 160, 230);
             styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
             page.Controls.Add(styleBox);
+            page.Controls.Add(LabelAt("Voice capsule", 24, 208, 170, 24));
+            ConfigureDropDown(overlayThemeBox, 210, 204, 230);
+            overlayThemeBox.Items.AddRange(new object[] { "Dark", "Light", "Mono (black & white)" });
+            page.Controls.Add(overlayThemeBox);
 
-            ConfigureCheck(cleanupBox, "Clean fillers, corrections, punctuation, and lists", 24, 210, 540);
-            page.Controls.Add(LabelAt("Cleanup engine", 24, 258, 170, 24));
-            ConfigureDropDown(cleanupProviderBox, 210, 254, 430);
+            ConfigureCheck(cleanupBox, "Clean fillers, corrections, punctuation, and lists", 24, 254, 540);
+            page.Controls.Add(LabelAt("Cleanup engine", 24, 302, 170, 24));
+            ConfigureDropDown(cleanupProviderBox, 210, 298, 430);
             cleanupProviderBox.Items.AddRange(new object[]
             {
                 "Built-in rules — free, offline",
@@ -2618,53 +2809,53 @@ namespace Flowtype
                 "Ollama — local model"
             });
             page.Controls.Add(cleanupProviderBox);
-            ConfigureCheck(contextBox, "Use app and window name as cleanup context", 24, 300, 540);
-            ConfigureCheck(pasteBox, "Paste automatically when the original field is still focused", 24, 338, 560);
-            ConfigureCheck(historyBox, "Save finished text in local history", 24, 376, 540);
-            ConfigureCheck(recoveryBox, "Keep failed recordings locally so dictated thoughts are recoverable", 24, 414, 590);
-            ConfigureCheck(startupBox, "Start Flowtype when I sign in to Windows", 24, 452, 540);
+            ConfigureCheck(contextBox, "Use app and window name as cleanup context", 24, 344, 540);
+            ConfigureCheck(pasteBox, "Paste automatically when the original field is still focused", 24, 382, 560);
+            ConfigureCheck(historyBox, "Save finished text in local history", 24, 420, 540);
+            ConfigureCheck(recoveryBox, "Keep failed recordings locally so dictated thoughts are recoverable", 24, 458, 590);
+            ConfigureCheck(startupBox, "Start Flowtype when I sign in to Windows", 24, 496, 540);
             page.Controls.AddRange(new Control[] { cleanupBox, contextBox, pasteBox, historyBox, recoveryBox, startupBox });
 
-            Label perfTitle = LabelAt("Performance", 24, 496, 200, 24);
+            Label perfTitle = LabelAt("Performance", 24, 540, 200, 24);
             perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(perfTitle);
-            ConfigureCheck(turboBox, "Turbo transcription — faster on long dictations (recommended)", 24, 526, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Suppress non-speech sounds — can drop quiet words", 24, 558, 620);
-            ConfigureCheck(completionSoundBox, "Audio cues when recording starts or finishes", 24, 590, 620);
-            ConfigureCheck(insertNotifyBox, "Tray notification preview after each dictation", 24, 622, 620);
+            ConfigureCheck(turboBox, "Turbo transcription — faster on long dictations (recommended)", 24, 570, 620);
+            ConfigureCheck(suppressNonSpeechBox, "Suppress non-speech sounds — can drop quiet words", 24, 602, 620);
+            ConfigureCheck(completionSoundBox, "Liquid audio cues when recording starts or finishes", 24, 634, 620);
+            ConfigureCheck(insertNotifyBox, "Tray notification preview after each dictation", 24, 666, 620);
             page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 660, 140, 24));
-            micGainBar.SetBounds(170, 656, 360, 45);
+            page.Controls.Add(LabelAt("Microphone boost", 24, 704, 140, 24));
+            micGainBar.SetBounds(170, 700, 360, 45);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
             micGainBar.ValueChanged += delegate { micGainLabel.Text = (micGainBar.Value / 10f).ToString("0.0", CultureInfo.InvariantCulture) + "×"; };
             page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 660, 60, 24);
+            micGainLabel.SetBounds(540, 708, 60, 24);
             page.Controls.Add(micGainLabel);
-            Label micHealthTitle = LabelAt("Microphone health", 24, 700, 200, 24);
+            Label micHealthTitle = LabelAt("Microphone health", 24, 748, 200, 24);
             micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 730, 420, 18);
+            micLevelBar.SetBounds(24, 778, 420, 18);
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
             page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 722, 110, 34);
+            micTestButton.SetBounds(456, 770, 110, 34);
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 768, 650, 32);
-            micTestStatus.ForeColor = Color.FromArgb(95, 100, 112);
+            micTestStatus.SetBounds(24, 816, 650, 32);
+            micTestStatus.ForeColor = UiTheme.TextMuted;
             micTestStatus.Text = "Live level while testing. Speak normally for three seconds.";
             page.Controls.Add(micTestStatus);
-            latencyLabel.SetBounds(24, 808, 650, 36);
-            latencyLabel.ForeColor = Color.FromArgb(95, 100, 112);
+            latencyLabel.SetBounds(24, 856, 650, 36);
+            latencyLabel.ForeColor = UiTheme.TextMuted;
             latencyLabel.Text = LatencyStats.Summary;
             page.Controls.Add(latencyLabel);
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 852, 640, 40);
-            privacy.ForeColor = Color.FromArgb(95, 100, 112);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 900, 640, 40);
+            privacy.ForeColor = UiTheme.TextMuted;
             page.Controls.Add(privacy);
             return page;
         }
@@ -2754,7 +2945,7 @@ namespace Flowtype
         private TabPage BuildLocalTab()
         {
             TabPage page = NewTab("Local");
-            Label intro = LabelAt("Offline dictation uses the Instant English model (~60 MB). It stays warm in memory for fast repeat dictations. For higher accuracy without a 574 MB download, use Groq in General settings — free API, large-v3-turbo in the cloud.", 24, 22, 650, 56);
+            Label intro = LabelAt("Offline dictation uses the Instant English model (~60 MB). It stays warm in memory for fast repeat dictations. For higher accuracy online, switch to Groq in General settings.", 24, 22, 650, 48);
             intro.Font = AppFonts.UiLarge(10.5f);
             page.Controls.Add(intro);
             localStatus.SetBounds(24, 92, 650, 48);
@@ -2796,7 +2987,7 @@ namespace Flowtype
             Label dictionaryTitle = LabelAt("Dictionary", 24, 22, 620, 26);
             dictionaryTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(dictionaryTitle);
-            page.Controls.Add(LabelAt("One term per line. Use spoken => written for replacements, e.g. whisper flow => Wispr Flow.", 24, 50, 650, 34));
+            page.Controls.Add(LabelAt("One term per line. Use spoken => written for replacements, e.g. flow type => Flowtype.", 24, 50, 650, 34));
             dictionaryBox.SetBounds(24, 88, 650, 170);
             dictionaryBox.Multiline = true;
             dictionaryBox.ScrollBars = ScrollBars.Vertical;
@@ -2840,6 +3031,8 @@ namespace Flowtype
             suppressNonSpeechBox.Checked = value.SuppressNonSpeech;
             completionSoundBox.Checked = value.CompletionSound;
             insertNotifyBox.Checked = value.ShowInsertNotification;
+            overlayThemeBox.SelectedIndex = String.Equals(value.OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) ? 1 :
+                String.Equals(value.OverlayTheme, "Mono", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
             latencyLabel.Text = LatencyStats.Summary;
@@ -2874,6 +3067,7 @@ namespace Flowtype
             value.SuppressNonSpeech = suppressNonSpeechBox.Checked;
             value.CompletionSound = completionSoundBox.Checked;
             value.ShowInsertNotification = insertNotifyBox.Checked;
+            value.OverlayTheme = overlayThemeBox.SelectedIndex == 1 ? "Light" : overlayThemeBox.SelectedIndex == 2 ? "Mono" : "Dark";
             value.MicGain = micGainBar.Value / 10f;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
             value.ApiBaseUrl = apiUrlBox.Text.Trim();
@@ -2904,28 +3098,38 @@ namespace Flowtype
             return value;
         }
 
+        private void ApplyClicked(object sender, EventArgs e)
+        {
+            TrySaveSettings(false);
+        }
+
         private void SaveClicked(object sender, EventArgs e)
+        {
+            if (TrySaveSettings(true)) Close();
+        }
+
+        private bool TrySaveSettings(bool closeAfterSave)
         {
             AppSettings value = ReadValues();
             if ((value.Engine == "OpenAI" || (value.CleanupEnabled && value.CleanupProvider == "OpenAI")) && String.IsNullOrWhiteSpace(apiKeyBox.Text))
             {
                 MessageBox.Show(this, "OpenAI speech or cleanup needs an OpenAI API key.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                return false;
             }
             if (value.CleanupEnabled && value.CleanupProvider == "OpenRouter" && String.IsNullOrWhiteSpace(openRouterKeyBox.Text))
             {
                 MessageBox.Show(this, "OpenRouter cleanup needs an OpenRouter API key.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                return false;
             }
             if (value.Engine == "Groq" && String.IsNullOrWhiteSpace(groqKeyBox.Text))
             {
                 MessageBox.Show(this, "Groq mode needs a free API key from console.groq.com.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                return false;
             }
             if (value.Engine == "Local" && (!File.Exists(value.WhisperExePath) || !File.Exists(value.WhisperModelPath)))
             {
                 MessageBox.Show(this, "Install the local engine before saving Local mode.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                return false;
             }
             try
             {
@@ -2935,11 +3139,14 @@ namespace Flowtype
                 store.SaveGroqKey(groqKeyBox.Text.Trim());
                 Action<AppSettings, string, string> handler = SettingsSaved;
                 if (handler != null) handler(value, apiKeyBox.Text.Trim(), openRouterKeyBox.Text.Trim());
-                Close();
+                if (!closeAfterSave)
+                    MessageBox.Show(this, "Settings applied.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return true;
             }
             catch (Exception exception)
             {
                 MessageBox.Show(this, exception.Message, "Could not save settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
             }
         }
 
@@ -3299,7 +3506,9 @@ namespace Flowtype
             dispatcher = new Control();
             dispatcher.CreateControl();
             overlay = new RecordingOverlay();
+            overlay.SetTheme(settings.OverlayTheme);
             recorder = new WaveRecorder();
+            RecordingCue.Preload();
             recorder.MicGain = settings.MicGain;
             whisperEngine = new WhisperEngine();
             groqEngine = new GroqEngine();
@@ -3545,7 +3754,7 @@ namespace Flowtype
                 recorder.Start(recordingPath);
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
-                overlay.ShowRecording(settings.Hotkey);
+                overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
                 if (settings.CompletionSound) RecordingCue.PlayStart();
                 statusItem.Text = "Listening… release " + settings.Hotkey;
                 toggleItem.Text = "Stop and insert";
@@ -3820,6 +4029,7 @@ namespace Flowtype
                 groqKey = store.LoadGroqKey();
                 recorder.MicGain = settings.MicGain;
                 hook.HotkeyName = settings.Hotkey;
+                overlay.SetTheme(settings.OverlayTheme);
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();
                 else

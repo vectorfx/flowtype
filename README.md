@@ -45,7 +45,7 @@ First launch needs no API key. The Instant English model is bundled in the Full 
 | **Groq** | Speed + accuracy online | Free API tier at [console.groq.com](https://console.groq.com). Model: `whisper-large-v3-turbo`. |
 | **OpenAI** | Your own OpenAI key | Optional; you pay OpenAI directly. |
 
-For higher accuracy than local Instant, use **Groq** — same large-v3-turbo class model in the cloud, no 574 MB download, typically faster than any local CPU run.
+For higher accuracy than local Instant, use **Groq** — large-v3-turbo in the cloud, typically faster than local CPU.
 
 ### Free Groq setup (recommended cloud option)
 

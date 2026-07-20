@@ -38,19 +38,26 @@ function Write-Wav {
 }
 
 $startPath = Join-Path $outDir 'recording-start.wav'
-Write-Wav -Path $startPath -Duration 0.18 -SampleGenerator {
+Write-Wav -Path $startPath -Duration 0.16 -SampleGenerator {
     param($t)
-    $envelope = [Math]::Exp(-$t * 18.0) * (1.0 - [Math]::Exp(-$t * 120.0))
-    $freq = 520.0 + 180.0 * [Math]::Sin($t * 24.0)
-    $value = [Math]::Sin(2.0 * [Math]::PI * $freq * $t) * $envelope
-    $value += 0.22 * [Math]::Sin(2.0 * [Math]::PI * ($freq * 1.62) * $t) * $envelope
-    $value * 0.42
+    $attack = 1.0 - [Math]::Exp(-$t * 140.0)
+    $decay = [Math]::Exp(-$t * 12.0)
+    $envelope = $attack * $decay
+    $freq = 380.0 + 90.0 * [Math]::Sin($t * 18.0)
+    $body = [Math]::Sin(2.0 * [Math]::PI * $freq * $t)
+    $harm = 0.18 * [Math]::Sin(2.0 * [Math]::PI * ($freq * 2.03) * $t)
+    ($body + $harm) * $envelope * 0.34
 }
 
 $completePath = Join-Path $outDir 'recording-complete.wav'
-Write-Wav -Path $completePath -Duration 0.14 -SampleGenerator {
+Write-Wav -Path $completePath -Duration 0.24 -SampleGenerator {
     param($t)
-    $envelope = [Math]::Exp(-$t * 22.0)
-    $freq = 880.0 - 120.0 * $t
-    [Math]::Sin(2.0 * [Math]::PI * $freq * $t) * $envelope * 0.35
+    $attack = 1.0 - [Math]::Exp(-$t * 160.0)
+    $decay = [Math]::Exp(-$t * 10.5)
+    $envelope = $attack * $decay
+    $freq = 720.0 - 420.0 * $t + 55.0 * [Math]::Sin($t * 28.0)
+    $tone = [Math]::Sin(2.0 * [Math]::PI * $freq * $t)
+    $splash = 0.12 * [Math]::Sin(2.0 * [Math]::PI * ($freq * 1.7) * $t + 0.4)
+    $click = if ($t -lt 0.012) { [Math]::Sin(2.0 * [Math]::PI * 1800.0 * $t) * (1.0 - ($t / 0.012)) } else { 0.0 }
+    ($tone + $splash + $click) * $envelope * 0.42
 }

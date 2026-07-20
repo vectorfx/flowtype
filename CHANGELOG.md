@@ -1,5 +1,12 @@
 # Version history
 
+## 1.3.5
+
+- Settings UI refresh: logo header, zinc borders, JetBrains Mono, Save & close + Apply buttons
+- Voice capsule themes: Dark, Light, Mono
+- Liquid audio cues back on by default (preload + improved WAV)
+- Removed competitor references from examples and copy
+
 ## 1.3.4
 
 - One-time "You're ready" welcome when Groq/local is configured (no settings popup)
