@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
-$version = '1.3.3'
+$version = '1.3.4'
 $staging = Join-Path $dist "Flowtype-Windows-v$version-$Variant"
 
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }

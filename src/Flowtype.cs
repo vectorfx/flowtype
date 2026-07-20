@@ -25,8 +25,8 @@ using System.Windows.Forms;
 using System.Media;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.4.0")]
 
 namespace Flowtype
 {
@@ -58,6 +58,8 @@ namespace Flowtype
         public float MicGain;
         public bool TurboTranscription;
         public bool SuppressNonSpeech;
+        public bool CompletionSound;
+        public bool ShowInsertNotification;
         public List<string> Dictionary;
         public Dictionary<string, string> Snippets;
 
@@ -90,6 +92,8 @@ namespace Flowtype
             value.MicGain = 1.2f;
             value.TurboTranscription = true;
             value.SuppressNonSpeech = false;
+            value.CompletionSound = false;
+            value.ShowInsertNotification = false;
             value.Dictionary = new List<string>();
             value.Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             return value;
@@ -1425,7 +1429,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
             return client;
         }
 
@@ -1556,7 +1560,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1672,17 +1676,37 @@ namespace Flowtype
         }
     }
 
-    public sealed class GroqEngine
+    public sealed class GroqEngine : IDisposable
     {
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+        private HttpClient client;
+        private string boundKey = "";
 
-        private HttpClient Client(string apiKey)
+        private HttpClient GetClient(string apiKey)
         {
-            HttpClient client = new HttpClient();
-            client.Timeout = TimeSpan.FromMinutes(2);
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
+            string key = apiKey ?? "";
+            if (client != null && String.Equals(boundKey, key, StringComparison.Ordinal)) return client;
+            if (client != null) client.Dispose();
+            client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(90);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
+            boundKey = key;
             return client;
+        }
+
+        public async Task WarmAsync(AppSettings settings, string apiKey)
+        {
+            if (String.IsNullOrWhiteSpace(apiKey)) return;
+            string url = settings.GroqApiUrl.TrimEnd('/') + "/models";
+            using (HttpResponseMessage response = await GetClient(apiKey).GetAsync(url))
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    string body = await response.Content.ReadAsStringAsync();
+                    throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
+                }
+            }
         }
 
         public async Task<SpeechTranscript> TranscribeAsync(string wavePath, AppSettings settings, string apiKey, ForegroundInfo context)
@@ -1691,7 +1715,7 @@ namespace Flowtype
                 throw new InvalidOperationException("Groq mode needs an API key. Get a free key at console.groq.com, then paste it in Settings.");
             string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
             string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
-            using (HttpClient client = Client(apiKey))
+            HttpClient http = GetClient(apiKey);
             using (MultipartFormDataContent form = new MultipartFormDataContent())
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
@@ -1704,7 +1728,7 @@ namespace Flowtype
                 form.Add(new StringContent("0"), "temperature");
                 string prompt = WhisperEngine.BuildPrompt(settings, context);
                 if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
-                HttpResponseMessage response = await client.PostAsync(url, form);
+                HttpResponseMessage response = await http.PostAsync(url, form);
                 string body = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
                 Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
@@ -1720,12 +1744,16 @@ namespace Flowtype
         public async Task TestAsync(AppSettings settings, string apiKey)
         {
             if (String.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("Enter a Groq API key first.");
-            string url = settings.GroqApiUrl.TrimEnd('/') + "/models";
-            using (HttpClient client = Client(apiKey))
+            await WarmAsync(settings, apiKey);
+        }
+
+        public void Dispose()
+        {
+            if (client != null)
             {
-                HttpResponseMessage response = await client.GetAsync(url);
-                string body = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
+                client.Dispose();
+                client = null;
+                boundKey = "";
             }
         }
     }
@@ -2131,7 +2159,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.3");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.4");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2466,6 +2494,8 @@ namespace Flowtype
         private readonly Label latencyLabel = new Label();
         private readonly CheckBox turboBox = new CheckBox();
         private readonly CheckBox suppressNonSpeechBox = new CheckBox();
+        private readonly CheckBox completionSoundBox = new CheckBox();
+        private readonly CheckBox insertNotifyBox = new CheckBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
         private readonly Label localStatus = new Label();
@@ -2491,8 +2521,8 @@ namespace Flowtype
             this.microphoneBusy = microphoneBusy ?? delegate { return false; };
             Text = "Flowtype Settings";
             Width = 740;
-            Height = 700;
-            MinimumSize = new Size(700, 660);
+            Height = 760;
+            MinimumSize = new Size(700, 720);
             StartPosition = FormStartPosition.CenterScreen;
             Font = AppFonts.Ui(9.5f, FontStyle.Regular);
             BackColor = Color.FromArgb(246, 247, 250);
@@ -2555,7 +2585,7 @@ namespace Flowtype
         private TabPage BuildGeneralTab()
         {
             TabPage page = NewTab("General");
-            Label intro = LabelAt("Choose a key, click Save & apply, then hold it to record. Releasing it writes into the field you were using.", 24, 22, 650, 36);
+            Label intro = LabelAt("Hold your push-to-talk key anywhere on Windows, speak, release — cleaned text appears in the field you were using.", 24, 22, 650, 36);
             intro.Font = AppFonts.UiLarge(10.5f);
             page.Controls.Add(intro);
 
@@ -2600,38 +2630,40 @@ namespace Flowtype
             page.Controls.Add(perfTitle);
             ConfigureCheck(turboBox, "Turbo transcription — faster on long dictations (recommended)", 24, 526, 620);
             ConfigureCheck(suppressNonSpeechBox, "Suppress non-speech sounds — can drop quiet words", 24, 558, 620);
-            page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 596, 140, 24));
-            micGainBar.SetBounds(170, 592, 360, 45);
+            ConfigureCheck(completionSoundBox, "Audio cues when recording starts or finishes", 24, 590, 620);
+            ConfigureCheck(insertNotifyBox, "Tray notification preview after each dictation", 24, 622, 620);
+            page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
+            page.Controls.Add(LabelAt("Microphone boost", 24, 660, 140, 24));
+            micGainBar.SetBounds(170, 656, 360, 45);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
             micGainBar.ValueChanged += delegate { micGainLabel.Text = (micGainBar.Value / 10f).ToString("0.0", CultureInfo.InvariantCulture) + "×"; };
             page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 596, 60, 24);
+            micGainLabel.SetBounds(540, 660, 60, 24);
             page.Controls.Add(micGainLabel);
-            Label micHealthTitle = LabelAt("Microphone health", 24, 636, 200, 24);
+            Label micHealthTitle = LabelAt("Microphone health", 24, 700, 200, 24);
             micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 666, 420, 18);
+            micLevelBar.SetBounds(24, 730, 420, 18);
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
             page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 658, 110, 34);
+            micTestButton.SetBounds(456, 722, 110, 34);
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 696, 650, 32);
+            micTestStatus.SetBounds(24, 768, 650, 32);
             micTestStatus.ForeColor = Color.FromArgb(95, 100, 112);
             micTestStatus.Text = "Live level while testing. Speak normally for three seconds.";
             page.Controls.Add(micTestStatus);
-            latencyLabel.SetBounds(24, 736, 650, 36);
+            latencyLabel.SetBounds(24, 808, 650, 36);
             latencyLabel.ForeColor = Color.FromArgb(95, 100, 112);
             latencyLabel.Text = LatencyStats.Summary;
             page.Controls.Add(latencyLabel);
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 780, 640, 40);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 852, 640, 40);
             privacy.ForeColor = Color.FromArgb(95, 100, 112);
             page.Controls.Add(privacy);
             return page;
@@ -2806,6 +2838,8 @@ namespace Flowtype
             groqModelBox.Text = value.GroqTranscriptionModel;
             turboBox.Checked = value.TurboTranscription;
             suppressNonSpeechBox.Checked = value.SuppressNonSpeech;
+            completionSoundBox.Checked = value.CompletionSound;
+            insertNotifyBox.Checked = value.ShowInsertNotification;
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
             latencyLabel.Text = LatencyStats.Summary;
@@ -2838,6 +2872,8 @@ namespace Flowtype
             value.StartWithWindows = startupBox.Checked;
             value.TurboTranscription = turboBox.Checked;
             value.SuppressNonSpeech = suppressNonSpeechBox.Checked;
+            value.CompletionSound = completionSoundBox.Checked;
+            value.ShowInsertNotification = insertNotifyBox.Checked;
             value.MicGain = micGainBar.Value / 10f;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
             value.ApiBaseUrl = apiUrlBox.Text.Trim();
@@ -3222,6 +3258,7 @@ namespace Flowtype
         private readonly RecordingOverlay overlay;
         private readonly WaveRecorder recorder;
         private readonly WhisperEngine whisperEngine;
+        private readonly GroqEngine groqEngine;
         private readonly GlobalKeyHook hook;
         private readonly System.Windows.Forms.Timer chordPoller;
         private readonly System.Windows.Forms.Timer activationPoller;
@@ -3265,6 +3302,7 @@ namespace Flowtype
             recorder = new WaveRecorder();
             recorder.MicGain = settings.MicGain;
             whisperEngine = new WhisperEngine();
+            groqEngine = new GroqEngine();
             hook = new GlobalKeyHook(settings.Hotkey);
             hook.HotkeyChanged += OnHotkeyChanged;
             hook.CancelPressed += CancelRecording;
@@ -3338,16 +3376,52 @@ namespace Flowtype
                 {
                     firstRunTimer.Stop();
                     firstRunTimer.Dispose();
-                    ShowSettings();
-                    Notify("Finish setup", "Install the local engine or enter your own API key, then save.", ToolTipIcon.Info);
+                    ShowStartupExperience(firstRun);
                 };
                 firstRunTimer.Start();
             }
+            else ShowStartupExperience(firstRun);
             if (settings.Engine == "Local")
             {
                 WarmLocalEngine();
                 RemoveLegacyLargeModel();
             }
+            else if (settings.Engine == "Groq" && !String.IsNullOrWhiteSpace(groqKey)) WarmGroqEngine();
+        }
+
+        private bool IsReadyToDictate()
+        {
+            if (String.Equals(settings.Engine, "Groq", StringComparison.OrdinalIgnoreCase))
+                return !String.IsNullOrWhiteSpace(groqKey);
+            if (String.Equals(settings.Engine, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                return !String.IsNullOrWhiteSpace(apiKey);
+            return File.Exists(settings.WhisperExePath) && File.Exists(settings.WhisperModelPath);
+        }
+
+        private void ShowStartupExperience(bool firstRun)
+        {
+            if (IsReadyToDictate())
+            {
+                ShowReadyWelcomeOnce();
+                return;
+            }
+            if (!firstRun) return;
+            ShowSettings();
+            Notify("Quick setup", "Choose Groq (fastest) or install the local engine, then Save & apply.", ToolTipIcon.Info);
+        }
+
+        private void ShowReadyWelcomeOnce()
+        {
+            try
+            {
+                string marker = Path.Combine(store.Root, "ready-welcome-v1.shown");
+                if (File.Exists(marker)) return;
+                string engineLabel = String.Equals(settings.Engine, "Groq", StringComparison.OrdinalIgnoreCase) ? "Groq" :
+                    String.Equals(settings.Engine, "OpenAI", StringComparison.OrdinalIgnoreCase) ? "OpenAI" : "Local";
+                Notify("You're ready", "Hold " + settings.Hotkey + " anywhere to dictate. Engine: " + engineLabel + ".", ToolTipIcon.Info);
+                File.WriteAllText(marker, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture), new UTF8Encoding(false));
+            }
+            catch (Exception exception) { store.LogError(exception); }
         }
 
         private bool ActivateBundledInstantEngine(bool firstRun)
@@ -3472,7 +3546,7 @@ namespace Flowtype
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
                 overlay.ShowRecording(settings.Hotkey);
-                RecordingCue.PlayStart();
+                if (settings.CompletionSound) RecordingCue.PlayStart();
                 statusItem.Text = "Listening… release " + settings.Hotkey;
                 toggleItem.Text = "Stop and insert";
             }
@@ -3538,7 +3612,7 @@ namespace Flowtype
                 }
                 else if (settings.Engine == "Groq")
                 {
-                    transcript = await new GroqEngine().TranscribeAsync(path, settings, groqKey, target);
+                    transcript = await groqEngine.TranscribeAsync(path, settings, groqKey, target);
                 }
                 else transcript = await whisperEngine.TranscribeAsync(path, settings, target);
                 transcribeTimer.Stop();
@@ -3593,9 +3667,12 @@ namespace Flowtype
                 lastDictationWord = LastWord(finalText);
                 if (String.IsNullOrWhiteSpace(lastDictationWord)) lastDictationWord = LastWord(raw);
                 UpdateDictionaryFixItem();
-                RecordingCue.PlayComplete();
-                if (pasted) Notify("Inserted", ShortPreview(finalText), ToolTipIcon.Info);
-                else Notify("Dictation copied", "The original field changed, so Flowtype put the result on your clipboard.", ToolTipIcon.Info);
+                if (settings.CompletionSound) RecordingCue.PlayComplete();
+                if (settings.ShowInsertNotification)
+                {
+                    if (pasted) Notify("Inserted", ShortPreview(finalText), ToolTipIcon.Info);
+                    else Notify("Dictation copied", "The original field changed, so Flowtype put the result on your clipboard.", ToolTipIcon.Info);
+                }
             }
             catch (Exception exception)
             {
@@ -3745,7 +3822,11 @@ namespace Flowtype
                 hook.HotkeyName = settings.Hotkey;
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();
-                else whisperEngine.Unload();
+                else
+                {
+                    whisperEngine.Unload();
+                    if (settings.Engine == "Groq" && !String.IsNullOrWhiteSpace(groqKey)) WarmGroqEngine();
+                }
             };
             settingsForm.FormClosed += delegate { settingsForm = null; };
             settingsForm.Show();
@@ -3786,6 +3867,22 @@ namespace Flowtype
             {
                 store.LogError(exception);
                 if (!processing && !recorder.IsRecording) statusItem.Text = "Local engine will load on first use";
+            }
+        }
+
+        private async void WarmGroqEngine()
+        {
+            try
+            {
+                statusItem.Text = "Connecting to Groq…";
+                await groqEngine.WarmAsync(settings, groqKey);
+                if (!processing && !recorder.IsRecording) SetReady();
+            }
+            catch (Exception exception)
+            {
+                store.LogError(exception);
+                if (!processing && !recorder.IsRecording)
+                    statusItem.Text = "Ready — Groq will connect on first dictation";
             }
         }
 
@@ -3840,6 +3937,7 @@ namespace Flowtype
             try { activationPoller.Stop(); activationPoller.Dispose(); } catch { }
             try { recorder.Dispose(); } catch { }
             try { whisperEngine.Dispose(); } catch { }
+            try { groqEngine.Dispose(); } catch { }
             try { overlay.Close(); overlay.Dispose(); } catch { }
             try { dispatcher.Dispose(); } catch { }
             tray.Visible = false;

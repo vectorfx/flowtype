@@ -1,5 +1,12 @@
 # Version history
 
+## 1.3.4
+
+- One-time "You're ready" welcome when Groq/local is configured (no settings popup)
+- Groq connection reuse + startup prewarm for faster first dictation
+- Silent-by-default: audio cues and insert notifications off unless enabled
+- Clearer Settings intro copy
+
 ## 1.3.3
 
 - Fix startup crash (recorder initialized before use)
