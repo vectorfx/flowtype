@@ -1,0 +1,60 @@
+# Build output
+Flowtype.exe
+*.pdb
+*.user
+*.suo
+bin/
+obj/
+dist/
+release/
+out/
+
+# User/runtime data (never commit)
+settings.json
+*.jsonl
+smart-key.bin
+openrouter-key.bin
+groq-key.bin
+instant-engine-v1.ready
+Recovery/
+errors.log
+
+# Downloaded / generated caches
+tools/whisper/whisper-win-x64.zip
+tools/whisper/bin-*/
+tools/whisper/models/*.bin
+
+# Large release artifacts (use GitHub Releases)
+*.zip
+*.7z
+*.msi
+*.exe.installer
+packages/
+checksums/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vs/
+.idea/
+*.swp
+*~
+
+# Test artifacts
+tests/output/
+tests/temp/
+*.wav
+!tests/fixtures/*.wav
+!assets/audio/*.wav
+
+# Python cache from icon build
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+.env.*
+*.pem
+*.pfx
+*credentials*

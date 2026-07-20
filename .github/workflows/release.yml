@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate recording cue
+        shell: pwsh
+        run: ./tools/Generate-RecordingCue.ps1
+
+      - name: Build Flowtype
+        shell: pwsh
+        run: ./tools/Build-Flowtype.ps1
+
+      - name: Run tests
+        shell: pwsh
+        run: ./tests/Run-Tests.ps1
+
+      - name: Package Lite installer
+        shell: pwsh
+        run: ./tools/Package-Release.ps1 -Variant Lite
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

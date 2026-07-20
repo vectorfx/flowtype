@@ -1,0 +1,16 @@
+* text=auto eol=lf
+*.cs text diff=csharp
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.md text
+*.json text
+*.svg text
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.bin binary
+*.wav binary
+*.ttf binary
+*.zip binary
