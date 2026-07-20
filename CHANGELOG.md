@@ -1,5 +1,12 @@
 # Version history
 
+## 1.3.6
+
+- Fix rapid repeat dictation failing (removed 200ms re-arm block, mic retry, safer hotkey sync)
+- Audio cues via Windows PlaySound API (works with default output device)
+- Louder liquid finish clip; Source Code Pro UI font
+- Clearer settings labels; minor punctuation fix
+
 ## 1.3.5
 
 - Settings UI refresh: logo header, zinc borders, JetBrains Mono, Save & close + Apply buttons

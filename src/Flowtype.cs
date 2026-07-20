@@ -22,11 +22,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
-using System.Media;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.5.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.5.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.6.0")]
 
 namespace Flowtype
 {
@@ -179,6 +178,7 @@ namespace Flowtype
             string root = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "fonts");
             string[] candidates = new string[]
             {
+                Path.Combine(root, "SourceCodePro-Regular.ttf"),
                 Path.Combine(root, "JetBrainsMono-Regular.ttf"),
                 Path.Combine(root, "Inter-Regular.ttf")
             };
@@ -256,46 +256,44 @@ namespace Flowtype
 
     public static class RecordingCue
     {
-        private static SoundPlayer startPlayer;
-        private static SoundPlayer completePlayer;
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+        private static extern bool PlaySound(string sound, IntPtr module, int flags);
+
+        private const int SoundAsync = 0x0001;
+        private const int SoundFilename = 0x00020000;
+        private const int SoundNoDefault = 0x00000002;
+
+        private static string startPath = "";
+        private static string completePath = "";
 
         public static void Preload()
         {
-            Ensure(ref startPlayer, "recording-start.wav");
-            Ensure(ref completePlayer, "recording-complete.wav");
+            startPath = ResolvePath("recording-start.wav");
+            completePath = ResolvePath("recording-complete.wav");
         }
 
         public static void PlayStart()
         {
-            Ensure(ref startPlayer, "recording-start.wav");
-            TryPlay(startPlayer);
+            Play(startPath);
         }
 
         public static void PlayComplete()
         {
-            Ensure(ref completePlayer, "recording-complete.wav");
-            TryPlay(completePlayer);
+            Play(completePath);
         }
 
-        private static void Ensure(ref SoundPlayer player, string fileName)
+        private static string ResolvePath(string fileName)
         {
-            if (player != null) return;
-            try
-            {
-                string path = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "audio", fileName);
-                if (!File.Exists(path)) return;
-                player = new SoundPlayer(path);
-                player.Load();
-            }
-            catch { }
+            string path = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "audio", fileName);
+            return File.Exists(path) ? path : "";
         }
 
-        private static void TryPlay(SoundPlayer player)
+        private static void Play(string path)
         {
+            if (String.IsNullOrWhiteSpace(path)) return;
             try
             {
-                if (player == null) return;
-                player.Play();
+                PlaySound(path, IntPtr.Zero, SoundAsync | SoundFilename | SoundNoDefault);
             }
             catch { }
         }
@@ -878,6 +876,7 @@ namespace Flowtype
         private FileStream rawStream;
         private string rawPath;
         private string wavePath;
+        private readonly object micLock = new object();
         private volatile bool recording;
         public float MicGain { get; set; }
         public event Action<float> LevelChanged;
@@ -891,45 +890,48 @@ namespace Flowtype
 
         public void Start(string outputWavePath)
         {
-            if (recording) throw new InvalidOperationException("The recorder is already running.");
-            wavePath = outputWavePath;
-            rawPath = outputWavePath + ".pcm";
-            Directory.CreateDirectory(Path.GetDirectoryName(outputWavePath));
-            rawStream = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-
-            WaveFormat format = new WaveFormat();
-            format.formatTag = 1;
-            format.channels = 1;
-            format.samplesPerSecond = SampleRate;
-            format.bitsPerSample = 16;
-            format.blockAlign = 2;
-            format.averageBytesPerSecond = SampleRate * 2;
-            format.extraSize = 0;
-            callback = OnWaveMessage;
-            int error = waveInOpen(out input, unchecked((uint)-1), ref format, callback, IntPtr.Zero, CallbackFunction);
-            if (error != 0)
+            lock (micLock)
             {
-                rawStream.Dispose();
-                rawStream = null;
-                throw new InvalidOperationException("Microphone error: " + ErrorText(error));
-            }
+                if (recording) throw new InvalidOperationException("The recorder is already running.");
+                wavePath = outputWavePath;
+                rawPath = outputWavePath + ".pcm";
+                Directory.CreateDirectory(Path.GetDirectoryName(outputWavePath));
+                rawStream = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.Read);
 
-            int headerSize = Marshal.SizeOf(typeof(WaveHeader));
-            for (int index = 0; index < 6; index++)
-            {
-                Buffer buffer = new Buffer();
-                buffer.Data = Marshal.AllocHGlobal(BufferSize);
-                buffer.Header = Marshal.AllocHGlobal(headerSize);
-                WaveHeader header = new WaveHeader();
-                header.data = buffer.Data;
-                header.bufferLength = BufferSize;
-                Marshal.StructureToPtr(header, buffer.Header, false);
-                Check(waveInPrepareHeader(input, buffer.Header, (uint)headerSize));
-                Check(waveInAddBuffer(input, buffer.Header, (uint)headerSize));
-                buffers.Add(buffer);
+                WaveFormat format = new WaveFormat();
+                format.formatTag = 1;
+                format.channels = 1;
+                format.samplesPerSecond = SampleRate;
+                format.bitsPerSample = 16;
+                format.blockAlign = 2;
+                format.averageBytesPerSecond = SampleRate * 2;
+                format.extraSize = 0;
+                callback = OnWaveMessage;
+                int error = waveInOpen(out input, unchecked((uint)-1), ref format, callback, IntPtr.Zero, CallbackFunction);
+                if (error != 0)
+                {
+                    rawStream.Dispose();
+                    rawStream = null;
+                    throw new InvalidOperationException("Microphone error: " + ErrorText(error));
+                }
+
+                int headerSize = Marshal.SizeOf(typeof(WaveHeader));
+                for (int index = 0; index < 6; index++)
+                {
+                    Buffer buffer = new Buffer();
+                    buffer.Data = Marshal.AllocHGlobal(BufferSize);
+                    buffer.Header = Marshal.AllocHGlobal(headerSize);
+                    WaveHeader header = new WaveHeader();
+                    header.data = buffer.Data;
+                    header.bufferLength = BufferSize;
+                    Marshal.StructureToPtr(header, buffer.Header, false);
+                    Check(waveInPrepareHeader(input, buffer.Header, (uint)headerSize));
+                    Check(waveInAddBuffer(input, buffer.Header, (uint)headerSize));
+                    buffers.Add(buffer);
+                }
+                recording = true;
+                Check(waveInStart(input));
             }
-            recording = true;
-            Check(waveInStart(input));
         }
 
         private void OnWaveMessage(IntPtr source, uint message, IntPtr instance, IntPtr parameter1, IntPtr parameter2)
@@ -966,33 +968,36 @@ namespace Flowtype
 
         public string Stop()
         {
-            if (!recording) return wavePath;
-            recording = false;
-            waveInStop(input);
-            waveInReset(input);
-            Thread.Sleep(35);
-            int headerSize = Marshal.SizeOf(typeof(WaveHeader));
-            foreach (Buffer buffer in buffers)
+            lock (micLock)
             {
-                waveInUnprepareHeader(input, buffer.Header, (uint)headerSize);
-                Marshal.FreeHGlobal(buffer.Header);
-                Marshal.FreeHGlobal(buffer.Data);
-            }
-            buffers.Clear();
-            waveInClose(input);
-            input = IntPtr.Zero;
-            lock (gate)
-            {
-                if (rawStream != null)
+                if (!recording) return wavePath;
+                recording = false;
+                waveInStop(input);
+                waveInReset(input);
+                Thread.Sleep(20);
+                int headerSize = Marshal.SizeOf(typeof(WaveHeader));
+                foreach (Buffer buffer in buffers)
                 {
-                    rawStream.Flush();
-                    rawStream.Dispose();
-                    rawStream = null;
+                    waveInUnprepareHeader(input, buffer.Header, (uint)headerSize);
+                    Marshal.FreeHGlobal(buffer.Header);
+                    Marshal.FreeHGlobal(buffer.Data);
                 }
+                buffers.Clear();
+                waveInClose(input);
+                input = IntPtr.Zero;
+                lock (gate)
+                {
+                    if (rawStream != null)
+                    {
+                        rawStream.Flush();
+                        rawStream.Dispose();
+                        rawStream = null;
+                    }
+                }
+                WriteWave(rawPath, wavePath, MicGain);
+                try { File.Delete(rawPath); } catch { }
+                return wavePath;
             }
-            WriteWave(rawPath, wavePath, MicGain);
-            try { File.Delete(rawPath); } catch { }
-            return wavePath;
         }
 
         public void Cancel()
@@ -1178,7 +1183,7 @@ namespace Flowtype
             text = Paragraphize(text, context).Trim();
             if (IsTerminalContext(context)) return text.TrimEnd('.', ' ');
             text = Capitalize(text);
-            if (!Regex.IsMatch(text, @"[.!?\)\]\""']$", RegexOptions.None) && !text.Contains("\n")) text += ".";
+            if (!Regex.IsMatch(text, @"[.!?…,:;\)\]\""']$", RegexOptions.None) && !text.Contains("\n")) text += ".";
             return ApplyApplicationStyle(text, settings, context);
         }
 
@@ -1489,7 +1494,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
             return client;
         }
 
@@ -1620,7 +1625,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1750,7 +1755,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
             boundKey = key;
             return client;
         }
@@ -2219,7 +2224,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.5");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2780,9 +2785,9 @@ namespace Flowtype
             ConfigureDropDown(engineBox, 210, 72, 430);
             engineBox.Items.AddRange(new object[]
             {
-                "Local — private whisper.cpp, offline default",
-                "Groq — fast cloud whisper (free API tier)",
-                "OpenAI — your own API key"
+                "Local — offline, private",
+                "Groq — fast cloud (free tier)",
+                "OpenAI — your API key"
             });
             page.Controls.Add(engineBox);
             page.Controls.Add(LabelAt("Push-to-talk key", 24, 120, 170, 24));
@@ -2798,31 +2803,31 @@ namespace Flowtype
             overlayThemeBox.Items.AddRange(new object[] { "Dark", "Light", "Mono (black & white)" });
             page.Controls.Add(overlayThemeBox);
 
-            ConfigureCheck(cleanupBox, "Clean fillers, corrections, punctuation, and lists", 24, 254, 540);
+            ConfigureCheck(cleanupBox, "Smart cleanup (fillers, punctuation, lists)", 24, 254, 540);
             page.Controls.Add(LabelAt("Cleanup engine", 24, 302, 170, 24));
             ConfigureDropDown(cleanupProviderBox, 210, 298, 430);
             cleanupProviderBox.Items.AddRange(new object[]
             {
-                "Built-in rules — free, offline",
-                "OpenRouter — network polish (adds latency)",
-                "OpenAI — your own key",
+                "Built-in — free, offline",
+                "OpenRouter — cloud polish",
+                "OpenAI — your key",
                 "Ollama — local model"
             });
             page.Controls.Add(cleanupProviderBox);
-            ConfigureCheck(contextBox, "Use app and window name as cleanup context", 24, 344, 540);
-            ConfigureCheck(pasteBox, "Paste automatically when the original field is still focused", 24, 382, 560);
-            ConfigureCheck(historyBox, "Save finished text in local history", 24, 420, 540);
-            ConfigureCheck(recoveryBox, "Keep failed recordings locally so dictated thoughts are recoverable", 24, 458, 590);
-            ConfigureCheck(startupBox, "Start Flowtype when I sign in to Windows", 24, 496, 540);
+            ConfigureCheck(contextBox, "Adapt cleanup to the active app/window", 24, 344, 540);
+            ConfigureCheck(pasteBox, "Auto-paste into the focused field", 24, 382, 560);
+            ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 420, 540);
+            ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 458, 590);
+            ConfigureCheck(startupBox, "Start with Windows", 24, 496, 540);
             page.Controls.AddRange(new Control[] { cleanupBox, contextBox, pasteBox, historyBox, recoveryBox, startupBox });
 
             Label perfTitle = LabelAt("Performance", 24, 540, 200, 24);
             perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(perfTitle);
-            ConfigureCheck(turboBox, "Turbo transcription — faster on long dictations (recommended)", 24, 570, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Suppress non-speech sounds — can drop quiet words", 24, 602, 620);
-            ConfigureCheck(completionSoundBox, "Liquid audio cues when recording starts or finishes", 24, 634, 620);
-            ConfigureCheck(insertNotifyBox, "Tray notification preview after each dictation", 24, 666, 620);
+            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 570, 620);
+            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 602, 620);
+            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 634, 620);
+            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 666, 620);
             page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
             page.Controls.Add(LabelAt("Microphone boost", 24, 704, 140, 24));
             micGainBar.SetBounds(170, 700, 360, 45);
@@ -3487,8 +3492,7 @@ namespace Flowtype
         private DateTime hotkeyDownSince = DateTime.MinValue;
         private DateTime lastHotkeyRelease = DateTime.MinValue;
         private System.Windows.Forms.Timer pendingStartTimer;
-        private const int MinChordHoldMs = 90;
-        private const int ChordRearmCooldownMs = 200;
+        private const int MinChordHoldMs = 45;
         private SettingsForm settingsForm;
         private HistoryForm historyForm;
 
@@ -3521,14 +3525,12 @@ namespace Flowtype
             chordPoller.Interval = 20;
             chordPoller.Tick += delegate
             {
-                if (!Hotkeys.IsChord(settings.Hotkey))
-                {
-                    chordPolledDown = false;
-                    return;
-                }
+                if (!Hotkeys.IsChord(settings.Hotkey)) return;
                 bool down = NativeKeyState.IsWinCtrlDown();
                 if (down == chordPolledDown) return;
                 chordPolledDown = down;
+                if (down && hotkeyDown) return;
+                if (!down && !hotkeyDown) return;
                 OnHotkeyChanged(down);
             };
             chordPoller.Start();
@@ -3671,9 +3673,6 @@ namespace Flowtype
             if (down)
             {
                 if (hotkeyDown) return;
-                if (Hotkeys.IsChord(settings.Hotkey) &&
-                    (DateTime.UtcNow - lastHotkeyRelease).TotalMilliseconds < ChordRearmCooldownMs)
-                    return;
                 hotkeyDown = true;
                 hotkeyDownSince = DateTime.UtcNow;
                 if (Hotkeys.IsChord(settings.Hotkey))
@@ -3685,7 +3684,6 @@ namespace Flowtype
                     {
                         pendingStartTimer.Stop();
                         if (!hotkeyDown || recorder.IsRecording) return;
-                        if ((DateTime.UtcNow - hotkeyDownSince).TotalMilliseconds < MinChordHoldMs - 5) return;
                         try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
                     };
                     pendingStartTimer.Start();
@@ -3722,11 +3720,7 @@ namespace Flowtype
         private void StartRecording()
         {
             if (shuttingDown || recorder.IsRecording) return;
-            if (processing)
-            {
-                dictationGeneration++;
-                processing = false;
-            }
+            if (processing) dictationGeneration++;
             try
             {
                 if (settings.Engine == "OpenAI" && String.IsNullOrWhiteSpace(apiKey))
@@ -3751,7 +3745,23 @@ namespace Flowtype
                 recorder.MicGain = settings.MicGain;
                 recordingPath = Path.Combine(store.RecoveryPath,
                     "Flowtype-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".wav");
-                recorder.Start(recordingPath);
+                Exception lastMicError = null;
+                for (int attempt = 0; attempt < 4; attempt++)
+                {
+                    try
+                    {
+                        recorder.Start(recordingPath);
+                        lastMicError = null;
+                        break;
+                    }
+                    catch (Exception exception)
+                    {
+                        lastMicError = exception;
+                        if (attempt < 3) Thread.Sleep(35 * (attempt + 1));
+                    }
+                }
+                if (lastMicError != null) throw lastMicError;
+                processing = false;
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
                 overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
@@ -3764,6 +3774,7 @@ namespace Flowtype
                 store.LogError(exception);
                 overlay.ShowFailure(ShortMessage(exception.Message));
                 Notify("Could not start recording", exception.Message, ToolTipIcon.Error);
+                SetReady();
             }
         }
 
