@@ -1,11 +1,26 @@
+param(
+    [switch]$SynthesizeAudio
+)
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $root 'src\Flowtype.cs'
+$embedded = Join-Path $root 'src\EmbeddedAudio.g.cs'
 $output = Join-Path $root 'Flowtype.exe'
 $icon = Join-Path $root 'assets\Flowtype.ico'
+$startWav = Join-Path $root 'assets\audio\recording-start.wav'
+$completeWav = Join-Path $root 'assets\audio\recording-complete.wav'
 
 if (-not (Test-Path -LiteralPath $source)) {
     throw "Missing source file: $source"
+}
+
+if ($SynthesizeAudio -or -not ((Test-Path -LiteralPath $startWav) -and (Test-Path -LiteralPath $completeWav))) {
+    & (Join-Path $PSScriptRoot 'Generate-RecordingCue.ps1')
+}
+& (Join-Path $PSScriptRoot 'Embed-Audio.ps1')
+if (-not (Test-Path -LiteralPath $embedded)) {
+    throw "Missing embedded audio source: $embedded"
 }
 
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
@@ -52,7 +67,7 @@ if (Test-Path -LiteralPath $icon) {
     Write-Warning "Missing $icon - run: python assets/build_icon.py"
 }
 
-& $csc /nologo /target:winexe /out:$output @iconArgs @refArgs $source
+& $csc /nologo /target:winexe /out:$output @iconArgs @refArgs $source $embedded
 if ($LASTEXITCODE -ne 0) {
     throw "csc.exe failed with exit code $LASTEXITCODE"
 }

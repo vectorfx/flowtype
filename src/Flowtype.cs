@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.6.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.6.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.16.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.16.0")]
 
 namespace Flowtype
 {
@@ -129,7 +129,10 @@ namespace Flowtype
             if (MicGain < 0.5f || MicGain > 3f) MicGain = 1.2f;
             if (String.Equals(Engine, "Groq", StringComparison.OrdinalIgnoreCase)) CleanupProvider = "BuiltIn";
             if (String.IsNullOrWhiteSpace(OverlayTheme)) OverlayTheme = "Dark";
-            if (!String.Equals(OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) &&
+            if (!String.Equals(OverlayTheme, "Glass", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayTheme, "Dark", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayTheme, "Purple", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayTheme, "Mono", StringComparison.OrdinalIgnoreCase))
                 OverlayTheme = "Dark";
             if (Dictionary == null) Dictionary = new List<string>();
@@ -176,38 +179,11 @@ namespace Flowtype
             if (initialized) return;
             initialized = true;
             string root = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "fonts");
-            string[] candidates = new string[]
-            {
-                Path.Combine(root, "SourceCodePro-Regular.ttf"),
-                Path.Combine(root, "JetBrainsMono-Regular.ttf"),
-                Path.Combine(root, "Inter-Regular.ttf")
-            };
-            foreach (string fontPath in candidates)
-            {
-                try
-                {
-                    if (!File.Exists(fontPath)) continue;
-                    Collection.AddFontFile(fontPath);
-                    FontFamily family = Collection.Families[Collection.Families.Length - 1];
-                    ui = new Font(family, 9.25f);
-                    uiLarge = new Font(family, 10.25f);
-                    uiBold = new Font(family, 9.75f, FontStyle.Bold);
-                    return;
-                }
-                catch { }
-            }
+            if (TryLoadRobotoMonoPair(root)) return;
+            if (TryLoadSingleFont(Path.Combine(root, "RobotoMono-Regular.ttf"))) return;
             try
             {
-                FontFamily mono = new FontFamily("Cascadia Mono");
-                ui = new Font(mono, 9.25f);
-                uiLarge = new Font(mono, 10.25f);
-                uiBold = new Font(mono, 9.75f, FontStyle.Bold);
-                return;
-            }
-            catch { }
-            try
-            {
-                FontFamily mono = new FontFamily("Consolas");
+                FontFamily mono = new FontFamily("Roboto Mono");
                 ui = new Font(mono, 9.25f);
                 uiLarge = new Font(mono, 10.25f);
                 uiBold = new Font(mono, 9.75f, FontStyle.Bold);
@@ -217,6 +193,55 @@ namespace Flowtype
             ui = new Font("Segoe UI", 9.25f);
             uiLarge = new Font("Segoe UI", 10.25f);
             uiBold = new Font("Segoe UI", 9.75f, FontStyle.Bold);
+        }
+
+        private static bool TryLoadRobotoMonoPair(string root)
+        {
+            string regularPath = Path.Combine(root, "RobotoMono-Regular.ttf");
+            string boldPath = Path.Combine(root, "RobotoMono-Bold.ttf");
+            if (!File.Exists(regularPath)) return false;
+            try
+            {
+                Collection.AddFontFile(regularPath);
+                FontFamily regular = FindFamily(Collection, "Roboto Mono");
+                FontFamily bold = regular;
+                if (File.Exists(boldPath))
+                {
+                    Collection.AddFontFile(boldPath);
+                    bold = FindFamily(Collection, "Roboto Mono") ?? regular;
+                }
+                if (regular == null) return false;
+                ui = new Font(regular, 9.25f);
+                uiLarge = new Font(regular, 10.25f);
+                uiBold = new Font(bold, 9.75f, FontStyle.Bold);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static bool TryLoadSingleFont(string fontPath)
+        {
+            try
+            {
+                if (!File.Exists(fontPath)) return false;
+                Collection.AddFontFile(fontPath);
+                FontFamily family = Collection.Families[Collection.Families.Length - 1];
+                ui = new Font(family, 9.25f);
+                uiLarge = new Font(family, 10.25f);
+                uiBold = new Font(family, 9.75f, FontStyle.Bold);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static FontFamily FindFamily(PrivateFontCollection collection, string preferredName)
+        {
+            for (int index = collection.Families.Length - 1; index >= 0; index--)
+            {
+                if (String.Equals(collection.Families[index].Name, preferredName, StringComparison.OrdinalIgnoreCase))
+                    return collection.Families[index];
+            }
+            return collection.Families.Length > 0 ? collection.Families[collection.Families.Length - 1] : null;
         }
     }
 
@@ -256,46 +281,54 @@ namespace Flowtype
 
     public static class RecordingCue
     {
-        [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
-        private static extern bool PlaySound(string sound, IntPtr module, int flags);
-
-        private const int SoundAsync = 0x0001;
-        private const int SoundFilename = 0x00020000;
-        private const int SoundNoDefault = 0x00000002;
-
-        private static string startPath = "";
-        private static string completePath = "";
+        private static byte[] startBytes;
+        private static byte[] completeBytes;
 
         public static void Preload()
         {
-            startPath = ResolvePath("recording-start.wav");
-            completePath = ResolvePath("recording-complete.wav");
+            startBytes = LoadCue("recording-start.wav", EmbeddedAudio.RecordingStart);
+            completeBytes = LoadCue("recording-complete.wav", EmbeddedAudio.RecordingComplete);
         }
 
         public static void PlayStart()
         {
-            Play(startPath);
+            Play(startBytes);
         }
 
         public static void PlayComplete()
         {
-            Play(completePath);
+            Play(completeBytes);
         }
 
-        private static string ResolvePath(string fileName)
+        private static byte[] LoadCue(string fileName, byte[] embedded)
         {
+            if (embedded != null && embedded.Length > 44) return embedded;
             string path = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "audio", fileName);
-            return File.Exists(path) ? path : "";
+            if (File.Exists(path))
+            {
+                try { return File.ReadAllBytes(path); }
+                catch { }
+            }
+            return null;
         }
 
-        private static void Play(string path)
+        private static void Play(byte[] wavBytes)
         {
-            if (String.IsNullOrWhiteSpace(path)) return;
-            try
+            if (wavBytes == null || wavBytes.Length < 44) return;
+            byte[] payload = (byte[])wavBytes.Clone();
+            ThreadPool.QueueUserWorkItem(delegate
             {
-                PlaySound(path, IntPtr.Zero, SoundAsync | SoundFilename | SoundNoDefault);
-            }
-            catch { }
+                try
+                {
+                    using (MemoryStream stream = new MemoryStream(payload, false))
+                    using (System.Media.SoundPlayer player = new System.Media.SoundPlayer(stream))
+                    {
+                        player.Load();
+                        player.PlaySync();
+                    }
+                }
+                catch { }
+            });
         }
     }
 
@@ -1494,7 +1527,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
             return client;
         }
 
@@ -1625,7 +1658,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1755,7 +1788,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
             boundKey = key;
             return client;
         }
@@ -2224,7 +2257,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.6");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2330,6 +2363,8 @@ namespace Flowtype
         private int animationTick;
         private bool maxRaised;
         private string theme = "Dark";
+        private Bitmap glassBackdrop;
+        private Point glassBackdropOffset;
         public event Action MaximumDurationReached;
 
         public void SetTheme(string value)
@@ -2342,8 +2377,8 @@ namespace Flowtype
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
-            Width = 136;
-            Height = 46;
+            Width = 108;
+            Height = 36;
             timer = new System.Windows.Forms.Timer();
             timer.Interval = 32;
             timer.Tick += delegate
@@ -2409,6 +2444,7 @@ namespace Flowtype
             maxRaised = false;
             timer.Start();
             PositionOverlay();
+            if (IsGlassTheme()) CaptureGlassBackdrop();
             if (!Visible) Show();
             RenderLayered();
         }
@@ -2423,7 +2459,112 @@ namespace Flowtype
         {
             timer.Stop();
             elapsed.Reset();
+            ReleaseGlassBackdrop();
             Hide();
+        }
+
+        private RectangleF GetCapsuleBounds()
+        {
+            const float capsuleWidth = 94f;
+            const float capsuleHeight = 26f;
+            return new RectangleF(
+                (Width - capsuleWidth) / 2f,
+                (Height - capsuleHeight) / 2f,
+                capsuleWidth,
+                capsuleHeight);
+        }
+
+        private void ReleaseGlassBackdrop()
+        {
+            if (glassBackdrop == null) return;
+            glassBackdrop.Dispose();
+            glassBackdrop = null;
+        }
+
+        private void CaptureGlassBackdrop()
+        {
+            ReleaseGlassBackdrop();
+            if (!IsHandleCreated) CreateHandle();
+
+            RectangleF capsule = GetCapsuleBounds();
+            const int pad = 10;
+            int screenX = Left + (int)Math.Floor(capsule.X) - pad;
+            int screenY = Top + (int)Math.Floor(capsule.Y) - pad;
+            int captureWidth = (int)Math.Ceiling(capsule.Width) + pad * 2;
+            int captureHeight = (int)Math.Ceiling(capsule.Height) + pad * 2;
+            if (captureWidth < 2 || captureHeight < 2) return;
+
+            bool restoreVisible = Visible;
+            if (restoreVisible)
+            {
+                Visible = false;
+                Application.DoEvents();
+            }
+
+            Bitmap raw = null;
+            try
+            {
+                raw = new Bitmap(captureWidth, captureHeight, PixelFormat.Format32bppPArgb);
+                using (Graphics captureGraphics = Graphics.FromImage(raw))
+                    captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
+
+                using (Bitmap blurred = BlurBitmap(raw, 4))
+                {
+                    glassBackdrop = DistortLiquidGlass(blurred);
+                }
+                glassBackdropOffset = new Point(pad - (int)Math.Floor(capsule.X), pad - (int)Math.Floor(capsule.Y));
+            }
+            catch
+            {
+                ReleaseGlassBackdrop();
+            }
+            finally
+            {
+                if (raw != null) raw.Dispose();
+                if (restoreVisible) Visible = true;
+            }
+        }
+
+        private static Bitmap BlurBitmap(Bitmap source, int downscale)
+        {
+            int targetWidth = Math.Max(1, source.Width / downscale);
+            int targetHeight = Math.Max(1, source.Height / downscale);
+            using (Bitmap small = new Bitmap(targetWidth, targetHeight, PixelFormat.Format32bppPArgb))
+            {
+                using (Graphics down = Graphics.FromImage(small))
+                {
+                    down.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                    down.DrawImage(source, 0, 0, targetWidth, targetHeight);
+                }
+                Bitmap result = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppPArgb);
+                using (Graphics up = Graphics.FromImage(result))
+                {
+                    up.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                    up.DrawImage(small, 0, 0, source.Width, source.Height);
+                }
+                return result;
+            }
+        }
+
+        private static Bitmap DistortLiquidGlass(Bitmap source)
+        {
+            int width = source.Width;
+            int height = source.Height;
+            Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    float nx = x * 0.11f;
+                    float ny = y * 0.11f;
+                    int offsetX = (int)(Math.Sin(nx * 1.7f + ny * 0.6f) * 2.2f + Math.Sin(ny * 2.3f) * 1.2f);
+                    int offsetY = (int)(Math.Cos(ny * 1.5f + nx * 0.4f) * 2.2f + Math.Cos(nx * 2.1f) * 1.2f);
+                    int sampleX = Math.Max(0, Math.Min(width - 1, x + offsetX));
+                    int sampleY = Math.Max(0, Math.Min(height - 1, y + offsetY));
+                    dest.SetPixel(x, y, source.GetPixel(sampleX, sampleY));
+                }
+            }
+            return dest;
         }
 
         public void SetLevel(float value)
@@ -2451,6 +2592,10 @@ namespace Flowtype
         private void RenderLayered()
         {
             if (!IsHandleCreated || IsDisposed || !Visible) return;
+            const float cornerRadius = 13f;
+            const float barSpacing = 5f;
+            const float barStroke = 2f;
+
             using (Bitmap bitmap = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb))
             using (Graphics graphics = Graphics.FromImage(bitmap))
             {
@@ -2460,41 +2605,35 @@ namespace Flowtype
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-                RectangleF shadowBounds = new RectangleF(8, 9, Width - 16, 32);
-                for (int spread = 5; spread >= 1; spread--)
-                {
-                    RectangleF glow = new RectangleF(shadowBounds.X - spread * 0.45f, shadowBounds.Y - spread * 0.15f,
-                        shadowBounds.Width + spread * 0.9f, shadowBounds.Height + spread * 0.9f);
-                    using (GraphicsPath shadowPath = RoundedRectangle(glow, 14f + spread * 0.35f))
-                    using (SolidBrush shadow = new SolidBrush(Color.FromArgb(4 + spread * 2, 0, 0, 0)))
-                        graphics.FillPath(shadow, shadowPath);
-                }
+                RectangleF capsule = GetCapsuleBounds();
 
-                Color top;
-                Color bottom;
-                Color borderColor;
-                GetThemeColors(out top, out bottom, out borderColor);
-                RectangleF capsule = new RectangleF(6f, 5f, Width - 12f, 34f);
-                using (GraphicsPath capsulePath = RoundedRectangle(capsule, 14f))
-                {
-                    using (LinearGradientBrush surface = new LinearGradientBrush(capsule, top, bottom, LinearGradientMode.Vertical))
-                        graphics.FillPath(surface, capsulePath);
-                    using (Pen border = new Pen(borderColor, 1.1f))
-                        graphics.DrawPath(border, capsulePath);
-                }
+                if (IsGlassTheme())
+                    DrawLiquidGlassCapsule(graphics, capsule, cornerRadius);
+                else
+                    DrawStandardCapsule(graphics, capsule, cornerRadius);
 
-                float centerY = 22f;
-                float startX = 28f;
+                float centerY = capsule.Y + capsule.Height / 2f;
+                float barsSpan = (bands.Length - 1) * barSpacing;
+                float startX = capsule.X + (capsule.Width - barsSpan) / 2f;
                 for (int index = 0; index < bands.Length; index++)
                 {
                     float sample = Math.Max(level * 0.04f, Math.Min(1f, bands[index]));
-                    float barHeight = 2.4f + sample * 21f;
+                    float barHeight = 2f + sample * (capsule.Height - 8f);
                     Color barColor = GetBarColor(sample);
-                    using (Pen bar = new Pen(barColor, 2.5f))
+                    float x = startX + index * barSpacing;
+                    if (IsGlassTheme())
+                    {
+                        using (Pen shadow = new Pen(Color.FromArgb(48, 0, 0, 0), barStroke))
+                        {
+                            shadow.StartCap = LineCap.Round;
+                            shadow.EndCap = LineCap.Round;
+                            graphics.DrawLine(shadow, x, centerY - barHeight / 2f + 0.8f, x, centerY + barHeight / 2f + 0.8f);
+                        }
+                    }
+                    using (Pen bar = new Pen(barColor, barStroke))
                     {
                         bar.StartCap = LineCap.Round;
                         bar.EndCap = LineCap.Round;
-                        float x = startX + index * 6.2f;
                         graphics.DrawLine(bar, x, centerY - barHeight / 2f, x, centerY + barHeight / 2f);
                     }
                 }
@@ -2503,37 +2642,243 @@ namespace Flowtype
             }
         }
 
-        private void GetThemeColors(out Color top, out Color bottom, out Color borderColor)
+        private void DrawStandardCapsule(Graphics graphics, RectangleF capsule, float cornerRadius)
         {
-            if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
+            for (int spread = 4; spread >= 1; spread--)
             {
-                top = Color.FromArgb(255, 255, 255, 255);
-                bottom = Color.FromArgb(255, 244, 244, 245);
-                borderColor = Color.FromArgb(220, 212, 212, 216);
+                RectangleF glow = new RectangleF(
+                    capsule.X - spread * 0.3f,
+                    capsule.Y - spread * 0.08f + 1f,
+                    capsule.Width + spread * 0.6f,
+                    capsule.Height + spread * 0.45f);
+                using (GraphicsPath shadowPath = RoundedRectangle(glow, cornerRadius + spread * 0.2f))
+                using (SolidBrush shadow = new SolidBrush(Color.FromArgb(4 + spread * 2, 0, 0, 0)))
+                    graphics.FillPath(shadow, shadowPath);
+            }
+
+            Color top;
+            Color bottom;
+            Color borderColor;
+            GetThemeColors(out top, out bottom, out borderColor);
+            using (GraphicsPath capsulePath = RoundedRectangle(capsule, cornerRadius))
+            {
+                using (LinearGradientBrush surface = new LinearGradientBrush(capsule, top, bottom, LinearGradientMode.Vertical))
+                    graphics.FillPath(surface, capsulePath);
+                DrawMatteBorder(graphics, capsule, cornerRadius, capsulePath, borderColor);
+            }
+        }
+
+        private void DrawMatteBorder(Graphics graphics, RectangleF capsule, float cornerRadius, GraphicsPath capsulePath, Color borderColor)
+        {
+            if (String.Equals(theme, "Dark", StringComparison.OrdinalIgnoreCase))
+            {
+                using (Pen outer = new Pen(Color.FromArgb(255, 63, 63, 70), 1.15f))
+                    graphics.DrawPath(outer, capsulePath);
+                RectangleF inset = new RectangleF(capsule.X + 1f, capsule.Y + 1f, capsule.Width - 2f, capsule.Height - 2f);
+                using (GraphicsPath insetPath = RoundedRectangle(inset, cornerRadius - 1f))
+                using (Pen inner = new Pen(Color.FromArgb(255, 18, 18, 20), 0.9f))
+                    graphics.DrawPath(inner, insetPath);
+                RectangleF highlight = new RectangleF(capsule.X + 2f, capsule.Y + 1.5f, capsule.Width - 4f, capsule.Height * 0.38f);
+                using (GraphicsPath highlightPath = RoundedRectangle(highlight, cornerRadius - 2f))
+                using (Pen topLine = new Pen(Color.FromArgb(36, 113, 113, 122), 0.7f))
+                    graphics.DrawPath(topLine, highlightPath);
+                return;
+            }
+            if (String.Equals(theme, "Purple", StringComparison.OrdinalIgnoreCase))
+            {
+                using (Pen outer = new Pen(Color.FromArgb(255, 92, 82, 122), 1.1f))
+                    graphics.DrawPath(outer, capsulePath);
+                RectangleF inset = new RectangleF(capsule.X + 1f, capsule.Y + 1f, capsule.Width - 2f, capsule.Height - 2f);
+                using (GraphicsPath insetPath = RoundedRectangle(inset, cornerRadius - 1f))
+                using (Pen inner = new Pen(Color.FromArgb(255, 36, 30, 52), 0.85f))
+                    graphics.DrawPath(inner, insetPath);
                 return;
             }
             if (String.Equals(theme, "Mono", StringComparison.OrdinalIgnoreCase))
             {
-                top = Color.FromArgb(255, 250, 250, 250);
-                bottom = Color.FromArgb(255, 228, 228, 231);
-                borderColor = Color.FromArgb(230, 24, 24, 27);
+                using (Pen outer = new Pen(Color.FromArgb(255, 212, 212, 216), 1.1f))
+                    graphics.DrawPath(outer, capsulePath);
+                RectangleF inset = new RectangleF(capsule.X + 1f, capsule.Y + 1f, capsule.Width - 2f, capsule.Height - 2f);
+                using (GraphicsPath insetPath = RoundedRectangle(inset, cornerRadius - 1f))
+                using (Pen inner = new Pen(Color.FromArgb(255, 12, 12, 14), 0.85f))
+                    graphics.DrawPath(inner, insetPath);
                 return;
             }
-            top = Color.FromArgb(252, 28, 28, 31);
-            bottom = Color.FromArgb(252, 12, 12, 14);
-            borderColor = Color.FromArgb(210, 82, 82, 91);
+            using (Pen border = new Pen(borderColor, 1f))
+                graphics.DrawPath(border, capsulePath);
+        }
+
+        private void DrawLiquidGlassCapsule(Graphics graphics, RectangleF capsule, float cornerRadius)
+        {
+            // Outer shadows from the reference: 0 0 8px, 0 2px 6px, 0 0 12px
+            for (int spread = 1; spread <= 6; spread++)
+            {
+                float yShift = spread <= 2 ? spread * 0.35f : 0f;
+                RectangleF outer = new RectangleF(
+                    capsule.X - spread * 0.45f,
+                    capsule.Y - spread * 0.25f + yShift,
+                    capsule.Width + spread * 0.9f,
+                    capsule.Height + spread * 0.65f);
+                int alpha = spread <= 2 ? 8 + spread * 6 : 3 + spread;
+                using (GraphicsPath outerPath = RoundedRectangle(outer, cornerRadius + spread * 0.15f))
+                using (SolidBrush outerBrush = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0)))
+                    graphics.FillPath(outerBrush, outerPath);
+            }
+            RectangleF glow = new RectangleF(capsule.X - 4f, capsule.Y - 3f, capsule.Width + 8f, capsule.Height + 6f);
+            using (GraphicsPath glowPath = RoundedRectangle(glow, cornerRadius + 2f))
+            using (SolidBrush glowBrush = new SolidBrush(Color.FromArgb(38, 0, 0, 0)))
+                graphics.FillPath(glowBrush, glowPath);
+
+            using (GraphicsPath capsulePath = RoundedRectangle(capsule, cornerRadius))
+            {
+                GraphicsState clipState = graphics.Save();
+                graphics.SetClip(capsulePath);
+
+                if (glassBackdrop != null)
+                {
+                    graphics.DrawImage(
+                        glassBackdrop,
+                        capsule.X + glassBackdropOffset.X,
+                        capsule.Y + glassBackdropOffset.Y);
+                }
+                else
+                {
+                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(48, 28, 32, 42)))
+                        graphics.FillPath(fallback, capsulePath);
+                }
+
+                using (SolidBrush veil = new SolidBrush(Color.FromArgb(18, 255, 255, 255)))
+                    graphics.FillPath(veil, capsulePath);
+
+                DrawGlassInsetShadows(graphics, capsule, cornerRadius);
+                graphics.Restore(clipState);
+
+                DrawGlassRim(graphics, capsule, cornerRadius, capsulePath);
+            }
+        }
+
+        private static void DrawGlassInsetShadows(Graphics graphics, RectangleF capsule, float cornerRadius)
+        {
+            RectangleF topLeft = new RectangleF(capsule.X, capsule.Y, capsule.Width * 0.72f, capsule.Height * 0.72f);
+            using (GraphicsPath topLeftPath = RoundedRectangle(topLeft, cornerRadius))
+            using (PathGradientBrush topLeftGlow = new PathGradientBrush(topLeftPath))
+            {
+                topLeftGlow.CenterColor = Color.FromArgb(42, 255, 255, 255);
+                topLeftGlow.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
+                topLeftGlow.FocusScales = new PointF(0.2f, 0.2f);
+                graphics.FillPath(topLeftGlow, topLeftPath);
+            }
+
+            RectangleF bottomRight = new RectangleF(
+                capsule.X + capsule.Width * 0.28f,
+                capsule.Y + capsule.Height * 0.28f,
+                capsule.Width * 0.72f,
+                capsule.Height * 0.72f);
+            using (GraphicsPath bottomRightPath = RoundedRectangle(bottomRight, cornerRadius))
+            using (PathGradientBrush bottomRightGlow = new PathGradientBrush(bottomRightPath))
+            {
+                bottomRightGlow.CenterColor = Color.FromArgb(96, 255, 255, 255);
+                bottomRightGlow.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
+                bottomRightGlow.FocusScales = new PointF(0.78f, 0.78f);
+                graphics.FillPath(bottomRightGlow, bottomRightPath);
+            }
+
+            RectangleF edgeBloom = new RectangleF(capsule.X + 1f, capsule.Y + 1f, capsule.Width - 2f, capsule.Height - 2f);
+            using (GraphicsPath edgePath = RoundedRectangle(edgeBloom, cornerRadius - 1f))
+            using (SolidBrush edgeBrush = new SolidBrush(Color.FromArgb(30, 255, 255, 255)))
+                graphics.FillPath(edgeBrush, edgePath);
+
+            RectangleF innerPool = new RectangleF(capsule.X, capsule.Y + capsule.Height * 0.45f, capsule.Width, capsule.Height * 0.55f);
+            using (LinearGradientBrush innerPoolBrush = new LinearGradientBrush(
+                innerPool, Color.FromArgb(0, 0, 0, 0), Color.FromArgb(36, 0, 0, 0), LinearGradientMode.Vertical))
+                graphics.FillRectangle(innerPoolBrush, innerPool);
+        }
+
+        private static void DrawGlassRim(Graphics graphics, RectangleF capsule, float cornerRadius, GraphicsPath capsulePath)
+        {
+            RectangleF shine = new RectangleF(capsule.X + 2f, capsule.Y + 1.5f, capsule.Width - 4f, capsule.Height * 0.42f);
+            using (GraphicsPath shinePath = RoundedRectangle(shine, cornerRadius - 1f))
+            using (LinearGradientBrush gloss = new LinearGradientBrush(
+                shine, Color.FromArgb(72, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), LinearGradientMode.Vertical))
+                graphics.FillPath(gloss, shinePath);
+
+            using (Pen outerRim = new Pen(Color.FromArgb(120, 255, 255, 255), 1f))
+                graphics.DrawPath(outerRim, capsulePath);
+
+            RectangleF inset = new RectangleF(capsule.X + 1f, capsule.Y + 1f, capsule.Width - 2f, capsule.Height - 2f);
+            using (GraphicsPath insetPath = RoundedRectangle(inset, cornerRadius - 1f))
+            using (Pen innerRim = new Pen(Color.FromArgb(64, 255, 255, 255), 0.75f))
+                graphics.DrawPath(innerRim, insetPath);
+        }
+
+        private bool IsGlassTheme()
+        {
+            return String.Equals(theme, "Glass", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void GetThemeColors(out Color top, out Color bottom, out Color borderColor)
+        {
+            if (IsGlassTheme())
+            {
+                top = Color.FromArgb(215, 255, 255, 255);
+                bottom = Color.FromArgb(185, 214, 226, 242);
+                borderColor = Color.FromArgb(230, 255, 255, 255);
+                return;
+            }
+            if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
+            {
+                top = Color.FromArgb(255, 255, 255, 255);
+                bottom = Color.FromArgb(255, 241, 241, 243);
+                borderColor = Color.FromArgb(200, 161, 161, 170);
+                return;
+            }
+            if (String.Equals(theme, "Mono", StringComparison.OrdinalIgnoreCase))
+            {
+                top = Color.FromArgb(255, 20, 20, 22);
+                bottom = Color.FromArgb(255, 6, 6, 8);
+                borderColor = Color.FromArgb(255, 212, 212, 216);
+                return;
+            }
+            if (String.Equals(theme, "Purple", StringComparison.OrdinalIgnoreCase))
+            {
+                top = Color.FromArgb(255, 28, 24, 40);
+                bottom = Color.FromArgb(255, 12, 10, 20);
+                borderColor = Color.FromArgb(255, 92, 82, 122);
+                return;
+            }
+            top = Color.FromArgb(255, 26, 26, 28);
+            bottom = Color.FromArgb(255, 9, 9, 11);
+            borderColor = Color.FromArgb(255, 63, 63, 70);
         }
 
         private Color GetBarColor(float sample)
         {
             int alpha = 125 + (int)(130 * sample);
+            if (IsGlassTheme())
+            {
+                int grey = 102 + (int)(40 * sample);
+                return Color.FromArgb(Math.Min(255, 220 + (int)(35 * sample)), grey, grey, grey);
+            }
             if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
-                return Color.FromArgb(Math.Min(255, alpha), 39 + (int)(20 * sample), 39 + (int)(20 * sample), 42);
+                return Color.FromArgb(Math.Min(255, alpha), 24 + (int)(18 * sample), 24 + (int)(18 * sample), 27);
             if (String.Equals(theme, "Mono", StringComparison.OrdinalIgnoreCase))
-                return Color.FromArgb(Math.Min(255, 160 + (int)(95 * sample)), 24, 24, 27);
-            int red = 139 + (int)(31 * sample);
-            int green = 124 + (int)(30 * sample);
-            return Color.FromArgb(Math.Min(255, alpha), red, green, 255);
+            {
+                int grey = 180 + (int)(75 * sample);
+                return Color.FromArgb(Math.Min(255, alpha), grey, grey, grey);
+            }
+            if (String.Equals(theme, "Purple", StringComparison.OrdinalIgnoreCase))
+            {
+                int red = 139 + (int)(31 * sample);
+                int green = 124 + (int)(30 * sample);
+                return Color.FromArgb(Math.Min(255, alpha), red, green, 255);
+            }
+            if (String.Equals(theme, "Dark", StringComparison.OrdinalIgnoreCase))
+            {
+                int grey = 128 + (int)(72 * sample);
+                return Color.FromArgb(Math.Min(255, alpha), grey, grey, grey);
+            }
+            int fallback = 120 + (int)(60 * sample);
+            return Color.FromArgb(Math.Min(255, alpha), fallback, fallback, fallback);
         }
 
         private void Present(Bitmap bitmap)
@@ -2800,7 +3145,7 @@ namespace Flowtype
             page.Controls.Add(styleBox);
             page.Controls.Add(LabelAt("Voice capsule", 24, 208, 170, 24));
             ConfigureDropDown(overlayThemeBox, 210, 204, 230);
-            overlayThemeBox.Items.AddRange(new object[] { "Dark", "Light", "Mono (black & white)" });
+            overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Mono (black & white)", "Liquid glass" });
             page.Controls.Add(overlayThemeBox);
 
             ConfigureCheck(cleanupBox, "Smart cleanup (fillers, punctuation, lists)", 24, 254, 540);
@@ -3036,8 +3381,7 @@ namespace Flowtype
             suppressNonSpeechBox.Checked = value.SuppressNonSpeech;
             completionSoundBox.Checked = value.CompletionSound;
             insertNotifyBox.Checked = value.ShowInsertNotification;
-            overlayThemeBox.SelectedIndex = String.Equals(value.OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) ? 1 :
-                String.Equals(value.OverlayTheme, "Mono", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+            overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
             latencyLabel.Text = LatencyStats.Summary;
@@ -3072,7 +3416,7 @@ namespace Flowtype
             value.SuppressNonSpeech = suppressNonSpeechBox.Checked;
             value.CompletionSound = completionSoundBox.Checked;
             value.ShowInsertNotification = insertNotifyBox.Checked;
-            value.OverlayTheme = overlayThemeBox.SelectedIndex == 1 ? "Light" : overlayThemeBox.SelectedIndex == 2 ? "Mono" : "Dark";
+            value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
             value.ApiBaseUrl = apiUrlBox.Text.Trim();
@@ -3380,6 +3724,24 @@ namespace Flowtype
                 micTestTimer = null;
             }
             if (micTestRecorder.IsRecording || !String.IsNullOrWhiteSpace(micTestPath)) FinishMicTest();
+        }
+
+        private static int OverlayThemeToIndex(string overlayTheme)
+        {
+            if (String.Equals(overlayTheme, "Purple", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (String.Equals(overlayTheme, "Light", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (String.Equals(overlayTheme, "Mono", StringComparison.OrdinalIgnoreCase)) return 3;
+            if (String.Equals(overlayTheme, "Glass", StringComparison.OrdinalIgnoreCase)) return 4;
+            return 0;
+        }
+
+        private static string OverlayThemeFromIndex(int index)
+        {
+            if (index == 1) return "Purple";
+            if (index == 2) return "Light";
+            if (index == 3) return "Mono";
+            if (index == 4) return "Glass";
+            return "Dark";
         }
     }
 

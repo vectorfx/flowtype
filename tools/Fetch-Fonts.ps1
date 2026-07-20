@@ -4,19 +4,19 @@ New-Item -ItemType Directory -Force -Path $fontDir | Out-Null
 
 $fonts = @(
     @{
-        Name = 'SourceCodePro-Regular.ttf'
-        Url  = 'https://github.com/adobe-fonts/source-code-pro/raw/release/TTF/SourceCodePro-Regular.ttf'
+        Name = 'RobotoMono-Regular.ttf'
+        Url  = 'https://github.com/googlefonts/RobotoMono/raw/main/fonts/ttf/RobotoMono-Regular.ttf'
     },
     @{
-        Name = 'JetBrainsMono-Regular.ttf'
-        Url  = 'https://github.com/JetBrains/JetBrainsMono/raw/master/fonts/ttf/JetBrainsMono-Regular.ttf'
+        Name = 'RobotoMono-Bold.ttf'
+        Url  = 'https://github.com/googlefonts/RobotoMono/raw/main/fonts/ttf/RobotoMono-Bold.ttf'
     }
 )
 
 foreach ($font in $fonts) {
     $target = Join-Path $fontDir $font.Name
     if (-not (Test-Path -LiteralPath $target) -or (Get-Item $target).Length -lt 50000) {
-        Invoke-WebRequest -Uri $font.Url -OutFile $target -UseBasicParsing
+        curl.exe -fsSL -o $target $font.Url
     }
     Write-Host "Font ready: $target"
 }

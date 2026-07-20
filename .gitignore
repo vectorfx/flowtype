@@ -1,5 +1,6 @@
 # Build output
 Flowtype.exe
+src/EmbeddedAudio.g.cs
 *.pdb
 *.user
 *.suo
@@ -47,6 +48,11 @@ tests/temp/
 *.wav
 !tests/fixtures/*.wav
 !assets/audio/*.wav
+
+# Unused font experiments (Roboto Mono is committed)
+assets/fonts/Sora-Variable.ttf
+assets/fonts/Roboto-Regular.ttf
+assets/fonts/Roboto-Bold.ttf
 
 # Python cache from icon build
 __pycache__/

@@ -16,10 +16,6 @@ jobs:
         shell: pwsh
         run: ./tools/Fetch-Fonts.ps1
 
-      - name: Generate recording cue
-        shell: pwsh
-        run: ./tools/Generate-RecordingCue.ps1
-
       - name: Build Flowtype
         shell: pwsh
         run: ./tools/Build-Flowtype.ps1
@@ -32,4 +28,4 @@ jobs:
         shell: pwsh
         run: |
           $version = [Diagnostics.FileVersionInfo]::GetVersionInfo('Flowtype.exe').FileVersion
-          if ($version -ne '1.3.6.0') { throw "Unexpected version: $version" }
+          if ($version -ne '1.3.16.0') { throw "Unexpected version: $version" }

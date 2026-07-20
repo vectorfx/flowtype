@@ -6,7 +6,18 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
-$version = '1.3.6'
+
+& (Join-Path $root 'tools\Fetch-Fonts.ps1')
+& (Join-Path $root 'tools\Build-Flowtype.ps1')
+
+$exePath = Join-Path $root 'Flowtype.exe'
+$fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exePath).FileVersion
+if ($fileVersion -match '^(\d+\.\d+\.\d+)\.\d+$') {
+    $version = $matches[1]
+} else {
+    $version = $fileVersion
+}
+
 $staging = Join-Path $dist "Flowtype-Windows-v$version-$Variant"
 
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
@@ -29,8 +40,7 @@ if ($Variant -eq 'Full') {
     if (Test-Path -LiteralPath $modelPath) { Remove-Item -LiteralPath $modelPath -Force }
 }
 
-& (Join-Path $root 'tools\Build-Flowtype.ps1')
-Copy-Item -LiteralPath (Join-Path $root 'Flowtype.exe') -Destination $staging -Force
+Copy-Item -LiteralPath $exePath -Destination $staging -Force
 
 Set-Content -LiteralPath (Join-Path $staging 'VERSION.txt') -Value "Flowtype $version ($Variant)" -Encoding UTF8
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
