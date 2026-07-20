@@ -9,75 +9,55 @@
 </p>
 
 <p align="center">
-  System-wide push-to-talk for Windows — built to feel instant, stay out of your way,<br>
-  and work in every app without an account, subscription, or 600 MB download.
+  A lightweight Windows tray app for system-wide push-to-talk dictation.<br>
+  Local by default. No account. No telemetry. Keys encrypted with Windows DPAPI.
 </p>
 
 <p align="center">
-  <a href="https://github.com/vectorfx/flowtype/releases/latest"><strong>Download v1.3.16</strong></a>
+  <a href="https://github.com/vectorfx/flowtype/releases/latest">Download latest release</a>
   ·
-  <a href="#what-makes-it-elite">Why it's different</a>
+  <a href="#specs">Specs</a>
   ·
   <a href="#quick-start">Quick start</a>
+  ·
+  <a href="#speech-engines">Engines</a>
   ·
   <a href="#privacy">Privacy</a>
 </p>
 
 ---
 
-## What makes it elite
+## Why Flowtype?
 
-Flowtype isn't a web widget glued onto your desktop. It's a native tray app engineered around one job: **get words into the field you're already in — fast, clean, and invisible.**
+Most dictation tools want a subscription, a cloud account, or a 600 MB model sitting on your disk. Flowtype is the opposite:
 
-**Speed you can feel**
-- Capsule appears on key-down, **gone the instant you release** — no lingering UI, no focus steal
-- Local engine **stays warm in memory** between dictations — repeat takes don't pay a cold-start penalty
-- **Rapid-fire dictation** — back-to-back phrases without dropped hotkeys or mic lockouts
-- Optional **turbo path** for long rants; optional **Groq** for cloud large-model accuracy when you want it
-
-**Works everywhere**
-- **System-wide** — Slack, email, browsers, Notion, VS Code, terminal, whatever has focus
-- **Click-through overlay** — live waveform meter that never blocks clicks or keyboard input
-- **Smart paste** — inserts into the focused field; falls back to clipboard if focus moved
-- **Context-aware cleanup** — adapts tone to the app you're in (email vs code vs chat)
-
-**Clean output, no LLM tax**
-- Built-in cleanup handles fillers, self-corrections, spoken punctuation, lists, and numbers — **offline, in milliseconds**
-- Custom **dictionary & snippets** plus a tray shortcut to fix the last misheard word in one click
-- Cloud polish (OpenAI, OpenRouter, Ollama) exists if you want it — **off by default**
-
-**Pro-grade polish**
-- Matte voice capsule themes (or liquid glass if you're feeling fancy)
-- Optional tactile audio cues — embedded in the app, not loaded from stale disk files
-- **Latency strip** on every dictation: record · transcribe · clean · total
-- Mic health meter + 3-second test so you diagnose quiet mics before blaming the engine
-- Failed dictation **recovery** folder when you need it
-
-**Private by design**
-- No Flowtype account. No telemetry server. No training on your voice.
-- API keys sealed with **Windows DPAPI** — per user, per machine
-- Successful recordings **deleted immediately**. History **off by default**.
-
-**Lean install**
-- Lands in `%LOCALAPPDATA%` — no admin, no registry circus
-- ~60 MB offline path or free cloud tier — not a half-gig "quality model" tax
-- Single focused codebase — one executable, one purpose, no Electron stack
-
-<p align="center"><em>Hold. Speak. Release. Back to work.</em></p>
+| | Flowtype |
+|---|---|
+| **Default mode** | Local whisper.cpp (~60 MB Instant model) — works offline |
+| **Install** | User folder (`%LOCALAPPDATA%`) — no admin, no registry drama |
+| **While dictating** | Tiny voice capsule at the bottom of the screen — click-through, hides the instant you release |
+| **After dictating** | Built-in cleanup (fillers, punctuation, lists) — no LLM required |
+| **Fast path** | Optional [Groq](https://console.groq.com) free tier for cloud `whisper-large-v3-turbo` |
 
 ---
 
-## Compared to the usual options
+## Specs
 
-| | Typical dictation app | Flowtype |
-|---|---|---|
-| **Account** | Required | None |
-| **Default path** | Cloud-only or huge local model | ~60 MB offline Instant, optional Groq |
-| **While recording** | Modal, focus steal, or floating bar | Click-through capsule, hides on release |
-| **Between takes** | Cold start or queue delay | Warm engine, rapid-fire ready |
-| **Cleanup** | LLM round-trip or nothing | Built-in offline rules (< few ms) |
-| **Install** | Admin MSI or store app | User folder, one bat file |
-| **Telemetry** | Usually yes | None |
+High-level — the stuff that matters day to day, without the implementation rabbit hole.
+
+| | |
+|---|---|
+| **Platform** | Windows 10 / 11 (x64) |
+| **Package** | Single native executable · tray-resident |
+| **Install size** | Lite ~15 MB · full offline stack ~60 MB |
+| **Capture** | Global push-to-talk · works in any app with focus |
+| **Overlay** | Click-through voice capsule · no focus steal |
+| **Speech** | Local whisper.cpp (default) · optional cloud ASR |
+| **Post-processing** | Built-in cleanup offline · LLM polish optional |
+| **Between takes** | Engine stays warm · rapid back-to-back dictation |
+| **Output** | Paste to focused field · clipboard fallback |
+| **Keys & settings** | Windows DPAPI · per-user `%APPDATA%` |
+| **Telemetry** | None · no Flowtype account |
 
 ---
 
