@@ -12,27 +12,6 @@ if (-not (Test-Path -LiteralPath $embedded)) {
 
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
-$assemblyNames = @(
-    'System',
-    'System.Core',
-    'System.Drawing',
-    'System.Windows.Forms',
-    'System.Net.Http',
-    'System.Web.Extensions',
-    'System.IO.Compression',
-    'System.IO.Compression.FileSystem',
-    'System.Security'
-)
-
-$references = foreach ($assemblyName in $assemblyNames) {
-    Add-Type -AssemblyName $assemblyName -ErrorAction Stop
-    $assembly = [AppDomain]::CurrentDomain.GetAssemblies() |
-        Where-Object { $_.GetName().Name -eq $assemblyName } |
-        Select-Object -First 1
-    $assembly.Location
-}
-$references = @($references | Select-Object -Unique)
-
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path -LiteralPath $framework)) {
     $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319'
@@ -60,7 +39,9 @@ $appDll = Join-Path $outputDir 'Flowtype.App.dll'
 & $csc /nologo /target:library /out:$appDll @appRefArgs $source $embedded
 if ($LASTEXITCODE -ne 0) { throw "Failed to compile Flowtype app sources." }
 
-Add-Type -TypeDefinition (Get-Content -Raw -LiteralPath $tests) -ReferencedAssemblies ($references + $appDll) -OutputAssembly $dll -OutputType Library
+$testRefArgs = @($appRefArgs) + @("/reference:$appDll")
+& $csc /nologo /target:library /out:$dll @testRefArgs $tests
+if ($LASTEXITCODE -ne 0) { throw "Failed to compile Flowtype tests." }
 
 Add-Type -Path $dll
 $runner = [Flowtype.Tests.TestRunner]::new()
