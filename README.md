@@ -9,66 +9,70 @@
 </p>
 
 <p align="center">
-  A lightweight Windows tray app for system-wide push-to-talk dictation.<br>
-  Local by default. No account. No telemetry. Keys encrypted with Windows DPAPI.
+  Native Windows push-to-talk — system-wide, offline-first, no account.<br>
+  One executable. ~60 MB full stack. Keys sealed with DPAPI.
 </p>
 
 <p align="center">
-  <a href="https://github.com/vectorfx/flowtype/releases/latest">Download latest release</a>
+  <a href="https://github.com/vectorfx/flowtype/releases/latest"><strong>Download</strong></a>
   ·
-  <a href="#specs">Specs</a>
+  <a href="#install">One-line install</a>
   ·
   <a href="#quick-start">Quick start</a>
-  ·
-  <a href="#speech-engines">Engines</a>
   ·
   <a href="#privacy">Privacy</a>
 </p>
 
 ---
 
-## Why Flowtype?
+## Overview
 
-Most dictation tools want a subscription, a cloud account, or a 600 MB model sitting on your disk. Flowtype is the opposite:
+Most dictation tools want a subscription, a cloud login, or a half-gig model before you say a word. Flowtype is built around speed and restraint: a tray-resident app that captures speech globally, cleans it locally, and pastes into whatever had focus — Slack, browser, IDE, terminal, all of it.
 
-| | Flowtype |
-|---|---|
-| **Default mode** | Local whisper.cpp (~60 MB Instant model) — works offline |
-| **Install** | User folder (`%LOCALAPPDATA%`) — no admin, no registry drama |
-| **While dictating** | Tiny voice capsule at the bottom of the screen — click-through, hides the instant you release |
-| **After dictating** | Built-in cleanup (fillers, punctuation, lists) — no LLM required |
-| **Fast path** | Optional [Groq](https://console.groq.com) free tier for cloud `whisper-large-v3-turbo` |
+Warm whisper.cpp between takes. Turbo path for long dictations. Built-in cleanup in milliseconds — fillers, punctuation, spoken numbers, lists — without routing every sentence through an LLM. Context-aware writing rules when tone should match the app you're in. Click-through voice capsule with matte themes or liquid glass. Smart paste with clipboard fallback. Latency strip on every take. Mic health diagnostics. Tray shortcut to fix the last misheard word. Recovery when something goes sideways.
+
+Optional [Groq](https://console.groq.com) or OpenAI for cloud ASR. Optional LLM polish. Both off unless you turn them on.
 
 ---
 
 ## Specs
 
-High-level — the stuff that matters day to day, without the implementation rabbit hole.
-
 | | |
 |---|---|
 | **Platform** | Windows 10 / 11 (x64) |
-| **Package** | Single native executable · tray-resident |
-| **Install size** | Lite ~15 MB · full offline stack ~60 MB |
-| **Capture** | Global push-to-talk · works in any app with focus |
-| **Overlay** | Click-through voice capsule · no focus steal |
-| **Speech** | Local whisper.cpp (default) · optional cloud ASR |
-| **Post-processing** | Built-in cleanup offline · LLM polish optional |
-| **Between takes** | Engine stays warm · rapid back-to-back dictation |
-| **Output** | Paste to focused field · clipboard fallback |
-| **Keys & settings** | Windows DPAPI · per-user `%APPDATA%` |
-| **Telemetry** | None · no Flowtype account |
+| **Install** | User folder · no admin · ~15 MB Lite / ~60 MB offline |
+| **Capture** | Global push-to-talk · any focused field |
+| **Overlay** | Animated click-through capsule · no focus steal |
+| **Speech** | Local whisper.cpp · Groq / OpenAI optional |
+| **Output** | Smart paste · offline cleanup · LLM polish optional |
+| **Privacy** | No account · no telemetry · DPAPI keys |
+
+---
+
+## Install
+
+Open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/vectorfx/flowtype/main/install.ps1 | iex
+```
+
+Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds shortcuts, and starts the app.
 
 ---
 
 ## Quick start
 
+**One-line:** see [Install](#install) above.
+
+**Manual:**
+
 1. **Download** the latest **Lite** or **Full** ZIP from [Releases](https://github.com/vectorfx/flowtype/releases).
    - **Lite** (~15 MB) — downloads the speech model on first local use
    - **Full** (~58 MB) — Instant model bundled, offline immediately
-2. **Extract** the ZIP to a normal folder (not `Downloads` directly — use `Flowtype\`).
+2. **Extract** to a normal folder (e.g. `Flowtype\`, not directly in `Downloads`).
 3. Run **`Install Flowtype.bat`**.
-4. Hold **`Win + Ctrl`** (default hotkey), speak, release. Text pastes into the focused field.
+4. Hold **`Win + Ctrl`**, speak, release.
 
 > **First run:** Local mode needs no API key. For Groq, paste a free key under Settings → Cloud engines.
 
@@ -87,66 +91,55 @@ High-level — the stuff that matters day to day, without the implementation rab
 
 ---
 
-## Voice capsule themes
+## Voice capsule
 
-Pick **Settings → General → Voice capsule**:
+**Settings → General → Voice capsule**
 
-| Theme | Description |
+| Theme | |
 |---|---|
-| **Dark** *(default)* | Matte near-black pill, pro zinc borders, grey waveform |
-| **Dark purple** | Matte purple capsule, purple waveform |
-| **Light** | Clean white capsule for bright desktops |
+| **Dark** *(default)* | Matte near-black, zinc borders |
+| **Dark purple** | Matte purple |
+| **Light** | Clean white |
 | **Mono** | High-contrast black & white |
-| **Liquid glass** | Frosted live-desktop glass (experimental) |
+| **Liquid glass** | Live-desktop glass |
 
-Audio cues on start/finish are optional — toggle **Sound effects on start and finish** in Settings.
+Optional embedded audio cues on start and finish.
 
 ---
 
 ## Speech engines
 
-| Engine | Best for | Notes |
+| Engine | | |
 |---|---|---|
-| **Local** *(default)* | Privacy, offline | Instant model (~60 MB). Warm server stays loaded between dictations. |
-| **Groq** | Speed + accuracy online | Free API tier at [console.groq.com](https://console.groq.com). Model: `whisper-large-v3-turbo`. |
-| **OpenAI** | Your own OpenAI key | Optional; you pay OpenAI directly. |
+| **Local** *(default)* | Offline · warm server between takes |
+| **Groq** | Free tier · `whisper-large-v3-turbo` |
+| **OpenAI** | Bring your own key |
 
-### Groq setup (recommended cloud option)
+### Groq setup
 
-1. Create an account at [console.groq.com](https://console.groq.com).
-2. **API Keys** → **Create API Key**.
-3. Flowtype **Settings → General** → Speech engine: **Groq**.
-4. **Cloud engines** tab → paste key. Model: `whisper-large-v3-turbo`.
-5. Keep cleanup on **Built-in rules** for speed.
+1. [console.groq.com](https://console.groq.com) → **API Keys** → **Create API Key**
+2. Settings → **Groq** → paste key under **Cloud engines**
+3. Keep cleanup on **Built-in rules**
 
-Audio goes to Groq for transcription only. Cleanup stays local unless you choose a cloud cleanup engine.
+Audio goes to Groq for transcription only unless you opt into cloud cleanup.
 
 ---
 
 ## When is AI used?
 
-| Path | What runs |
+| Path | |
 |---|---|
-| Local speech + built-in cleanup **(default)** | ASR model only — no ChatGPT-style rewrite |
+| Local + built-in cleanup **(default)** | ASR only |
 | Groq / OpenAI speech | Cloud transcription |
-| OpenRouter / OpenAI / Ollama cleanup | Optional LLM polish (off by default) |
+| OpenRouter / OpenAI / Ollama cleanup | Optional polish — off by default |
 
 ---
 
-## Settings worth knowing
+## Settings
 
-**General → Performance**
+**Performance** — turbo path · mic boost · mic health test · latency strip
 
-- **Fast mode** — quicker on long dictations (skips expensive word timestamps)
-- **Microphone boost** — software gain for quiet mics
-- **Microphone health** — live meter + **Test 3s**
-- **Latency strip** — last dictation: record · transcribe · clean · total (ms)
-
-**General → Writing**
-
-- **Smart cleanup** — fillers, punctuation, spoken numbers
-- **Adapt cleanup to active app** — e.g. code vs email tone
-- **Dictionary & snippets** — custom words and expansions
+**Writing** — smart cleanup · context-aware rules · dictionary & snippets
 
 ---
 
@@ -172,7 +165,7 @@ cd flowtype
 ./tests/Run-Tests.ps1
 ```
 
-Output: `Flowtype.exe` in the repo root. Audio cues and fonts are embedded at build time from `assets/audio/` and `assets/fonts/`.
+Output: `Flowtype.exe` in the repo root. Audio cues and fonts are embedded at build time.
 
 ---
 
@@ -180,12 +173,12 @@ Output: `Flowtype.exe` in the repo root. Audio cues and fonts are embedded at bu
 
 ```
 flowtype/
-├── src/Flowtype.cs          # Single-file app (~4k lines)
+├── src/Flowtype.cs          # Single-file app
+├── install.ps1              # One-line installer script
 ├── assets/                  # Icon, fonts, audio cues
 ├── tools/                   # Build, package, font fetch
 ├── installer/               # Install-Flowtype.ps1
-├── tests/Run-Tests.ps1      # Offline unit tests
-└── .github/workflows/       # CI + release on tag
+└── tests/Run-Tests.ps1
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for internals.

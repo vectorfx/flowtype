@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.17
+
+- Voice capsule enter/exit animation — quick fade + slide, no focus steal
+- One-line PowerShell install: `irm …/install.ps1 | iex`
+- README sharpened — sauce without the recipe
+
+---
+
 ## 1.3.16
 
 **Recommended release.** Consolidates polish since 1.3.6 into one install.
@@ -32,4 +40,4 @@
 
 ## 1.3.6 and earlier
 
-See git history for incremental 1.3.0–1.3.6 release notes. Those tags remain on GitHub for reference; **use 1.3.16** for new installs.
+See git history for incremental 1.3.0–1.3.6 release notes. Those tags remain on GitHub for reference; **use 1.3.17** for new installs.

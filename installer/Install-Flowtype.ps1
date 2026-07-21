@@ -1,11 +1,24 @@
+param(
+    [switch]$Silent
+)
+
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
+if (-not $Silent) {
+    Add-Type -AssemblyName System.Windows.Forms
+}
 
 try {
     $source = Split-Path -Parent $PSScriptRoot
     $destination = Join-Path $env:LOCALAPPDATA 'Flowtype'
     $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
     $desktop = [Environment]::GetFolderPath('Desktop')
+    $versionFile = Join-Path $source 'VERSION.txt'
+    $versionLabel = if (Test-Path -LiteralPath $versionFile) {
+        (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    } else {
+        'Flowtype'
+    }
+    $expectedVersion = if ($versionLabel -match '(\d+\.\d+\.\d+)') { $matches[1] } else { $null }
 
     if (-not (Test-Path -LiteralPath (Join-Path $source 'src\Flowtype.cs'))) {
         throw 'Extract the entire Flowtype ZIP to a normal folder before running Install Flowtype.bat.'
@@ -41,8 +54,8 @@ try {
         throw 'Flowtype.exe is missing.'
     }
     $installedVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($outputExe).FileVersion
-    if ($installedVersion -notmatch '^1\.3\.16\.') {
-        throw "Expected Flowtype 1.3.16.x but found $installedVersion. Extract the new ZIP into an empty folder and retry."
+    if ($expectedVersion -and $installedVersion -notmatch ("^" + [regex]::Escape($expectedVersion) + "\.")) {
+        throw "Expected Flowtype $expectedVersion.x but found $installedVersion. Extract the new ZIP into an empty folder and retry."
     }
 
     $shell = New-Object -ComObject WScript.Shell
@@ -81,15 +94,22 @@ try {
         throw 'The new Flowtype process exited during startup. The old copy may still be running; restart Windows once, then run this installer again.'
     }
 
-    [Windows.Forms.MessageBox]::Show(
-        "Flowtype 1.3.16 is installed and the new executable is running.`r`n`r`nHold Win + Ctrl together to dictate anywhere.",
-        'Flowtype 1.3.16 installed',
-        [Windows.Forms.MessageBoxButtons]::OK,
-        [Windows.Forms.MessageBoxIcon]::Information
-    ) | Out-Null
+    $successMessage = "$versionLabel is installed and running.`r`n`r`nHold Win + Ctrl together to dictate anywhere."
+    if ($Silent) {
+        Write-Host $successMessage
+    } else {
+        [Windows.Forms.MessageBox]::Show(
+            $successMessage,
+            "$versionLabel installed",
+            [Windows.Forms.MessageBoxButtons]::OK,
+            [Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    }
 }
 catch {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-    [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Flowtype install failed', 'OK', 'Error') | Out-Null
-    exit 1
+    if (-not $Silent) {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Flowtype install failed', 'OK', 'Error') | Out-Null
+    }
+    throw
 }

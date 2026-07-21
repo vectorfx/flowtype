@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.16.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.16.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.17.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.17.0")]
 
 namespace Flowtype
 {
@@ -1527,7 +1527,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
             return client;
         }
 
@@ -1658,7 +1658,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1788,7 +1788,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
             boundKey = key;
             return client;
         }
@@ -2257,7 +2257,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.16");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2365,6 +2365,11 @@ namespace Flowtype
         private string theme = "Dark";
         private Bitmap glassBackdrop;
         private Point glassBackdropOffset;
+        private float revealProgress = 1f;
+        private bool exiting;
+        private readonly Stopwatch revealClock = new Stopwatch();
+        private const int RevealInMs = 130;
+        private const int RevealOutMs = 100;
         public event Action MaximumDurationReached;
 
         public void SetTheme(string value)
@@ -2383,6 +2388,7 @@ namespace Flowtype
             timer.Interval = 32;
             timer.Tick += delegate
             {
+                UpdateRevealAnimation();
                 level *= 0.84f;
                 for (int index = 0; index < bands.Length; index++) bands[index] *= 0.82f;
                 animationTick++;
@@ -2442,6 +2448,9 @@ namespace Flowtype
             animationTick = 0;
             elapsed.Restart();
             maxRaised = false;
+            exiting = false;
+            revealProgress = 0f;
+            revealClock.Restart();
             timer.Start();
             PositionOverlay();
             if (IsGlassTheme()) CaptureGlassBackdrop();
@@ -2457,9 +2466,46 @@ namespace Flowtype
 
         public void HideNow()
         {
-            timer.Stop();
             elapsed.Reset();
+            maxRaised = false;
+            if (!Visible) return;
+            if (exiting) return;
+            exiting = true;
+            revealClock.Restart();
+            if (!timer.Enabled) timer.Start();
+        }
+
+        private static float EaseOutCubic(float value)
+        {
+            float inverse = 1f - value;
+            return 1f - inverse * inverse * inverse;
+        }
+
+        private static float EaseInQuad(float value)
+        {
+            return value * value;
+        }
+
+        private void UpdateRevealAnimation()
+        {
+            if (exiting)
+            {
+                float step = Math.Min(1f, revealClock.ElapsedMilliseconds / (float)RevealOutMs);
+                revealProgress = 1f - EaseInQuad(step);
+                if (step >= 1f) FinishHide();
+                return;
+            }
+            if (revealProgress >= 1f) return;
+            float enterStep = Math.Min(1f, revealClock.ElapsedMilliseconds / (float)RevealInMs);
+            revealProgress = EaseOutCubic(enterStep);
+        }
+
+        private void FinishHide()
+        {
+            timer.Stop();
             ReleaseGlassBackdrop();
+            exiting = false;
+            revealProgress = 1f;
             Hide();
         }
 
@@ -2605,6 +2651,9 @@ namespace Flowtype
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
+                float slideY = (1f - revealProgress) * (exiting ? 4f : 5f);
+                graphics.TranslateTransform(0f, slideY);
+
                 RectangleF capsule = GetCapsuleBounds();
 
                 if (IsGlassTheme())
@@ -2638,6 +2687,7 @@ namespace Flowtype
                     }
                 }
 
+                graphics.ResetTransform();
                 Present(bitmap);
             }
         }
@@ -2898,7 +2948,7 @@ namespace Flowtype
                 NativeSize size = new NativeSize(Width, Height);
                 BlendFunction blend = new BlendFunction();
                 blend.BlendOp = 0;
-                blend.SourceConstantAlpha = 255;
+                blend.SourceConstantAlpha = (byte)Math.Max(0, Math.Min(255, (int)(255f * revealProgress + 0.5f)));
                 blend.AlphaFormat = SourceAlpha;
                 UpdateLayeredWindow(Handle, screenDc, ref destination, ref size, memoryDc, ref source, 0, ref blend, LayeredAlpha);
             }
