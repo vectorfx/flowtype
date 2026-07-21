@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.18
+
+- Fix voice capsule stuck on rapid-fire dictation (overlay session tracking + idle cleanup)
+- Fix rare recording crash on loud audio peaks (`Math.Abs` overflow on 16-bit samples)
+
+---
+
 ## 1.3.17
 
 - Voice capsule enter/exit animation — quick fade + slide, no focus steal
@@ -40,4 +47,4 @@
 
 ## 1.3.6 and earlier
 
-See git history for incremental 1.3.0–1.3.6 release notes. Those tags remain on GitHub for reference; **use 1.3.17** for new installs.
+See git history for incremental 1.3.0–1.3.6 release notes. Those tags remain on GitHub for reference; **use 1.3.18** for new installs.

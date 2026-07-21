@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.17.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.17.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.18.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.18.0")]
 
 namespace Flowtype
 {
@@ -1054,6 +1054,12 @@ namespace Flowtype
             }
         }
 
+        private static int AbsPcmSample(short sample)
+        {
+            int value = sample;
+            return value == short.MinValue ? 32768 : Math.Abs(value);
+        }
+
         private static void WriteWave(string pcmPath, string outputPath, float micGain)
         {
             byte[] pcm = File.ReadAllBytes(pcmPath);
@@ -1062,7 +1068,7 @@ namespace Flowtype
                 int peak = 1;
                 for (int index = 0; index + 1 < pcm.Length; index += 2)
                 {
-                    int sample = Math.Abs((short)(pcm[index] | (pcm[index + 1] << 8)));
+                    int sample = AbsPcmSample((short)(pcm[index] | (pcm[index + 1] << 8)));
                     if (sample > peak) peak = sample;
                 }
                 float target = 24000f;
@@ -1527,7 +1533,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.18");
             return client;
         }
 
@@ -1658,7 +1664,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.18");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1788,7 +1794,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.18");
             boundKey = key;
             return client;
         }
@@ -2257,7 +2263,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.17");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.18");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2367,6 +2373,8 @@ namespace Flowtype
         private Point glassBackdropOffset;
         private float revealProgress = 1f;
         private bool exiting;
+        private int overlaySession;
+        private int pendingHideSession;
         private readonly Stopwatch revealClock = new Stopwatch();
         private const int RevealInMs = 130;
         private const int RevealOutMs = 100;
@@ -2442,6 +2450,7 @@ namespace Flowtype
 
         public void ShowRecording(string hotkey, string overlayTheme)
         {
+            overlaySession++;
             SetTheme(overlayTheme);
             level = 0;
             Array.Clear(bands, 0, bands.Length);
@@ -2468,11 +2477,20 @@ namespace Flowtype
         {
             elapsed.Reset();
             maxRaised = false;
-            if (!Visible) return;
-            if (exiting) return;
+            pendingHideSession = overlaySession;
             exiting = true;
             revealClock.Restart();
-            if (!timer.Enabled) timer.Start();
+            timer.Start();
+            if (!Visible) Visible = true;
+            RenderLayered();
+        }
+
+        public void EnsureHidden()
+        {
+            if (exiting) return;
+            if (!Visible) return;
+            overlaySession++;
+            FinishHideImmediate();
         }
 
         private static float EaseOutCubic(float value)
@@ -2490,9 +2508,15 @@ namespace Flowtype
         {
             if (exiting)
             {
+                if (pendingHideSession != overlaySession)
+                {
+                    exiting = false;
+                    return;
+                }
                 float step = Math.Min(1f, revealClock.ElapsedMilliseconds / (float)RevealOutMs);
                 revealProgress = 1f - EaseInQuad(step);
-                if (step >= 1f) FinishHide();
+                if (step >= 1f || revealClock.ElapsedMilliseconds > RevealOutMs + 150)
+                    FinishHide();
                 return;
             }
             if (revealProgress >= 1f) return;
@@ -2501,6 +2525,12 @@ namespace Flowtype
         }
 
         private void FinishHide()
+        {
+            if (!exiting || pendingHideSession != overlaySession) return;
+            FinishHideImmediate();
+        }
+
+        private void FinishHideImmediate()
         {
             timer.Stop();
             ReleaseGlassBackdrop();
@@ -4132,6 +4162,7 @@ namespace Flowtype
         private void StartRecording()
         {
             if (shuttingDown || recorder.IsRecording) return;
+            if (!hotkeyDown) return;
             if (processing) dictationGeneration++;
             try
             {
@@ -4192,7 +4223,11 @@ namespace Flowtype
 
         private void StopRecording()
         {
-            if (!recorder.IsRecording) return;
+            if (!recorder.IsRecording)
+            {
+                overlay.EnsureHidden();
+                return;
+            }
             try
             {
                 // The capsule represents physical key-down only. Hide before
@@ -4348,6 +4383,7 @@ namespace Flowtype
         {
             statusItem.Text = "Ready — hold " + settings.Hotkey;
             tray.Text = "Flowtype — hold " + settings.Hotkey + " to dictate";
+            if (!recorder.IsRecording) overlay.EnsureHidden();
         }
 
         private void UpdateDictionaryFixItem()
