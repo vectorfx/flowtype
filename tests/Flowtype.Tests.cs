@@ -11,6 +11,11 @@ namespace Flowtype.Tests
             int failures = 0;
             failures += AssertEqual("self correction", "I want pizza no I want pasta.", TextProcessor.Clean("I want pizza no I want pasta.", AppSettings.Defaults()));
             failures += AssertEqual("repeated words", "The cat.", TextProcessor.Clean("the the cat", AppSettings.Defaults()));
+            failures += AssertEqual("fuzzy dictionary", "Open Settings.", FuzzySettingsTest());
+            failures += AssertEqual("whisper repeat", "The team shipped the feature yesterday.",
+                TextProcessor.Clean("The team shipped the feature yesterday. The team shipped the feature yesterday. The team shipped the feature yesterday.", AppSettings.Defaults()));
+            failures += AssertTrue(TranscriptionQuality.ShouldReject("T", 500, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("no", 500, 12000));
             failures += AssertContains("1.", TextProcessor.Clean("first get milk second get bread third get eggs", AppSettings.Defaults()));
             failures += AssertContains("- ", TextProcessor.Clean("bullet point apples bullet point bananas bullet point cherries", AppSettings.Defaults()));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
@@ -25,6 +30,14 @@ namespace Flowtype.Tests
             repaired.Repair();
             failures += AssertEqual("openrouter free blocked", "BuiltIn", repaired.CleanupProvider);
             return failures;
+        }
+
+        private static string FuzzySettingsTest()
+        {
+            AppSettings settings = AppSettings.Defaults();
+            ForegroundInfo context = new ForegroundInfo();
+            context.Title = "Cursor Settings";
+            return TextProcessor.Clean("open setsings", settings, context);
         }
 
         private static int AssertEqual(string name, string expected, string actual)

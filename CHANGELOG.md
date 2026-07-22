@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.20
+
+- Fix loud speech failing or garbling (double mic-gain bug + soft limiter instead of hard clipping)
+- Strip Whisper repetition loops from longer dictations (duplicate sentences and trailing phrase echoes)
+
+---
+
+## 1.3.19
+
+- Fix truncated recordings producing single-letter output (immediate mic start, 180 ms release tail, stable chord poller)
+- Reject garbled Whisper hallucinations instead of inserting them
+- Fuzzy spell correction from dictionary, snippets, and active window title
+
+---
+
 ## 1.3.18
 
 - Fix voice capsule stuck on rapid-fire dictation (overlay session tracking + idle cleanup)

@@ -1039,6 +1039,23 @@ namespace Flowtype
             try { if (!String.IsNullOrWhiteSpace(path) && File.Exists(path)) File.Delete(path); } catch { }
         }
 
+        private static int SoftLimitSample(int sample)
+        {
+            const int threshold = 26000;
+            const int ceiling = 32767;
+            if (sample > threshold)
+            {
+                int excess = sample - threshold;
+                return Math.Min(ceiling, threshold + excess / 3);
+            }
+            if (sample < -threshold)
+            {
+                int excess = sample + threshold;
+                return Math.Max(-ceiling, -threshold + excess / 3);
+            }
+            return sample;
+        }
+
         private void ApplyGainInPlace(byte[] data)
         {
             float gain = MicGain <= 0 ? 1f : MicGain;
@@ -1046,9 +1063,7 @@ namespace Flowtype
             for (int index = 0; index + 1 < data.Length; index += 2)
             {
                 int sample = (short)(data[index] | (data[index + 1] << 8));
-                int amplified = (int)Math.Round(sample * gain);
-                if (amplified > 32767) amplified = 32767;
-                if (amplified < -32768) amplified = -32768;
+                int amplified = SoftLimitSample((int)Math.Round(sample * gain));
                 data[index] = (byte)(amplified & 0xFF);
                 data[index + 1] = (byte)((amplified >> 8) & 0xFF);
             }
@@ -1073,16 +1088,18 @@ namespace Flowtype
                 }
                 float target = 24000f;
                 float normalize = peak < 1200 ? Math.Min(3.5f, target / peak) : Math.Min(2.2f, target / peak);
-                float totalGain = (micGain <= 0 ? 1f : micGain) * normalize;
+                // pcm already includes MicGain from ApplyGainInPlace — do not apply it again here.
+                // When the input is already loud, never boost; soft-limit instead of hard-clipping.
+                if (peak >= 28000) normalize = Math.Min(1f, target / peak);
+                else if (peak >= 20000) normalize = Math.Min(1f, normalize);
+                float totalGain = normalize;
                 if (totalGain > 4.5f) totalGain = 4.5f;
                 if (Math.Abs(totalGain - 1f) > 0.02f)
                 {
                     for (int index = 0; index + 1 < pcm.Length; index += 2)
                     {
                         int sample = (short)(pcm[index] | (pcm[index + 1] << 8));
-                        int amplified = (int)Math.Round(sample * totalGain);
-                        if (amplified > 32767) amplified = 32767;
-                        if (amplified < -32768) amplified = -32768;
+                        int amplified = SoftLimitSample((int)Math.Round(sample * totalGain));
                         pcm[index] = (byte)(amplified & 0xFF);
                         pcm[index + 1] = (byte)((amplified >> 8) & 0xFF);
                     }
@@ -1122,6 +1139,30 @@ namespace Flowtype
         public void Dispose()
         {
             try { if (recording) Cancel(); } catch { }
+        }
+    }
+
+    public static class TranscriptionQuality
+    {
+        private static readonly HashSet<string> AllowedShortOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "a", "i", "ok", "no", "go", "hi", "hey", "yes", "yeah", "yep", "nope", "oh", "ah", "um"
+        };
+
+        public static bool ShouldReject(string raw, long recordMs, long audioBytes)
+        {
+            if (String.IsNullOrWhiteSpace(raw)) return true;
+            string text = raw.Trim();
+            if (text.Length == 0) return true;
+            if (AllowedShortOutputs.Contains(text)) return false;
+
+            // Whisper often hallucinates a lone letter when the clip was cut short.
+            if (text.Length == 1 && recordMs >= 250) return true;
+
+            // A multi-syllable clip that only produced 1-2 characters is almost always garbage.
+            if (text.Length <= 2 && recordMs >= 350 && audioBytes >= 8000) return true;
+
+            return false;
         }
     }
 
@@ -1170,6 +1211,8 @@ namespace Flowtype
                     text = Regex.Replace(text, @"\b" + Regex.Escape(map[0]) + @"\b", delegate { return map[1]; }, RegexOptions.IgnoreCase);
             }
 
+            text = ApplyFuzzyDictionary(text, settings, context);
+
             text = ApplyBacktrack(text);
 
             if (!String.Equals(settings.Style, "Verbatim", StringComparison.OrdinalIgnoreCase))
@@ -1181,6 +1224,7 @@ namespace Flowtype
             }
             text = Regex.Replace(text, @"\b(\w+)\s+\1\b", "$1", RegexOptions.IgnoreCase);
             text = RemoveRepeatedPhrases(text);
+            text = RemoveWhisperRepetitions(text);
             text = Regex.Replace(text,
                 @"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*,?\s*(?:no|sorry|actually|I mean)\s*,?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\b",
                 "$2", RegexOptions.IgnoreCase);
@@ -1373,6 +1417,110 @@ namespace Flowtype
                 RegexOptions.IgnoreCase);
         }
 
+        private static string ApplyFuzzyDictionary(string text, AppSettings settings, ForegroundInfo context)
+        {
+            List<string> terms = CollectCanonicalTerms(settings, context);
+            if (terms.Count == 0) return text;
+            return Regex.Replace(text, @"\b[A-Za-z][A-Za-z'-]{2,}\b", delegate(Match match)
+            {
+                string word = match.Value;
+                if (terms.Exists(value => String.Equals(value, word, StringComparison.OrdinalIgnoreCase))) return word;
+                string best = null;
+                int bestDistance = int.MaxValue;
+                int tieCount = 0;
+                foreach (string term in terms)
+                {
+                    if (Math.Abs(term.Length - word.Length) > 2) continue;
+                    int distance = LevenshteinDistance(word, term);
+                    int maxDistance = term.Length <= 5 ? 1 : 2;
+                    if (distance <= 0 || distance > maxDistance) continue;
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = term;
+                        tieCount = 1;
+                    }
+                    else if (distance == bestDistance)
+                    {
+                        tieCount++;
+                    }
+                }
+                return best != null && tieCount == 1 ? PreserveCase(word, best) : word;
+            });
+        }
+
+        private static List<string> CollectCanonicalTerms(AppSettings settings, ForegroundInfo context)
+        {
+            List<string> terms = new List<string>();
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Action<string> add = delegate(string value)
+            {
+                if (String.IsNullOrWhiteSpace(value)) return;
+                value = value.Trim();
+                if (value.Length < 4 || seen.Contains(value)) return;
+                seen.Add(value);
+                terms.Add(value);
+            };
+            if (settings != null)
+            {
+                foreach (string entry in settings.Dictionary)
+                {
+                    string[] map = Regex.Split(entry ?? "", @"\s*(?:=>|=)\s*", RegexOptions.None);
+                    if (map.Length == 2)
+                    {
+                        add(map[1]);
+                        add(map[0]);
+                    }
+                    else add(entry);
+                }
+                foreach (KeyValuePair<string, string> snippet in settings.Snippets)
+                {
+                    add(snippet.Key);
+                    add(snippet.Value);
+                }
+            }
+            if (context != null && !String.IsNullOrWhiteSpace(context.Title))
+            {
+                foreach (Match token in Regex.Matches(context.Title, @"\b[A-Za-z][A-Za-z'-]{3,}\b"))
+                    add(token.Value);
+            }
+            return terms;
+        }
+
+        private static string PreserveCase(string original, string replacement)
+        {
+            if (String.IsNullOrEmpty(original) || String.IsNullOrEmpty(replacement)) return replacement;
+            if (Char.IsUpper(original[0]))
+            {
+                if (original.Length > 1 && Char.IsUpper(original[1])) return replacement.ToUpperInvariant();
+                return Char.ToUpperInvariant(replacement[0]) + (replacement.Length > 1 ? replacement.Substring(1) : "");
+            }
+            return replacement;
+        }
+
+        private static int LevenshteinDistance(string left, string right)
+        {
+            if (String.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return 0;
+            int rows = left.Length + 1;
+            int cols = right.Length + 1;
+            int[] previous = new int[cols];
+            int[] current = new int[cols];
+            for (int col = 0; col < cols; col++) previous[col] = col;
+            for (int row = 1; row < rows; row++)
+            {
+                current[0] = row;
+                for (int col = 1; col < cols; col++)
+                {
+                    int cost = Char.ToLowerInvariant(left[row - 1]) == Char.ToLowerInvariant(right[col - 1]) ? 0 : 1;
+                    current[col] = Math.Min(Math.Min(current[col - 1] + 1, previous[col] + 1), previous[col - 1] + cost);
+                }
+                int[] swap = previous;
+                previous = current;
+                current = swap;
+            }
+            return previous[cols - 1];
+        }
+
         private static string ApplyBacktrack(string text)
         {
             string valuePattern = @"(?:\d{1,4}(?::\d{2})?(?:\s*(?:a\.?m\.?|p\.?m\.?))?|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|today|tomorrow|morning|afternoon|evening)";
@@ -1397,6 +1545,28 @@ namespace Flowtype
                 string next = Regex.Replace(text,
                     @"\b(?<phrase>[A-Za-z0-9']+(?:\s+[A-Za-z0-9']+){0,3})\s*[,]?\s+\k<phrase>\b",
                     "${phrase}", RegexOptions.IgnoreCase);
+                if (String.Equals(next, text, StringComparison.Ordinal)) break;
+                text = next;
+            }
+            return text;
+        }
+
+        private static string RemoveWhisperRepetitions(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text) || text.Length < 40) return text;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                string next = Regex.Replace(text,
+                    @"([^.!?\n""']{12,}[.!?]+)\s+\1+",
+                    "$1", RegexOptions.IgnoreCase);
+                if (String.Equals(next, text, StringComparison.Ordinal)) break;
+                text = next;
+            }
+            for (int pass = 0; pass < 2; pass++)
+            {
+                string next = Regex.Replace(text,
+                    @"(\b[A-Za-z0-9']+(?:\s+[A-Za-z0-9']+){2,8})\s*(?:\1\s*)+$",
+                    "$1", RegexOptions.IgnoreCase);
                 if (String.Equals(next, text, StringComparison.Ordinal)) break;
                 text = next;
             }
@@ -3934,7 +4104,10 @@ namespace Flowtype
         private DateTime hotkeyDownSince = DateTime.MinValue;
         private DateTime lastHotkeyRelease = DateTime.MinValue;
         private System.Windows.Forms.Timer pendingStartTimer;
+        private System.Windows.Forms.Timer pendingStopTimer;
+        private int chordReleaseStreak;
         private const int MinChordHoldMs = 45;
+        private const int ReleaseGraceMs = 180;
         private SettingsForm settingsForm;
         private HistoryForm historyForm;
 
@@ -3969,11 +4142,27 @@ namespace Flowtype
             {
                 if (!Hotkeys.IsChord(settings.Hotkey)) return;
                 bool down = NativeKeyState.IsWinCtrlDown();
-                if (down == chordPolledDown) return;
+                // Backup start when the low-level hook missed key-down.
+                if (down && !hotkeyDown)
+                {
+                    chordReleaseStreak = 0;
+                    chordPolledDown = true;
+                    OnHotkeyChanged(true);
+                    return;
+                }
+                // Backup stop only after release is stable — a single 20 ms poll flicker
+                // used to cut recordings short and produce single-letter Whisper output.
+                if (!down && hotkeyDown)
+                {
+                    chordReleaseStreak++;
+                    if (chordReleaseStreak < 3) return;
+                    chordReleaseStreak = 0;
+                    chordPolledDown = false;
+                    OnHotkeyChanged(false);
+                    return;
+                }
+                chordReleaseStreak = 0;
                 chordPolledDown = down;
-                if (down && hotkeyDown) return;
-                if (!down && !hotkeyDown) return;
-                OnHotkeyChanged(down);
             };
             chordPoller.Start();
             activationPoller = new System.Windows.Forms.Timer();
@@ -4117,23 +4306,10 @@ namespace Flowtype
                 if (hotkeyDown) return;
                 hotkeyDown = true;
                 hotkeyDownSince = DateTime.UtcNow;
-                if (Hotkeys.IsChord(settings.Hotkey))
-                {
-                    CancelPendingStart();
-                    pendingStartTimer = new System.Windows.Forms.Timer();
-                    pendingStartTimer.Interval = MinChordHoldMs;
-                    pendingStartTimer.Tick += delegate
-                    {
-                        pendingStartTimer.Stop();
-                        if (!hotkeyDown || recorder.IsRecording) return;
-                        try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
-                    };
-                    pendingStartTimer.Start();
-                }
-                else
-                {
-                    try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
-                }
+                CancelPendingStop();
+                CancelPendingStart();
+                // Start immediately so leading syllables are not lost to a start debounce.
+                try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
             }
             else
             {
@@ -4141,7 +4317,7 @@ namespace Flowtype
                 hotkeyDown = false;
                 lastHotkeyRelease = DateTime.UtcNow;
                 CancelPendingStart();
-                try { dispatcher.BeginInvoke(new Action(StopRecording)); } catch { }
+                ScheduleStopRecording();
             }
         }
 
@@ -4151,6 +4327,28 @@ namespace Flowtype
             pendingStartTimer.Stop();
             pendingStartTimer.Dispose();
             pendingStartTimer = null;
+        }
+
+        private void ScheduleStopRecording()
+        {
+            CancelPendingStop();
+            pendingStopTimer = new System.Windows.Forms.Timer();
+            pendingStopTimer.Interval = ReleaseGraceMs;
+            pendingStopTimer.Tick += delegate
+            {
+                pendingStopTimer.Stop();
+                if (hotkeyDown) return;
+                try { dispatcher.BeginInvoke(new Action(StopRecording)); } catch { }
+            };
+            pendingStopTimer.Start();
+        }
+
+        private void CancelPendingStop()
+        {
+            if (pendingStopTimer == null) return;
+            pendingStopTimer.Stop();
+            pendingStopTimer.Dispose();
+            pendingStopTimer = null;
         }
 
         private void ToggleRecording()
@@ -4239,7 +4437,7 @@ namespace Flowtype
                 string path = recorder.Stop();
                 toggleItem.Text = "Start dictating";
                 FileInfo file = new FileInfo(path);
-                if (!file.Exists || file.Length < 5000)
+                if (recordMs < MinChordHoldMs || !file.Exists || file.Length < 5000)
                 {
                     TryDelete(path);
                     overlay.HideNow();
@@ -4286,6 +4484,10 @@ namespace Flowtype
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
                 if (generation != dictationGeneration) return;
                 raw = transcript.Text;
+
+                FileInfo audioInfo = new FileInfo(path);
+                if (TranscriptionQuality.ShouldReject(raw, recordMs, audioInfo.Exists ? audioInfo.Length : 0))
+                    throw new InvalidOperationException("Speech was too unclear to insert. Hold the hotkey a moment longer and try again.");
 
                 string finalText = raw;
                 if (settings.CleanupEnabled)
