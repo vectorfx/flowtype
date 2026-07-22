@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.21
+
+- Fix Whisper echoing "Target window" prompt garbage into dictation output
+- Fix Win+Ctrl capsule not appearing when key release beat async recording start
+- Stop carrying STT prompt across entire decode (major hallucination trigger)
+
+---
+
 ## 1.3.20
 
 - Fix loud speech failing or garbling (double mic-gain bug + soft limiter instead of hard clipping)

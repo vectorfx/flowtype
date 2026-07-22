@@ -12,6 +12,10 @@ namespace Flowtype.Tests
             failures += AssertEqual("self correction", "I want pizza no I want pasta.", TextProcessor.Clean("I want pizza no I want pasta.", AppSettings.Defaults()));
             failures += AssertEqual("repeated words", "The cat.", TextProcessor.Clean("the the cat", AppSettings.Defaults()));
             failures += AssertEqual("fuzzy dictionary", "Open Settings.", FuzzySettingsTest());
+            failures += AssertEqual("prompt echo", "How do you think the integration will be",
+                TextProcessor.StripPromptHallucinations(
+                    "How do you think the integration will be -- Target window 2x.% Outro to all. Target window 1x.% Outro to on its end of the video. Target window 1x. Camp.1 P.$%&P%k.99.",
+                    AppSettings.Defaults(), null));
             failures += AssertEqual("whisper repeat", "The team shipped the feature yesterday.",
                 TextProcessor.Clean("The team shipped the feature yesterday. The team shipped the feature yesterday. The team shipped the feature yesterday.", AppSettings.Defaults()));
             failures += AssertTrue(TranscriptionQuality.ShouldReject("T", 500, 12000));

@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.20.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.20.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.21.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.21.0")]
 
 namespace Flowtype
 {
@@ -1196,7 +1196,7 @@ namespace Flowtype
         public static string Clean(string input, AppSettings settings, ForegroundInfo context)
         {
             if (String.IsNullOrWhiteSpace(input)) return "";
-            string text = input.Trim();
+            string text = StripPromptHallucinations(input.Trim(), settings, context);
 
             foreach (KeyValuePair<string, string> snippet in settings.Snippets)
             {
@@ -1538,6 +1538,26 @@ namespace Flowtype
             return text;
         }
 
+        public static string StripPromptHallucinations(string text, AppSettings settings, ForegroundInfo context)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            text = text.Trim();
+
+            // Whisper often echoes the STT prompt at the tail of longer clips.
+            Match targetWindow = Regex.Match(text, @"\bTarget window\b", RegexOptions.IgnoreCase);
+            if (targetWindow.Success && targetWindow.Index >= 20)
+                text = text.Substring(0, targetWindow.Index).TrimEnd(' ', '\t', '-', '–', '—', ',');
+
+            Match preferredTerms = Regex.Match(text, @"\bPreferred names and spellings\b", RegexOptions.IgnoreCase);
+            if (preferredTerms.Success && preferredTerms.Index >= 20)
+                text = text.Substring(0, preferredTerms.Index).TrimEnd(' ', '\t', '-', '–', '—', ',');
+
+            text = Regex.Replace(text, @"[\s\-–—,]*\b(?:Target window|Outro to)\b.*$", "", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"[\s,]*(?:Camp\.\d|P\.\$[%&$#@]*).*$", "", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "");
+            return text.Trim();
+        }
+
         private static string RemoveRepeatedPhrases(string text)
         {
             for (int pass = 0; pass < 3; pass++)
@@ -1703,7 +1723,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.20");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
             return client;
         }
 
@@ -1834,7 +1854,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.20");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1964,7 +1984,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.20");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
             boundKey = key;
             return client;
         }
@@ -2178,7 +2198,6 @@ namespace Flowtype
                 if (prompt.Length > 0)
                 {
                     form.Add(new StringContent(prompt), "prompt");
-                    form.Add(new StringContent("true"), "carry_initial_prompt");
                 }
                 HttpResponseMessage response = await client.PostAsync("http://127.0.0.1:" + serverPort.ToString(CultureInfo.InvariantCulture) + "/inference", form);
                 string body = await response.Content.ReadAsStringAsync();
@@ -2277,9 +2296,9 @@ namespace Flowtype
                 if (value.Length > 0) terms.Add(value);
             }
             StringBuilder prompt = new StringBuilder();
-            if (terms.Count > 0) prompt.Append("Preferred names and spellings: " + String.Join(", ", terms.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()) + ". ");
-            if (settings.ContextEnabled && context != null && !String.IsNullOrWhiteSpace(context.Title))
-                prompt.Append("Target window: " + context.Title + ".");
+            if (terms.Count > 0) prompt.Append(String.Join(", ", terms.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()) + ".");
+            // Window title is passed to LLM cleanup only — including "Target window:" here
+            // makes Whisper echo it into the transcript on longer clips.
             return prompt.ToString().Replace("\"", "'").Trim();
         }
 
@@ -2433,7 +2452,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.20");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -4360,7 +4379,6 @@ namespace Flowtype
         private void StartRecording()
         {
             if (shuttingDown || recorder.IsRecording) return;
-            if (!hotkeyDown) return;
             if (processing) dictationGeneration++;
             try
             {
@@ -4483,7 +4501,8 @@ namespace Flowtype
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
                 if (generation != dictationGeneration) return;
-                raw = transcript.Text;
+                raw = TextProcessor.StripPromptHallucinations(transcript.Text, settings, target);
+                transcript.Text = raw;
 
                 FileInfo audioInfo = new FileInfo(path);
                 if (TranscriptionQuality.ShouldReject(raw, recordMs, audioInfo.Exists ? audioInfo.Length : 0))
