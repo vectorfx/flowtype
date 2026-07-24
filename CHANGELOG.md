@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.23
+
+- Add hands-free mode: double-press push-to-talk key to dictate without holding
+- Expand hotkey choices (Win+Alt/Shift, Ctrl+Shift, left/right modifiers, Scroll Lock, Pause, F8–F12)
+- Fix hands-free stop getting stuck when using modifier chords like Win+Ctrl
+- Fix "not" becoming "t" when Whisper splits the word across syllables
+- Fix settings UI overlap on the hands-free checkbox row
+
+---
+
 ## 1.3.22
 
 - Fix mic tester showing the same level at every boost setting (now shows mic, boosted, and Whisper input)

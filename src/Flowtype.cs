@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.22.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.22.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.23.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.23.0")]
 
 namespace Flowtype
 {
@@ -34,6 +34,7 @@ namespace Flowtype
         public string Engine;
         public string CleanupProvider;
         public string Hotkey;
+        public bool HandsFreeDoubleTap;
         public string Style;
         public bool CleanupEnabled;
         public bool ContextEnabled;
@@ -69,6 +70,7 @@ namespace Flowtype
             value.Engine = "Local";
             value.CleanupProvider = "BuiltIn";
             value.Hotkey = "Win + Ctrl";
+            value.HandsFreeDoubleTap = true;
             value.Style = "Natural";
             value.CleanupEnabled = true;
             value.ContextEnabled = true;
@@ -337,13 +339,25 @@ namespace Flowtype
         private static readonly Dictionary<string, int> Values = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
         {
             { "Win + Ctrl", 0 },
+            { "Win + Alt", 0 },
+            { "Win + Shift", 0 },
+            { "Ctrl + Shift", 0 },
             { "Right Ctrl", 0xA3 },
+            { "Left Ctrl", 0xA2 },
             { "Right Alt", 0xA5 },
+            { "Left Alt", 0xA4 },
             { "Caps Lock", 0x14 },
+            { "Scroll Lock", 0x91 },
+            { "Pause", 0x13 },
             { "F8", 0x77 },
             { "F9", 0x78 },
             { "F10", 0x79 },
             { "F12", 0x7B }
+        };
+
+        private static readonly HashSet<string> ModifierChords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Win + Ctrl", "Win + Alt", "Win + Shift", "Ctrl + Shift"
         };
 
         public static string[] Names
@@ -357,9 +371,14 @@ namespace Flowtype
             return Values.TryGetValue(name ?? "", out value) && value != 0 ? value : 0xA3;
         }
 
+        public static bool IsModifierChord(string name)
+        {
+            return ModifierChords.Contains(name ?? "");
+        }
+
         public static bool IsChord(string name)
         {
-            return String.Equals(name, "Win + Ctrl", StringComparison.OrdinalIgnoreCase);
+            return IsModifierChord(name);
         }
     }
 
@@ -367,27 +386,61 @@ namespace Flowtype
     {
         private bool winDown;
         private bool controlDown;
+        private bool altDown;
+        private bool shiftDown;
+        private readonly string chordName;
         public bool Active { get; private set; }
+
+        public HotkeyChordTracker(string chord)
+        {
+            chordName = String.IsNullOrWhiteSpace(chord) ? "Win + Ctrl" : chord;
+        }
 
         public bool Update(uint key, bool down, out bool active)
         {
+            if (!Handles(key, chordName))
+            {
+                active = Active;
+                return false;
+            }
             bool before = Active;
             if (key == 0x5B || key == 0x5C) winDown = down;
             if (key == 0x11 || key == 0xA2 || key == 0xA3) controlDown = down;
-            Active = winDown && controlDown;
+            if (key == 0x12 || key == 0xA4 || key == 0xA5) altDown = down;
+            if (key == 0x10 || key == 0xA0 || key == 0xA1) shiftDown = down;
+            Active = EvaluateActive();
             active = Active;
             return before != Active;
+        }
+
+        private bool EvaluateActive()
+        {
+            if (String.Equals(chordName, "Win + Alt", StringComparison.OrdinalIgnoreCase))
+                return winDown && altDown;
+            if (String.Equals(chordName, "Win + Shift", StringComparison.OrdinalIgnoreCase))
+                return winDown && shiftDown;
+            if (String.Equals(chordName, "Ctrl + Shift", StringComparison.OrdinalIgnoreCase))
+                return controlDown && shiftDown;
+            return winDown && controlDown;
         }
 
         public void Reset()
         {
             winDown = false;
             controlDown = false;
+            altDown = false;
+            shiftDown = false;
             Active = false;
         }
 
-        public static bool Handles(uint key)
+        public static bool Handles(uint key, string chordName)
         {
+            if (String.Equals(chordName, "Win + Alt", StringComparison.OrdinalIgnoreCase))
+                return key == 0x5B || key == 0x5C || key == 0x12 || key == 0xA4 || key == 0xA5;
+            if (String.Equals(chordName, "Win + Shift", StringComparison.OrdinalIgnoreCase))
+                return key == 0x5B || key == 0x5C || key == 0x10 || key == 0xA0 || key == 0xA1;
+            if (String.Equals(chordName, "Ctrl + Shift", StringComparison.OrdinalIgnoreCase))
+                return key == 0x11 || key == 0xA2 || key == 0xA3 || key == 0x10 || key == 0xA0 || key == 0xA1;
             return key == 0x5B || key == 0x5C || key == 0x11 || key == 0xA2 || key == 0xA3;
         }
     }
@@ -402,9 +455,43 @@ namespace Flowtype
             return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
         }
 
+        private static bool WinDown()
+        {
+            return Down(0x5B) || Down(0x5C);
+        }
+
+        private static bool ControlDown()
+        {
+            return Down(0x11) || Down(0xA2) || Down(0xA3);
+        }
+
+        private static bool AltDown()
+        {
+            return Down(0x12) || Down(0xA4) || Down(0xA5);
+        }
+
+        private static bool ShiftDown()
+        {
+            return Down(0x10) || Down(0xA0) || Down(0xA1);
+        }
+
+        public static bool IsHotkeyDown(string hotkeyName)
+        {
+            if (String.Equals(hotkeyName, "Win + Ctrl", StringComparison.OrdinalIgnoreCase))
+                return WinDown() && ControlDown();
+            if (String.Equals(hotkeyName, "Win + Alt", StringComparison.OrdinalIgnoreCase))
+                return WinDown() && AltDown();
+            if (String.Equals(hotkeyName, "Win + Shift", StringComparison.OrdinalIgnoreCase))
+                return WinDown() && ShiftDown();
+            if (String.Equals(hotkeyName, "Ctrl + Shift", StringComparison.OrdinalIgnoreCase))
+                return ControlDown() && ShiftDown();
+            int code = Hotkeys.Code(hotkeyName);
+            return code != 0 && Down(code);
+        }
+
         public static bool IsWinCtrlDown()
         {
-            return (Down(0x5B) || Down(0x5C)) && (Down(0x11) || Down(0xA2) || Down(0xA3));
+            return IsHotkeyDown("Win + Ctrl");
         }
     }
 
@@ -440,6 +527,7 @@ namespace Flowtype
                 AppSettings value = serializer.Deserialize<AppSettings>(raw);
                 if (value == null) value = AppSettings.Defaults();
                 if (raw.IndexOf("CompletionSound", StringComparison.OrdinalIgnoreCase) < 0) value.CompletionSound = true;
+                if (raw.IndexOf("HandsFreeDoubleTap", StringComparison.OrdinalIgnoreCase) < 0) value.HandsFreeDoubleTap = true;
                 value.Repair();
                 return value;
             }
@@ -774,7 +862,7 @@ namespace Flowtype
         private IntPtr handle;
         private string hotkeyName;
         private int primaryKey;
-        private readonly HotkeyChordTracker chordTracker = new HotkeyChordTracker();
+        private HotkeyChordTracker chordTracker;
         public string HotkeyName
         {
             get { return hotkeyName; }
@@ -782,7 +870,7 @@ namespace Flowtype
             {
                 hotkeyName = String.IsNullOrWhiteSpace(value) ? "Right Ctrl" : value;
                 primaryKey = Hotkeys.Code(hotkeyName);
-                chordTracker.Reset();
+                chordTracker = new HotkeyChordTracker(hotkeyName);
             }
         }
         public bool CaptureEscape { get; set; }
@@ -805,7 +893,7 @@ namespace Flowtype
                 bool injected = (data.flags & 0x10) != 0;
                 bool down = wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104;
                 bool up = wParam == (IntPtr)0x0101 || wParam == (IntPtr)0x0105;
-                if (!injected && Hotkeys.IsChord(hotkeyName) && (down || up) && HotkeyChordTracker.Handles(data.vkCode))
+                if (!injected && Hotkeys.IsModifierChord(hotkeyName) && (down || up) && HotkeyChordTracker.Handles(data.vkCode, hotkeyName))
                 {
                     bool active;
                     if (chordTracker.Update(data.vkCode, down, out active))
@@ -1257,6 +1345,13 @@ namespace Flowtype
 
             text = ApplyFuzzyDictionary(text, settings, context);
 
+            // Whisper often splits "not" into "no t" (sometimes after a comma or dash). Heal that
+            // before self-correction backtracking, which otherwise reads "word, no t" as "word → t".
+            text = Regex.Replace(text, @"\bno\s+t\b", "not", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\bno,\s*not\b", "not", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"(\w),\s*not\b", "$1 not", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"(\w)-not\b", "$1 not", RegexOptions.IgnoreCase);
+
             text = ApplyBacktrack(text);
 
             if (!String.Equals(settings.Style, "Verbatim", StringComparison.OrdinalIgnoreCase))
@@ -1597,7 +1692,7 @@ namespace Flowtype
                 @"\b(?<old>" + valuePattern + @")\s*(?:[,….—-]+\s*)?(?:no|sorry|actually|I mean|scratch that)\s*[,.:—-]?\s*(?<new>" + valuePattern + @")\b",
                 "${new}", RegexOptions.IgnoreCase);
             text = Regex.Replace(text,
-                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*(?:no|sorry|I mean|scratch that)\s*[,.:—-]?\s*(?<new>[A-Za-z][A-Za-z'-]*)\b",
+                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*(?:no|sorry|I mean|scratch that)\s*[,.:—-]?\s*(?<new>[A-Za-z][A-Za-z'-]{1,})\b",
                 "${new}", RegexOptions.IgnoreCase);
             text = Regex.Replace(text,
                 @"^.{1,160}\b(?:start over|never mind)\b\s*[,.:—-]?\s*", "", RegexOptions.IgnoreCase);
@@ -1839,7 +1934,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
             return client;
         }
 
@@ -1970,7 +2065,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2100,7 +2195,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
             boundKey = key;
             return client;
         }
@@ -2596,7 +2691,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -3341,6 +3436,7 @@ namespace Flowtype
         private readonly string appDirectory;
         private readonly ComboBox engineBox = new ComboBox();
         private readonly ComboBox hotkeyBox = new ComboBox();
+        private readonly CheckBox handsFreeBox = new CheckBox();
         private readonly ComboBox styleBox = new ComboBox();
         private readonly ComboBox cleanupProviderBox = new ComboBox();
         private readonly CheckBox cleanupBox = new CheckBox();
@@ -3546,7 +3642,7 @@ namespace Flowtype
         private TabPage BuildGeneralTab()
         {
             TabPage page = NewTab("General");
-            Label intro = LabelAt("Hold your push-to-talk key anywhere on Windows, speak, release — cleaned text appears in the field you were using.", 24, 22, 650, 36);
+            Label intro = LabelAt("Hold your push-to-talk key to dictate. Double-press quickly for hands-free mode, then press the key once more to finish.", 24, 22, 650, 36);
             intro.Font = AppFonts.UiLarge(10.5f);
             page.Controls.Add(intro);
 
@@ -3560,21 +3656,27 @@ namespace Flowtype
             });
             page.Controls.Add(engineBox);
             page.Controls.Add(LabelAt("Push-to-talk key", 24, 120, 170, 24));
-            ConfigureDropDown(hotkeyBox, 210, 116, 230);
+            ConfigureDropDown(hotkeyBox, 210, 116, 430);
             hotkeyBox.Items.AddRange(Hotkeys.Names.Cast<object>().ToArray());
             page.Controls.Add(hotkeyBox);
-            page.Controls.Add(LabelAt("Writing style", 24, 164, 170, 24));
-            ConfigureDropDown(styleBox, 210, 160, 230);
+            ConfigureCheck(handsFreeBox, "Double-press key for hands-free mode (talk without holding)", 24, 148, 620);
+            page.Controls.Add(handsFreeBox);
+            Label handsFreeHint = LabelAt("Press the same key again (or Escape) to finish and insert.", 42, 178, 600, 20);
+            handsFreeHint.ForeColor = UiTheme.TextMuted;
+            handsFreeHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
+            page.Controls.Add(handsFreeHint);
+            page.Controls.Add(LabelAt("Writing style", 24, 204, 170, 24));
+            ConfigureDropDown(styleBox, 210, 200, 230);
             styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
             page.Controls.Add(styleBox);
-            page.Controls.Add(LabelAt("Voice capsule", 24, 208, 170, 24));
-            ConfigureDropDown(overlayThemeBox, 210, 204, 230);
+            page.Controls.Add(LabelAt("Voice capsule", 24, 248, 170, 24));
+            ConfigureDropDown(overlayThemeBox, 210, 244, 230);
             overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Mono (black & white)", "Liquid glass" });
             page.Controls.Add(overlayThemeBox);
 
-            ConfigureCheck(cleanupBox, "Smart cleanup (fillers, punctuation, lists)", 24, 254, 540);
-            page.Controls.Add(LabelAt("Cleanup engine", 24, 302, 170, 24));
-            ConfigureDropDown(cleanupProviderBox, 210, 298, 430);
+            ConfigureCheck(cleanupBox, "Smart cleanup (fillers, punctuation, lists)", 24, 294, 540);
+            page.Controls.Add(LabelAt("Cleanup engine", 24, 342, 170, 24));
+            ConfigureDropDown(cleanupProviderBox, 210, 338, 430);
             cleanupProviderBox.Items.AddRange(new object[]
             {
                 "Built-in — free, offline",
@@ -3583,23 +3685,23 @@ namespace Flowtype
                 "Ollama — local model"
             });
             page.Controls.Add(cleanupProviderBox);
-            ConfigureCheck(contextBox, "Adapt cleanup to the active app/window", 24, 344, 540);
-            ConfigureCheck(pasteBox, "Auto-paste into the focused field", 24, 382, 560);
-            ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 420, 540);
-            ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 458, 590);
-            ConfigureCheck(startupBox, "Start with Windows", 24, 496, 540);
+            ConfigureCheck(contextBox, "Adapt cleanup to the active app/window", 24, 384, 540);
+            ConfigureCheck(pasteBox, "Auto-paste into the focused field", 24, 422, 560);
+            ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 460, 540);
+            ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 498, 590);
+            ConfigureCheck(startupBox, "Start with Windows", 24, 536, 540);
             page.Controls.AddRange(new Control[] { cleanupBox, contextBox, pasteBox, historyBox, recoveryBox, startupBox });
 
-            Label perfTitle = LabelAt("Performance", 24, 540, 200, 24);
+            Label perfTitle = LabelAt("Performance", 24, 580, 200, 24);
             perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(perfTitle);
-            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 570, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 602, 620);
-            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 634, 620);
-            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 666, 620);
+            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 610, 620);
+            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 642, 620);
+            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 674, 620);
+            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 706, 620);
             page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 704, 140, 24));
-            micGainBar.SetBounds(170, 700, 360, 45);
+            page.Controls.Add(LabelAt("Microphone boost", 24, 744, 140, 24));
+            micGainBar.SetBounds(170, 740, 360, 45);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
@@ -3610,30 +3712,30 @@ namespace Flowtype
                 if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
             };
             page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 708, 60, 24);
+            micGainLabel.SetBounds(540, 748, 60, 24);
             page.Controls.Add(micGainLabel);
-            Label micHealthTitle = LabelAt("Microphone health", 24, 748, 200, 24);
+            Label micHealthTitle = LabelAt("Microphone health", 24, 788, 200, 24);
             micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 778, 420, 18);
+            micLevelBar.SetBounds(24, 818, 420, 18);
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
             page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 770, 110, 34);
+            micTestButton.SetBounds(456, 810, 110, 34);
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 816, 650, 48);
+            micTestStatus.SetBounds(24, 856, 650, 48);
             micTestStatus.ForeColor = UiTheme.TextMuted;
             micTestStatus.Text = "Test shows mic level, boosted level, and the level Whisper receives. Aim for Whisper input around 50–80%.";
             page.Controls.Add(micTestStatus);
-            latencyLabel.SetBounds(24, 856, 650, 36);
+            latencyLabel.SetBounds(24, 896, 650, 36);
             latencyLabel.ForeColor = UiTheme.TextMuted;
             latencyLabel.Text = LatencyStats.Summary;
             page.Controls.Add(latencyLabel);
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 900, 640, 40);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 940, 640, 40);
             privacy.ForeColor = UiTheme.TextMuted;
             page.Controls.Add(privacy);
             return page;
@@ -3791,6 +3893,7 @@ namespace Flowtype
                 String.Equals(value.Engine, "Groq", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
             hotkeyBox.SelectedItem = value.Hotkey;
             if (hotkeyBox.SelectedIndex < 0) hotkeyBox.SelectedIndex = 0;
+            handsFreeBox.Checked = value.HandsFreeDoubleTap;
             styleBox.SelectedItem = value.Style;
             if (styleBox.SelectedIndex < 0) styleBox.SelectedIndex = 0;
             cleanupBox.Checked = value.CleanupEnabled;
@@ -3834,6 +3937,7 @@ namespace Flowtype
             value.Engine = engineBox.SelectedIndex == 2 ? "OpenAI" : engineBox.SelectedIndex == 1 ? "Groq" : "Local";
             value.CleanupProvider = cleanupProviderBox.SelectedIndex == 1 ? "OpenRouter" : cleanupProviderBox.SelectedIndex == 2 ? "OpenAI" : cleanupProviderBox.SelectedIndex == 3 ? "Ollama" : "BuiltIn";
             value.Hotkey = Convert.ToString(hotkeyBox.SelectedItem);
+            value.HandsFreeDoubleTap = handsFreeBox.Checked;
             value.Style = Convert.ToString(styleBox.SelectedItem);
             value.CleanupEnabled = cleanupBox.Checked;
             value.ContextEnabled = contextBox.Checked;
@@ -4330,6 +4434,12 @@ namespace Flowtype
         private int chordReleaseStreak;
         private const int MinChordHoldMs = 45;
         private const int ReleaseGraceMs = 180;
+        private bool latchedRecording;
+        private bool awaitingDoubleTap;
+        private bool handsFreeStopPending;
+        private System.Windows.Forms.Timer doubleTapTimer;
+        private const int DoubleTapWindowMs = 450;
+        private const int ShortPressMs = 280;
         private SettingsForm settingsForm;
         private HistoryForm historyForm;
 
@@ -4362,8 +4472,8 @@ namespace Flowtype
             chordPoller.Interval = 20;
             chordPoller.Tick += delegate
             {
-                if (!Hotkeys.IsChord(settings.Hotkey)) return;
-                bool down = NativeKeyState.IsWinCtrlDown();
+                if (!Hotkeys.IsModifierChord(settings.Hotkey)) return;
+                bool down = NativeKeyState.IsHotkeyDown(settings.Hotkey);
                 // Backup start when the low-level hook missed key-down.
                 if (down && !hotkeyDown)
                 {
@@ -4525,12 +4635,34 @@ namespace Flowtype
         {
             if (down)
             {
+                CancelDoubleTapTimer();
+
+                if (recorder.IsRecording && latchedRecording)
+                {
+                    latchedRecording = false;
+                    awaitingDoubleTap = false;
+                    handsFreeStopPending = true;
+                    hotkeyDown = true;
+                    CancelPendingStop();
+                    try { dispatcher.BeginInvoke(new Action(StopRecording)); } catch { }
+                    return;
+                }
+
+                if (awaitingDoubleTap && recorder.IsRecording)
+                {
+                    awaitingDoubleTap = false;
+                    latchedRecording = true;
+                    hotkeyDown = true;
+                    CancelPendingStop();
+                    UpdateRecordingStatus();
+                    return;
+                }
+
                 if (hotkeyDown) return;
                 hotkeyDown = true;
                 hotkeyDownSince = DateTime.UtcNow;
                 CancelPendingStop();
                 CancelPendingStart();
-                // Start immediately so leading syllables are not lost to a start debounce.
                 try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
             }
             else
@@ -4539,8 +4671,70 @@ namespace Flowtype
                 hotkeyDown = false;
                 lastHotkeyRelease = DateTime.UtcNow;
                 CancelPendingStart();
+
+                if (handsFreeStopPending)
+                {
+                    handsFreeStopPending = false;
+                    return;
+                }
+
+                if (latchedRecording) return;
+
+                long pressMs = (long)(DateTime.UtcNow - hotkeyDownSince).TotalMilliseconds;
+                if (settings.HandsFreeDoubleTap && pressMs <= ShortPressMs && recorder.IsRecording)
+                {
+                    awaitingDoubleTap = true;
+                    ScheduleDoubleTapTimeout();
+                    return;
+                }
+
                 ScheduleStopRecording();
             }
+        }
+
+        private void ScheduleDoubleTapTimeout()
+        {
+            CancelDoubleTapTimer();
+            doubleTapTimer = new System.Windows.Forms.Timer();
+            doubleTapTimer.Interval = DoubleTapWindowMs;
+            doubleTapTimer.Tick += delegate
+            {
+                doubleTapTimer.Stop();
+                doubleTapTimer.Dispose();
+                doubleTapTimer = null;
+                awaitingDoubleTap = false;
+                if (!latchedRecording && !hotkeyDown)
+                    try { dispatcher.BeginInvoke(new Action(StopRecording)); } catch { }
+            };
+            doubleTapTimer.Start();
+        }
+
+        private void CancelDoubleTapTimer()
+        {
+            if (doubleTapTimer == null) return;
+            doubleTapTimer.Stop();
+            doubleTapTimer.Dispose();
+            doubleTapTimer = null;
+        }
+
+        private void ResetRecordingMode()
+        {
+            latchedRecording = false;
+            awaitingDoubleTap = false;
+            handsFreeStopPending = false;
+            CancelDoubleTapTimer();
+        }
+
+        private void UpdateRecordingStatus()
+        {
+            if (latchedRecording)
+            {
+                statusItem.Text = "Hands-free — press " + settings.Hotkey + " to finish";
+                toggleItem.Text = "Stop and insert";
+                return;
+            }
+            statusItem.Text = "Listening… release " + settings.Hotkey;
+            toggleItem.Text = "Stop and insert";
         }
 
         private void CancelPendingStart()
@@ -4575,7 +4769,13 @@ namespace Flowtype
 
         private void ToggleRecording()
         {
-            if (recorder.IsRecording) StopRecording();
+            if (recorder.IsRecording)
+            {
+                latchedRecording = false;
+                awaitingDoubleTap = false;
+                CancelDoubleTapTimer();
+                StopRecording();
+            }
             else StartRecording();
         }
 
@@ -4628,25 +4828,29 @@ namespace Flowtype
                 hook.CaptureEscape = true;
                 overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
                 if (settings.CompletionSound) RecordingCue.PlayStart();
-                statusItem.Text = "Listening… release " + settings.Hotkey;
-                toggleItem.Text = "Stop and insert";
+                UpdateRecordingStatus();
             }
             catch (Exception exception)
             {
                 store.LogError(exception);
                 overlay.ShowFailure(ShortMessage(exception.Message));
                 Notify("Could not start recording", exception.Message, ToolTipIcon.Error);
+                ResetRecordingMode();
                 SetReady();
             }
         }
 
         private void StopRecording()
         {
+            CancelDoubleTapTimer();
+            awaitingDoubleTap = false;
             if (!recorder.IsRecording)
             {
                 overlay.EnsureHidden();
+                ResetRecordingMode();
                 return;
             }
+            latchedRecording = false;
             try
             {
                 // The capsule represents physical key-down only. Hide before
@@ -4662,6 +4866,7 @@ namespace Flowtype
                 {
                     TryDelete(path);
                     overlay.HideNow();
+                    ResetRecordingMode();
                     SetReady();
                     return;
                 }
@@ -4676,6 +4881,7 @@ namespace Flowtype
                 store.LogError(exception);
                 overlay.HideNow();
                 Notify("Recording failed", exception.Message, ToolTipIcon.Error);
+                ResetRecordingMode();
                 SetReady();
             }
         }
@@ -4798,6 +5004,7 @@ namespace Flowtype
             catch (Exception exception) { store.LogError(exception); }
             hook.CaptureEscape = false;
             hotkeyDown = false;
+            ResetRecordingMode();
             overlay.HideNow();
             toggleItem.Text = "Start dictating";
             SetReady();
@@ -4805,6 +5012,7 @@ namespace Flowtype
 
         private void SetReady()
         {
+            ResetRecordingMode();
             statusItem.Text = "Ready — hold " + settings.Hotkey;
             tray.Text = "Flowtype — hold " + settings.Hotkey + " to dictate";
             if (!recorder.IsRecording) overlay.EnsureHidden();

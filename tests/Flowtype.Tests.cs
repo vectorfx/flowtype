@@ -38,10 +38,20 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("My goals for this week are exercise, reading, and finishing the prototype", AppSettings.Defaults()));
             failures += AssertContains("- Better tooling",
                 TextProcessor.Clean("here are the top three things we need, better tooling, clearer specs, and more time", AppSettings.Defaults()));
+            failures += AssertEqual("not preserved", "Not.", TextProcessor.Clean("not", AppSettings.Defaults()));
+            failures += AssertEqual("split not healed", "Not.", TextProcessor.Clean("no t", AppSettings.Defaults()));
+            failures += AssertEqual("split not in sentence", "I do not want.",
+                TextProcessor.Clean("I do, no t want", AppSettings.Defaults()));
+            failures += AssertEqual("split not after dash", "Do not.",
+                TextProcessor.Clean("do-no t", AppSettings.Defaults()));
+            failures += AssertEqual("no spurious t from backtrack", "Want not.",
+                TextProcessor.Clean("want, no t", AppSettings.Defaults()));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
             failures += AssertEqual("spoken question", "Ready?", TextProcessor.Clean("ready question mark", AppSettings.Defaults()));
             failures += AssertTrue(Hotkeys.IsChord("Win + Ctrl"));
             failures += AssertFalse(Hotkeys.IsChord("Right Ctrl"));
+            failures += AssertTrue(Hotkeys.IsModifierChord("Win + Alt"));
+            failures += AssertFalse(Hotkeys.IsModifierChord("F8"));
             failures += AssertEqual("default engine", "Local", AppSettings.Defaults().Engine);
             failures += AssertEqual("default cleanup", "BuiltIn", AppSettings.Defaults().CleanupProvider);
             AppSettings repaired = AppSettings.Defaults();
