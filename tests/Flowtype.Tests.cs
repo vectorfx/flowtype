@@ -50,6 +50,8 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("I'm doing some final testing now", AppSettings.Defaults(), DiscordContext("PinBal")));
             failures += AssertEqual("finnal not fuzzy to contact name", "I'm doing some finnal testing now",
                 TextProcessor.Clean("I'm doing some finnal testing now", AppSettings.Defaults(), DiscordContext("PinBal")));
+            failures += AssertEqual("discord contact name still corrected", "Hey PinBal",
+                TextProcessor.Clean("hey pinbal", AppSettings.Defaults(), DiscordContext("PinBal")));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
             failures += AssertEqual("spoken question", "Ready?", TextProcessor.Clean("ready question mark", AppSettings.Defaults()));
             failures += AssertTrue(Hotkeys.IsChord("Win + Ctrl"));

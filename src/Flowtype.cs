@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.24.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.24.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.25.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.25.0")]
 
 namespace Flowtype
 {
@@ -74,7 +74,7 @@ namespace Flowtype
             value.Style = "Natural";
             value.CleanupEnabled = true;
             value.ContextEnabled = true;
-            value.AutoPaste = true;
+            value.AutoPaste = false;
             value.SaveHistory = false;
             value.KeepFailedAudio = true;
             value.StartWithWindows = true;
@@ -528,6 +528,12 @@ namespace Flowtype
                 if (value == null) value = AppSettings.Defaults();
                 if (raw.IndexOf("CompletionSound", StringComparison.OrdinalIgnoreCase) < 0) value.CompletionSound = true;
                 if (raw.IndexOf("HandsFreeDoubleTap", StringComparison.OrdinalIgnoreCase) < 0) value.HandsFreeDoubleTap = true;
+                string autoPasteMarker = Path.Combine(Root, "autopaste-default-v2.applied");
+                if (!File.Exists(autoPasteMarker))
+                {
+                    value.AutoPaste = false;
+                    try { File.WriteAllText(autoPasteMarker, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture), new UTF8Encoding(false)); } catch { }
+                }
                 value.Repair();
                 return value;
             }
@@ -798,30 +804,80 @@ namespace Flowtype
             return current == IntPtr.Zero || current == original.FocusHandle;
         }
 
-        public static bool CopyAndPaste(string text, ForegroundInfo original, bool autoPaste)
+        public static bool DeliverDictation(string text, ForegroundInfo original, bool keepOnClipboard)
         {
-            Exception last = null;
+            string payload = text ?? "";
+            if (!IsSameTarget(original))
+            {
+                Exception last = null;
+                for (int attempt = 0; attempt < 6; attempt++)
+                {
+                    try
+                    {
+                        Clipboard.SetText(payload);
+                        return false;
+                    }
+                    catch (Exception exception)
+                    {
+                        last = exception;
+                        Thread.Sleep(40 * (attempt + 1));
+                    }
+                }
+                if (last != null) throw last;
+                return false;
+            }
+
+            string previous = null;
+            bool hadPrevious = false;
+            try
+            {
+                if (Clipboard.ContainsText())
+                {
+                    previous = Clipboard.GetText();
+                    hadPrevious = true;
+                }
+            }
+            catch { }
+
+            Exception clipError = null;
             for (int attempt = 0; attempt < 6; attempt++)
             {
                 try
                 {
-                    Clipboard.SetText(text ?? "");
-                    last = null;
+                    Clipboard.SetText(payload);
+                    clipError = null;
                     break;
                 }
                 catch (Exception exception)
                 {
-                    last = exception;
+                    clipError = exception;
                     Thread.Sleep(40 * (attempt + 1));
                 }
             }
-            if (last != null) throw last;
-            if (!autoPaste || !IsSameTarget(original)) return false;
+            if (clipError != null) throw clipError;
+
+            Thread.Sleep(60);
+            try
+            {
+                if (!String.Equals(Clipboard.GetText() ?? "", payload, StringComparison.Ordinal)) return false;
+            }
+            catch { return false; }
 
             keybd_event(0x11, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
             keybd_event(0x11, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+            if (!keepOnClipboard)
+            {
+                Thread.Sleep(40);
+                try
+                {
+                    if (hadPrevious) Clipboard.SetText(previous);
+                    else Clipboard.Clear();
+                }
+                catch { }
+            }
             return true;
         }
 
@@ -1596,15 +1652,6 @@ namespace Flowtype
             "yeah", "yes", "your"
         };
 
-        private static bool IsChatProcess(string processName)
-        {
-            string app = (processName ?? "").ToLowerInvariant();
-            return app.Contains("discord") || app.Contains("slack") || app.Contains("teams")
-                || app.Contains("telegram") || app.Contains("whatsapp") || app.Contains("signal")
-                || app.Contains("messenger") || app.Contains("element") || app.Contains("skype")
-                || app.Contains("zoom");
-        }
-
         private static string ApplyFuzzyDictionary(string text, AppSettings settings, ForegroundInfo context)
         {
             List<string> terms = CollectCanonicalTerms(settings, context);
@@ -1613,7 +1660,11 @@ namespace Flowtype
             {
                 string word = match.Value;
                 if (FuzzyProtectedWords.Contains(word)) return word;
-                if (terms.Exists(value => String.Equals(value, word, StringComparison.OrdinalIgnoreCase))) return word;
+                foreach (string term in terms)
+                {
+                    if (String.Equals(term, word, StringComparison.OrdinalIgnoreCase))
+                        return PreserveCase(word, term);
+                }
                 string best = null;
                 int bestDistance = int.MaxValue;
                 int tieCount = 0;
@@ -1669,7 +1720,7 @@ namespace Flowtype
                     add(snippet.Value);
                 }
             }
-            if (context != null && !String.IsNullOrWhiteSpace(context.Title) && !IsChatProcess(context.ProcessName))
+            if (context != null && !String.IsNullOrWhiteSpace(context.Title))
             {
                 foreach (Match token in Regex.Matches(context.Title, @"\b[A-Za-z][A-Za-z'-]{3,}\b"))
                     add(token.Value);
@@ -1960,7 +2011,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
             return client;
         }
 
@@ -2091,7 +2142,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2221,7 +2272,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
             boundKey = key;
             return client;
         }
@@ -2728,7 +2779,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -3723,22 +3774,32 @@ namespace Flowtype
             });
             page.Controls.Add(cleanupProviderBox);
             ConfigureCheck(contextBox, "Adapt cleanup to the active app/window", 24, 384, 540);
-            ConfigureCheck(pasteBox, "Auto-paste into the focused field", 24, 422, 560);
-            ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 460, 540);
-            ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 498, 590);
-            ConfigureCheck(startupBox, "Start with Windows", 24, 536, 540);
-            page.Controls.AddRange(new Control[] { cleanupBox, contextBox, pasteBox, historyBox, recoveryBox, startupBox });
+            ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 422, 540);
+            ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 460, 590);
+            ConfigureCheck(startupBox, "Start with Windows", 24, 498, 540);
+            page.Controls.AddRange(new Control[] { cleanupBox, contextBox, historyBox, recoveryBox, startupBox });
 
-            Label perfTitle = LabelAt("Performance", 24, 580, 200, 24);
+            Label optionalTitle = LabelAt("Optional", 24, 542, 200, 24);
+            optionalTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
+            optionalTitle.ForeColor = UiTheme.TextMuted;
+            page.Controls.Add(optionalTitle);
+            ConfigureCheck(pasteBox, "Leave each dictation on the clipboard after insert", 24, 572, 620);
+            page.Controls.Add(pasteBox);
+            Label pasteHint = LabelAt("Off by default. Flowtype always inserts into your field without replacing your clipboard.", 42, 602, 600, 32);
+            pasteHint.ForeColor = UiTheme.TextMuted;
+            pasteHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
+            page.Controls.Add(pasteHint);
+
+            Label perfTitle = LabelAt("Performance", 24, 644, 200, 24);
             perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(perfTitle);
-            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 610, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 642, 620);
-            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 674, 620);
-            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 706, 620);
+            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 674, 620);
+            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 706, 620);
+            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 738, 620);
+            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 770, 620);
             page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 744, 140, 24));
-            micGainBar.SetBounds(170, 740, 360, 45);
+            page.Controls.Add(LabelAt("Microphone boost", 24, 808, 140, 24));
+            micGainBar.SetBounds(170, 804, 360, 45);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
@@ -3749,30 +3810,30 @@ namespace Flowtype
                 if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
             };
             page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 748, 60, 24);
+            micGainLabel.SetBounds(540, 812, 60, 24);
             page.Controls.Add(micGainLabel);
-            Label micHealthTitle = LabelAt("Microphone health", 24, 788, 200, 24);
+            Label micHealthTitle = LabelAt("Microphone health", 24, 852, 200, 24);
             micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 818, 420, 18);
+            micLevelBar.SetBounds(24, 882, 420, 18);
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
             page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 810, 110, 34);
+            micTestButton.SetBounds(456, 874, 110, 34);
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 856, 650, 48);
+            micTestStatus.SetBounds(24, 920, 650, 48);
             micTestStatus.ForeColor = UiTheme.TextMuted;
             micTestStatus.Text = "Test shows mic level, boosted level, and the level Whisper receives. Aim for Whisper input around 50–80%.";
             page.Controls.Add(micTestStatus);
-            latencyLabel.SetBounds(24, 896, 650, 36);
+            latencyLabel.SetBounds(24, 960, 650, 36);
             latencyLabel.ForeColor = UiTheme.TextMuted;
             latencyLabel.Text = LatencyStats.Summary;
             page.Controls.Add(latencyLabel);
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 940, 640, 40);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 1004, 640, 40);
             privacy.ForeColor = UiTheme.TextMuted;
             page.Controls.Add(privacy);
             return page;
@@ -4819,7 +4880,11 @@ namespace Flowtype
         private void StartRecording()
         {
             if (shuttingDown || recorder.IsRecording) return;
-            if (processing) dictationGeneration++;
+            if (processing)
+            {
+                Notify("Still writing last dictation", "Wait for insertion to finish before recording again.", ToolTipIcon.Info);
+                return;
+            }
             try
             {
                 if (settings.Engine == "OpenAI" && String.IsNullOrWhiteSpace(apiKey))
@@ -4860,7 +4925,6 @@ namespace Flowtype
                     }
                 }
                 if (lastMicError != null) throw lastMicError;
-                processing = false;
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
                 overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
@@ -4977,10 +5041,12 @@ namespace Flowtype
                 bool pressEnter = TextProcessor.ExtractPressEnter(ref finalText);
                 if (String.IsNullOrWhiteSpace(finalText) && !pressEnter) throw new InvalidOperationException("No speech was detected.");
 
-                bool pasted;
-                if (String.IsNullOrWhiteSpace(finalText)) pasted = settings.AutoPaste && ForegroundContext.IsSameTarget(target);
-                else pasted = ForegroundContext.CopyAndPaste(finalText, target, settings.AutoPaste);
-                if (pasted && pressEnter)
+                if (generation != dictationGeneration) return;
+                bool inserted;
+                if (String.IsNullOrWhiteSpace(finalText)) inserted = ForegroundContext.IsSameTarget(target);
+                else inserted = ForegroundContext.DeliverDictation(finalText, target, settings.AutoPaste);
+                if (generation != dictationGeneration) return;
+                if (inserted && pressEnter)
                 {
                     Thread.Sleep(35);
                     ForegroundContext.PressEnter();
@@ -5002,10 +5068,15 @@ namespace Flowtype
                 if (String.IsNullOrWhiteSpace(lastDictationWord)) lastDictationWord = LastWord(raw);
                 UpdateDictionaryFixItem();
                 if (settings.CompletionSound) RecordingCue.PlayComplete();
-                if (settings.ShowInsertNotification)
+                if (inserted)
                 {
-                    if (pasted) Notify("Inserted", ShortPreview(finalText), ToolTipIcon.Info);
-                    else Notify("Dictation copied", "The original field changed, so Flowtype put the result on your clipboard.", ToolTipIcon.Info);
+                    statusItem.Text = "Ready — hold " + settings.Hotkey;
+                    if (settings.ShowInsertNotification) Notify("Inserted", ShortPreview(finalText), ToolTipIcon.Info);
+                }
+                else if (!String.IsNullOrWhiteSpace(finalText))
+                {
+                    statusItem.Text = "Copied — click your field and press Ctrl+V";
+                    Notify("Click your field", "The target changed while Flowtype was writing. Result is on your clipboard.", ToolTipIcon.Info);
                 }
             }
             catch (Exception exception)

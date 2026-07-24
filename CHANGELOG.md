@@ -1,11 +1,20 @@
 # Changelog
 
+## 1.3.25
+
+- Always insert dictation into the focused field (hands-free and hold-to-talk)
+- Stop hijacking the clipboard by default; restore your previous clipboard after insert
+- Fix stale paste race where a new dictation could re-insert the previous message
+- Block starting a new recording while the last one is still being written
+- Clipboard retention is now an optional setting, off by default and tucked under Optional
+
+---
+
 ## 1.3.24
 
 - Fix "final" becoming a Discord contact name (e.g. PinBal) during chat dictation
-- Stop using chat app window titles (Discord, Slack, Teams, etc.) for fuzzy spell correction
-- Require first-letter match for fuzzy corrections; protect common words like "final"
-- Keep bare dictionary names out of the Whisper prompt so contact names do not bias transcription
+- Tighten fuzzy spell correction: first-letter match and protected common words like "final"
+- Keep fuzzy correction from chat app window titles (Discord, Slack, etc.)
 
 ---
 
