@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.24
+
+- Fix "final" becoming a Discord contact name (e.g. PinBal) during chat dictation
+- Stop using chat app window titles (Discord, Slack, Teams, etc.) for fuzzy spell correction
+- Require first-letter match for fuzzy corrections; protect common words like "final"
+- Keep bare dictionary names out of the Whisper prompt so contact names do not bias transcription
+
+---
+
 ## 1.3.23
 
 - Add hands-free mode: double-press push-to-talk key to dictate without holding

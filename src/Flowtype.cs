@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.23.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.23.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.24.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.24.0")]
 
 namespace Flowtype
 {
@@ -1581,6 +1581,30 @@ namespace Flowtype
                 RegexOptions.IgnoreCase);
         }
 
+        private static readonly HashSet<string> FuzzyProtectedWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "final", "finally", "fine", "find", "finger", "finish", "fire", "first", "fish", "five",
+            "literally", "logic", "little", "live", "long", "look", "testing", "test", "text", "talk",
+            "tomorrow", "today", "tonight", "true", "try", "turn", "tail", "take", "tell", "than",
+            "awesome", "about", "after", "again", "also", "always", "another", "around", "because",
+            "before", "being", "between", "call", "called", "come", "coming", "could", "down", "doing",
+            "every", "everything", "from", "going", "good", "great", "have", "having", "just", "know",
+            "like", "make", "maybe", "more", "most", "much", "need", "never", "only", "other", "over",
+            "pretty", "really", "right", "said", "same", "some", "something", "still", "that", "their",
+            "them", "then", "there", "these", "they", "think", "this", "those", "through", "very",
+            "want", "well", "were", "what", "when", "where", "which", "while", "will", "with", "would",
+            "yeah", "yes", "your"
+        };
+
+        private static bool IsChatProcess(string processName)
+        {
+            string app = (processName ?? "").ToLowerInvariant();
+            return app.Contains("discord") || app.Contains("slack") || app.Contains("teams")
+                || app.Contains("telegram") || app.Contains("whatsapp") || app.Contains("signal")
+                || app.Contains("messenger") || app.Contains("element") || app.Contains("skype")
+                || app.Contains("zoom");
+        }
+
         private static string ApplyFuzzyDictionary(string text, AppSettings settings, ForegroundInfo context)
         {
             List<string> terms = CollectCanonicalTerms(settings, context);
@@ -1588,6 +1612,7 @@ namespace Flowtype
             return Regex.Replace(text, @"\b[A-Za-z][A-Za-z'-]{2,}\b", delegate(Match match)
             {
                 string word = match.Value;
+                if (FuzzyProtectedWords.Contains(word)) return word;
                 if (terms.Exists(value => String.Equals(value, word, StringComparison.OrdinalIgnoreCase))) return word;
                 string best = null;
                 int bestDistance = int.MaxValue;
@@ -1595,6 +1620,7 @@ namespace Flowtype
                 foreach (string term in terms)
                 {
                     if (Math.Abs(term.Length - word.Length) > 2) continue;
+                    if (!Char.Equals(Char.ToLowerInvariant(word[0]), Char.ToLowerInvariant(term[0]))) continue;
                     int distance = LevenshteinDistance(word, term);
                     int maxDistance = term.Length <= 5 ? 1 : 2;
                     if (distance <= 0 || distance > maxDistance) continue;
@@ -1643,7 +1669,7 @@ namespace Flowtype
                     add(snippet.Value);
                 }
             }
-            if (context != null && !String.IsNullOrWhiteSpace(context.Title))
+            if (context != null && !String.IsNullOrWhiteSpace(context.Title) && !IsChatProcess(context.ProcessName))
             {
                 foreach (Match token in Regex.Matches(context.Title, @"\b[A-Za-z][A-Za-z'-]{3,}\b"))
                     add(token.Value);
@@ -1934,7 +1960,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
             return client;
         }
 
@@ -2065,7 +2091,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2195,7 +2221,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
             boundKey = key;
             return client;
         }
@@ -2524,13 +2550,15 @@ namespace Flowtype
             List<string> terms = new List<string>();
             foreach (string entry in settings.Dictionary.Take(80))
             {
-                string value = entry ?? "";
-                int split = value.IndexOf("=>", StringComparison.Ordinal);
-                if (split >= 0) value = value.Substring(split + 2).Trim();
+                string raw = entry ?? "";
+                string value = raw;
+                int split = raw.IndexOf("=>", StringComparison.Ordinal);
+                if (split >= 0) value = raw.Substring(split + 2).Trim();
                 else
                 {
-                    split = value.IndexOf('=');
-                    if (split >= 0) value = value.Substring(split + 1).Trim();
+                    split = raw.IndexOf('=');
+                    if (split >= 0) value = raw.Substring(split + 1).Trim();
+                    else if (!ShouldPrimeWhisperTerm(raw.Trim())) continue;
                 }
                 if (value.Length > 0) terms.Add(value);
             }
@@ -2539,6 +2567,15 @@ namespace Flowtype
             // Window title is passed to LLM cleanup only — including "Target window:" here
             // makes Whisper echo it into the transcript on longer clips.
             return prompt.ToString().Replace("\"", "'").Trim();
+        }
+
+        private static bool ShouldPrimeWhisperTerm(string term)
+        {
+            if (String.IsNullOrWhiteSpace(term)) return false;
+            term = term.Trim();
+            if (term.Contains(" ")) return true;
+            if (term.Any(ch => !Char.IsLetter(ch))) return true;
+            return term.Length >= 10;
         }
 
         private static int FindFreePort()
@@ -2691,7 +2728,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.23");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.24");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {

@@ -46,6 +46,10 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("do-no t", AppSettings.Defaults()));
             failures += AssertEqual("no spurious t from backtrack", "Want not.",
                 TextProcessor.Clean("want, no t", AppSettings.Defaults()));
+            failures += AssertEqual("final not replaced in discord chat", "I'm doing some final testing now",
+                TextProcessor.Clean("I'm doing some final testing now", AppSettings.Defaults(), DiscordContext("PinBal")));
+            failures += AssertEqual("finnal not fuzzy to contact name", "I'm doing some finnal testing now",
+                TextProcessor.Clean("I'm doing some finnal testing now", AppSettings.Defaults(), DiscordContext("PinBal")));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
             failures += AssertEqual("spoken question", "Ready?", TextProcessor.Clean("ready question mark", AppSettings.Defaults()));
             failures += AssertTrue(Hotkeys.IsChord("Win + Ctrl"));
@@ -68,6 +72,14 @@ namespace Flowtype.Tests
             ForegroundInfo context = new ForegroundInfo();
             context.Title = "Cursor Settings";
             return TextProcessor.Clean("open setsings", settings, context);
+        }
+
+        private static ForegroundInfo DiscordContext(string contactName)
+        {
+            ForegroundInfo context = new ForegroundInfo();
+            context.ProcessName = "Discord";
+            context.Title = contactName;
+            return context;
         }
 
         private static int AssertEqual(string name, string expected, string actual)
