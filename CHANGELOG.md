@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.22
+
+- Fix mic tester showing the same level at every boost setting (now shows mic, boosted, and Whisper input)
+- Strip lone-letter Whisper glitches and mid-transcript prompt echo from longer dictation
+- Tighten list detection so normal prose is not formatted as bullet lists
+- Switch UI font to Space Grotesk (sharp tech sans)
+
+---
+
 ## 1.3.21
 
 - Fix Whisper echoing "Target window" prompt garbage into dictation output

@@ -20,8 +20,24 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("The team shipped the feature yesterday. The team shipped the feature yesterday. The team shipped the feature yesterday.", AppSettings.Defaults()));
             failures += AssertTrue(TranscriptionQuality.ShouldReject("T", 500, 12000));
             failures += AssertFalse(TranscriptionQuality.ShouldReject("no", 500, 12000));
+            failures += AssertEqual("embedded lone T",
+                "So we need to finish the project by Friday and then send it to the client for review.",
+                TextProcessor.Clean("So we need to finish the project by Friday and T then send it to the client for review", AppSettings.Defaults()));
+            failures += AssertEqual("mid prompt echo",
+                "The integration is working well and we should ship tomorrow.",
+                TextProcessor.Clean("The integration is working well Target window 1x garbage and we should ship tomorrow", AppSettings.Defaults()));
+            failures += AssertTrue(TranscriptionQuality.IsLikelyEmbeddedHallucination("T", 0.08, 0.4, 0.5));
+            failures += AssertFalse(TranscriptionQuality.IsLikelyEmbeddedHallucination("I", 0.08, 0.4, 0.5));
             failures += AssertContains("1.", TextProcessor.Clean("first get milk second get bread third get eggs", AppSettings.Defaults()));
             failures += AssertContains("- ", TextProcessor.Clean("bullet point apples bullet point bananas bullet point cherries", AppSettings.Defaults()));
+            failures += AssertEqual("no inferred list from prose",
+                "The main points are that we should move fast, stay focused, and ship on time.",
+                TextProcessor.Clean("The main points are that we should move fast, stay focused, and ship on time", AppSettings.Defaults()));
+            failures += AssertEqual("no inferred list from goals prose",
+                "My goals for this week are exercise, reading, and finishing the prototype.",
+                TextProcessor.Clean("My goals for this week are exercise, reading, and finishing the prototype", AppSettings.Defaults()));
+            failures += AssertContains("- Better tooling",
+                TextProcessor.Clean("here are the top three things we need, better tooling, clearer specs, and more time", AppSettings.Defaults()));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
             failures += AssertEqual("spoken question", "Ready?", TextProcessor.Clean("ready question mark", AppSettings.Defaults()));
             failures += AssertTrue(Hotkeys.IsChord("Win + Ctrl"));

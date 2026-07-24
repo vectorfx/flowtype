@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.21.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.21.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.22.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.22.0")]
 
 namespace Flowtype
 {
@@ -179,14 +179,14 @@ namespace Flowtype
             if (initialized) return;
             initialized = true;
             string root = Path.Combine(FlowtypeApp.AppDirectory ?? "", "assets", "fonts");
-            if (TryLoadRobotoMonoPair(root)) return;
-            if (TryLoadSingleFont(Path.Combine(root, "RobotoMono-Regular.ttf"))) return;
+            if (TryLoadSansPair(root, "SpaceGrotesk-Regular.ttf", "SpaceGrotesk-Bold.ttf", "Space Grotesk")) return;
+            if (TryLoadSingleFont(Path.Combine(root, "SpaceGrotesk-Regular.ttf"))) return;
             try
             {
-                FontFamily mono = new FontFamily("Roboto Mono");
-                ui = new Font(mono, 9.25f);
-                uiLarge = new Font(mono, 10.25f);
-                uiBold = new Font(mono, 9.75f, FontStyle.Bold);
+                FontFamily sans = new FontFamily("Segoe UI Variable");
+                ui = new Font(sans, 9.25f);
+                uiLarge = new Font(sans, 10.25f);
+                uiBold = new Font(sans, 9.75f, FontStyle.Bold);
                 return;
             }
             catch { }
@@ -195,24 +195,24 @@ namespace Flowtype
             uiBold = new Font("Segoe UI", 9.75f, FontStyle.Bold);
         }
 
-        private static bool TryLoadRobotoMonoPair(string root)
+        private static bool TryLoadSansPair(string root, string regularFile, string boldFile, string familyName)
         {
-            string regularPath = Path.Combine(root, "RobotoMono-Regular.ttf");
-            string boldPath = Path.Combine(root, "RobotoMono-Bold.ttf");
+            string regularPath = Path.Combine(root, regularFile);
+            string boldPath = Path.Combine(root, boldFile);
             if (!File.Exists(regularPath)) return false;
             try
             {
                 Collection.AddFontFile(regularPath);
-                FontFamily regular = FindFamily(Collection, "Roboto Mono");
+                FontFamily regular = FindFamily(Collection, familyName);
                 FontFamily bold = regular;
                 if (File.Exists(boldPath))
                 {
                     Collection.AddFontFile(boldPath);
-                    bold = FindFamily(Collection, "Roboto Mono") ?? regular;
+                    bold = FindFamily(Collection, familyName) ?? regular;
                 }
                 if (regular == null) return false;
                 ui = new Font(regular, 9.25f);
-                uiLarge = new Font(regular, 10.25f);
+                uiLarge = new Font(regular, 10.5f);
                 uiBold = new Font(bold, 9.75f, FontStyle.Bold);
                 return true;
             }
@@ -912,7 +912,13 @@ namespace Flowtype
         private readonly object micLock = new object();
         private volatile bool recording;
         public float MicGain { get; set; }
-        public event Action<float> LevelChanged;
+        public event Action<AudioMeterReading> LevelChanged;
+
+        public sealed class AudioMeterReading
+        {
+            public float Raw;
+            public float Boosted;
+        }
 
         public WaveRecorder()
         {
@@ -975,28 +981,54 @@ namespace Flowtype
             {
                 byte[] data = new byte[header.bytesRecorded];
                 Marshal.Copy(header.data, data, 0, data.Length);
+                float rawPeak = MeasurePeak(data);
                 ApplyGainInPlace(data);
+                float boostedPeak = MeasurePeak(data);
                 lock (gate)
                 {
                     if (recording && rawStream != null) rawStream.Write(data, 0, data.Length);
                 }
-                float peak = 0;
-                double power = 0;
-                int sampleCount = 0;
-                for (int index = 0; index + 1 < data.Length; index += 2)
-                {
-                    short sample = (short)(data[index] | (data[index + 1] << 8));
-                    float normalized = sample / 32768f;
-                    peak = Math.Max(peak, Math.Abs(normalized));
-                    power += normalized * normalized;
-                    sampleCount++;
-                }
-                float rms = sampleCount == 0 ? 0 : (float)Math.Sqrt(power / sampleCount);
-                float meter = Math.Min(1f, rms * 4.2f + peak * 0.42f);
-                Action<float> levelHandler = LevelChanged;
-                if (levelHandler != null) levelHandler(meter);
+                AudioMeterReading reading = new AudioMeterReading();
+                reading.Raw = BuildMeter(rawPeak);
+                reading.Boosted = BuildMeter(boostedPeak);
+                Action<AudioMeterReading> levelHandler = LevelChanged;
+                if (levelHandler != null) levelHandler(reading);
             }
             if (recording) waveInAddBuffer(input, parameter1, (uint)Marshal.SizeOf(typeof(WaveHeader)));
+        }
+
+        private static float MeasurePeak(byte[] data)
+        {
+            float peak = 0;
+            for (int index = 0; index + 1 < data.Length; index += 2)
+            {
+                short sample = (short)(data[index] | (data[index + 1] << 8));
+                peak = Math.Max(peak, Math.Abs(sample / 32768f));
+            }
+            return peak;
+        }
+
+        private static float BuildMeter(float peak)
+        {
+            return Math.Min(1f, peak * 1.35f);
+        }
+
+        public static int EstimateWhisperPeakPercent(byte[] pcm)
+        {
+            if (pcm == null || pcm.Length < 2) return 0;
+            int peak = 1;
+            for (int index = 0; index + 1 < pcm.Length; index += 2)
+            {
+                int sample = AbsPcmSample((short)(pcm[index] | (pcm[index + 1] << 8)));
+                if (sample > peak) peak = sample;
+            }
+            float target = 24000f;
+            float normalize = peak < 1200 ? Math.Min(3.5f, target / peak) : Math.Min(2.2f, target / peak);
+            if (peak >= 28000) normalize = Math.Min(1f, target / peak);
+            else if (peak >= 20000) normalize = Math.Min(1f, normalize);
+            if (normalize > 4.5f) normalize = 4.5f;
+            int whisperPeak = SoftLimitSample((int)Math.Round(Math.Min(peak, 32767) * normalize));
+            return (int)Math.Round(whisperPeak / 327.67f);
         }
 
         public string Stop()
@@ -1162,6 +1194,18 @@ namespace Flowtype
             // A multi-syllable clip that only produced 1-2 characters is almost always garbage.
             if (text.Length <= 2 && recordMs >= 350 && audioBytes >= 8000) return true;
 
+            return false;
+        }
+
+        public static bool IsLikelyEmbeddedHallucination(string segmentText, double durationSeconds, double gapBeforeSeconds, double gapAfterSeconds)
+        {
+            string text = (segmentText ?? "").Trim();
+            if (text.Length != 1) return false;
+            if (String.Equals(text, "I", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(text, "a", StringComparison.OrdinalIgnoreCase)) return false;
+            if (durationSeconds > 0.45) return false;
+            if (gapBeforeSeconds >= 0.25 && gapAfterSeconds >= 0.25) return true;
+            if (gapBeforeSeconds >= 0.35 || gapAfterSeconds >= 0.35) return true;
             return false;
         }
     }
@@ -1345,14 +1389,34 @@ namespace Flowtype
         private static string FormatInferredList(string text)
         {
             if (text.Contains("\n")) return text;
+
             Match list = Regex.Match(text,
-                @"^(?<head>.*?\b(?:things|points|steps|reasons|goals|priorities|options|items|tasks|changes)\b.*?(?:\bare\b|\binclude(?:s)?\b|:))\s*(?<body>.+)$",
+                @"^(?<head>.*?\b(?:here are|here is|here's|the following|top\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)|(?:my|our|the)\s+(?:list|checklist))\b.*?(?::|\s+are\b|\binclude(?:s)?\b))\s*(?<body>.+)$",
                 RegexOptions.IgnoreCase);
+            if (!list.Success)
+            {
+                list = Regex.Match(text,
+                    @"^(?<head>.*?\b(?:here are|here is|here's|the following|top\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)|(?:my|our|the)\s+(?:list|checklist))\b(?:\s+(?:the|my|our|a|an)\s+\w+|\s+\w+){0,4})\s*,\s*(?<body>.+)$",
+                    RegexOptions.IgnoreCase);
+            }
+            if (!list.Success)
+            {
+                list = Regex.Match(text,
+                    @"^(?<head>.*?\b(?:things|points|steps|reasons|goals|priorities|options|items|tasks|changes)\b\s*:\s*)(?<body>.+)$",
+                    RegexOptions.IgnoreCase);
+            }
             if (!list.Success) return text;
+
             string body = list.Groups["body"].Value.Trim();
-            string[] parts = Regex.Split(body, @"\s*(?:;|\.(?=\s)|,(?:\s+and)?|\b(?:and then|then|next|also|finally)\b)\s*", RegexOptions.IgnoreCase)
-                .Select(value => value.Trim(' ', ',', '.', ';')).Where(value => value.Length > 0).ToArray();
-            if (parts.Length < 3 || parts.Length > 9 || parts.Any(value => value.Length > 120)) return text;
+            string[] parts = Regex.Split(body, @"\s*(?:;|\b(?:and then|then|next|also|finally)\b)\s*", RegexOptions.IgnoreCase)
+                .SelectMany(value => Regex.Split(value, @"(?<=\S)\s*,\s*(?:and\s+)?(?=\S)", RegexOptions.None))
+                .Select(value => value.Trim(' ', ',', '.', ';'))
+                .Where(value => value.Length > 0)
+                .ToArray();
+            if (parts.Length < 2 || parts.Length > 9 || parts.Any(value => value.Length > 80)) return text;
+            if (parts.Any(value => Regex.IsMatch(value, @"\b(?:that|which|because|since|when|while|although|though|if|unless)\b", RegexOptions.IgnoreCase)))
+                return text;
+
             StringBuilder output = new StringBuilder(list.Groups["head"].Value.Trim().TrimEnd(':') + ":\n");
             foreach (string item in parts) output.Append("- " + item + "\n");
             return output.ToString().TrimEnd();
@@ -1412,8 +1476,13 @@ namespace Flowtype
 
         private static bool LooksLikeListIntro(string value)
         {
-            return Regex.IsMatch(value ?? "",
-                @"\b(?:top|following|list|things|points|steps|reasons|goals|priorities|options|items|tasks|changes|we need|I need|I want|include|are)\b",
+            string text = value ?? "";
+            if (Regex.IsMatch(text,
+                @"\b(?:here are|here is|here's|the following|top\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)|(?:my|our|the)\s+(?:list|checklist))\b",
+                RegexOptions.IgnoreCase))
+                return true;
+            return Regex.IsMatch(text,
+                @"\b(?:things|points|steps|reasons|goals|priorities|options|items|tasks|changes)\b\s*:",
                 RegexOptions.IgnoreCase);
         }
 
@@ -1542,11 +1611,19 @@ namespace Flowtype
         {
             if (String.IsNullOrWhiteSpace(text)) return "";
             text = text.Trim();
+            text = RemoveInlinePromptEcho(text);
 
             // Whisper often echoes the STT prompt at the tail of longer clips.
             Match targetWindow = Regex.Match(text, @"\bTarget window\b", RegexOptions.IgnoreCase);
             if (targetWindow.Success && targetWindow.Index >= 20)
-                text = text.Substring(0, targetWindow.Index).TrimEnd(' ', '\t', '-', '–', '—', ',');
+            {
+                string tail = text.Substring(targetWindow.Index);
+                bool tailLooksLikeGarbage = Regex.IsMatch(tail,
+                    @"(?:Outro to|Camp\.|[%$]{1,2}|P\.\$|Target window\s+\d[^.!?]{0,40}[.!?])",
+                    RegexOptions.IgnoreCase);
+                if (tailLooksLikeGarbage)
+                    text = text.Substring(0, targetWindow.Index).TrimEnd(' ', '\t', '-', '–', '—', ',');
+            }
 
             Match preferredTerms = Regex.Match(text, @"\bPreferred names and spellings\b", RegexOptions.IgnoreCase);
             if (preferredTerms.Success && preferredTerms.Index >= 20)
@@ -1555,6 +1632,45 @@ namespace Flowtype
             text = Regex.Replace(text, @"[\s\-–—,]*\b(?:Target window|Outro to)\b.*$", "", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"[\s,]*(?:Camp\.\d|P\.\$[%&$#@]*).*$", "", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "");
+            return RemoveEmbeddedGlitches(text.Trim());
+        }
+
+        private static string RemoveInlinePromptEcho(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return text ?? "";
+            text = Regex.Replace(text,
+                @"[\s\-–—,]*\bTarget window\s+\d+\s*[xX][^.!?]{0,40}?(?=\s+and\s+(?:we|I|they|it|the|then|also)\b)",
+                " ", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+\bOutro to\b[^.!?]{0,80}(?=\s+and\s+(?:we|I|they|it|the|then|also)\b)", " ", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+\b(?:Camp\.\d|P\.\$[%&$#@]+)[^.!?]{0,80}(?=\s+and\s+(?:we|I|they|it|the|then|also)\b)", " ", RegexOptions.IgnoreCase);
+            return Regex.Replace(text, @"[ \t]{2,}", " ").Trim();
+        }
+
+        public static string RemoveEmbeddedGlitches(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text) || text.Length < 25) return text ?? "";
+
+            // Whisper often inserts a lone letter during a breath or audio gap in longer dictation.
+            for (int pass = 0; pass < 3; pass++)
+            {
+                string next = Regex.Replace(text,
+                    @"(?<=\S{2,})\s+(?<glitch>[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z])(?=\s+\S{2,})",
+                    delegate(Match match)
+                    {
+                        string letter = match.Groups["glitch"].Value;
+                        if (String.Equals(letter, "X", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int index = match.Index;
+                            string before = index >= 11 ? text.Substring(index - 11, 11) : text.Substring(0, index);
+                            if (Regex.IsMatch(before, @"Generation\s+$", RegexOptions.IgnoreCase)) return match.Value;
+                        }
+                        return " ";
+                    });
+                if (String.Equals(next, text, StringComparison.Ordinal)) break;
+                text = next;
+            }
+
+            text = Regex.Replace(text, @"[ \t]{2,}", " ");
             return text.Trim();
         }
 
@@ -1723,7 +1839,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
             return client;
         }
 
@@ -1854,7 +1970,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -1984,7 +2100,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
             boundKey = key;
             return client;
         }
@@ -2236,8 +2352,36 @@ namespace Flowtype
                         }
                     }
                 }
+                FilterEmbeddedHallucinationSegments(transcript);
                 return transcript;
             }
+        }
+
+        private static void FilterEmbeddedHallucinationSegments(SpeechTranscript transcript)
+        {
+            if (transcript == null || transcript.Segments == null || transcript.Segments.Count < 3) return;
+            List<SpeechSegment> kept = new List<SpeechSegment>();
+            for (int index = 0; index < transcript.Segments.Count; index++)
+            {
+                SpeechSegment segment = transcript.Segments[index];
+                SpeechSegment previous = index > 0 ? transcript.Segments[index - 1] : null;
+                SpeechSegment next = index + 1 < transcript.Segments.Count ? transcript.Segments[index + 1] : null;
+                double gapBefore = previous == null ? 0 : Math.Max(0, segment.Start - previous.End);
+                double gapAfter = next == null ? 0 : Math.Max(0, next.Start - segment.End);
+                double duration = Math.Max(0, segment.End - segment.Start);
+                if (TranscriptionQuality.IsLikelyEmbeddedHallucination(segment.Text, duration, gapBefore, gapAfter)) continue;
+                kept.Add(segment);
+            }
+            if (kept.Count == 0 || kept.Count >= transcript.Segments.Count) return;
+            transcript.Segments = kept;
+            StringBuilder rebuilt = new StringBuilder();
+            foreach (SpeechSegment segment in kept)
+            {
+                if (segment == null || String.IsNullOrWhiteSpace(segment.Text)) continue;
+                if (rebuilt.Length > 0) rebuilt.Append(' ');
+                rebuilt.Append(segment.Text.Trim());
+            }
+            if (rebuilt.Length > 0) transcript.Text = rebuilt.ToString();
         }
 
         private static Task<SpeechTranscript> RunCliAsync(string wavePath, AppSettings settings, ForegroundInfo context)
@@ -2452,7 +2596,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.21");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.22");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -2840,6 +2984,16 @@ namespace Flowtype
                 try { BeginInvoke(new Action<float>(SetLevel), value); } catch { }
                 return;
             }
+            ApplyLevel(value);
+        }
+
+        public void SetLevel(WaveRecorder.AudioMeterReading reading)
+        {
+            SetLevel(reading == null ? 0f : reading.Boosted);
+        }
+
+        private void ApplyLevel(float value)
+        {
             float energy = Math.Min(1f, Math.Max(0f, value * 3.4f));
             level = energy > level ? level + (energy - level) * 0.82f : level + (energy - level) * 0.22f;
             int middle = bands.Length / 2;
@@ -3230,7 +3384,8 @@ namespace Flowtype
         private readonly WaveRecorder micTestRecorder = new WaveRecorder();
         private readonly Func<bool> microphoneBusy;
         private System.Windows.Forms.Timer micTestTimer;
-        private float micTestPeak;
+        private float micTestRawPeak;
+        private float micTestBoostedPeak;
         private string micTestPath;
         public event Action<AppSettings, string, string> SettingsSaved;
         public event Action<string> HotkeyPreviewChanged;
@@ -3448,7 +3603,12 @@ namespace Flowtype
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
-            micGainBar.ValueChanged += delegate { micGainLabel.Text = (micGainBar.Value / 10f).ToString("0.0", CultureInfo.InvariantCulture) + "×"; };
+            micGainBar.ValueChanged += delegate
+            {
+                float gain = micGainBar.Value / 10f;
+                micGainLabel.Text = gain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
+                if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
+            };
             page.Controls.Add(micGainBar);
             micGainLabel.SetBounds(540, 708, 60, 24);
             page.Controls.Add(micGainLabel);
@@ -3464,9 +3624,9 @@ namespace Flowtype
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 816, 650, 32);
+            micTestStatus.SetBounds(24, 816, 650, 48);
             micTestStatus.ForeColor = UiTheme.TextMuted;
-            micTestStatus.Text = "Live level while testing. Speak normally for three seconds.";
+            micTestStatus.Text = "Test shows mic level, boosted level, and the level Whisper receives. Aim for Whisper input around 50–80%.";
             page.Controls.Add(micTestStatus);
             latencyLabel.SetBounds(24, 856, 650, 36);
             latencyLabel.ForeColor = UiTheme.TextMuted;
@@ -3915,9 +4075,11 @@ namespace Flowtype
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            micTestPeak = 0f;
+            micTestRawPeak = 0f;
+            micTestBoostedPeak = 0f;
             micLevelBar.Value = 0;
-            micTestStatus.Text = "Listening… speak normally.";
+            micTestStatus.Text = String.Format(CultureInfo.InvariantCulture,
+                "Listening at {0:0.0}× boost… speak normally.", micGainBar.Value / 10f);
             micTestButton.Text = "Stop test";
             micTestPath = Path.Combine(Path.GetTempPath(),
                 "flowtype-mic-test-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".wav");
@@ -3946,21 +4108,29 @@ namespace Flowtype
             micTestTimer.Start();
         }
 
-        private void OnMicTestLevel(float level)
+        private void OnMicTestLevel(WaveRecorder.AudioMeterReading reading)
         {
-            if (IsDisposed) return;
+            if (IsDisposed || reading == null) return;
             if (InvokeRequired)
             {
-                try { BeginInvoke(new Action<float>(OnMicTestLevel), level); } catch { }
+                try { BeginInvoke(new Action<WaveRecorder.AudioMeterReading>(OnMicTestLevel), reading); } catch { }
                 return;
             }
-            micTestPeak = Math.Max(micTestPeak, level);
-            micLevelBar.Value = Math.Max(micLevelBar.Minimum, Math.Min(micLevelBar.Maximum, (int)Math.Round(level * 100f)));
+            micTestRawPeak = Math.Max(micTestRawPeak, reading.Raw);
+            micTestBoostedPeak = Math.Max(micTestBoostedPeak, reading.Boosted);
+            micLevelBar.Value = Math.Max(micLevelBar.Minimum, Math.Min(micLevelBar.Maximum, (int)Math.Round(reading.Boosted * 100f)));
+            micTestStatus.Text = String.Format(CultureInfo.InvariantCulture,
+                "{0:0.0}× boost · mic {1}% · boosted {2}%",
+                micGainBar.Value / 10f,
+                (int)Math.Round(micTestRawPeak * 100f),
+                (int)Math.Round(micTestBoostedPeak * 100f));
         }
 
         private void FinishMicTest()
         {
             micTestRecorder.LevelChanged -= OnMicTestLevel;
+            float gain = micGainBar.Value / 10f;
+            int whisperInput = 0;
             try
             {
                 if (micTestRecorder.IsRecording) micTestRecorder.Stop();
@@ -3968,20 +4138,53 @@ namespace Flowtype
             catch { }
             try
             {
-                if (!String.IsNullOrWhiteSpace(micTestPath) && File.Exists(micTestPath)) File.Delete(micTestPath);
+                if (!String.IsNullOrWhiteSpace(micTestPath) && File.Exists(micTestPath))
+                {
+                    byte[] wav = File.ReadAllBytes(micTestPath);
+                    if (wav.Length > 44)
+                    {
+                        byte[] pcm = new byte[wav.Length - 44];
+                        Array.Copy(wav, 44, pcm, 0, pcm.Length);
+                        whisperInput = (int)Math.Round(MeasurePeakPercent(pcm));
+                    }
+                    File.Delete(micTestPath);
+                }
             }
             catch { }
             micTestPath = "";
             micTestButton.Text = "Test 3s";
             micTestButton.Enabled = true;
-            int peakPercent = (int)Math.Round(micTestPeak * 100f);
-            if (micTestPeak < 0.08f)
-                micTestStatus.Text = "Very quiet (" + peakPercent + "% peak) — raise Microphone boost or move closer.";
-            else if (micTestPeak < 0.2f)
-                micTestStatus.Text = "A bit quiet (" + peakPercent + "% peak) — try 1.4×–1.8× boost if words are missed.";
-            else if (micTestPeak > 0.92f)
-                micTestStatus.Text = "Very loud (" + peakPercent + "% peak) — lower boost to avoid clipping.";
-            else micTestStatus.Text = "Good input level (" + peakPercent + "% peak).";
+            int rawPercent = (int)Math.Round(micTestRawPeak * 100f);
+            int boostedPercent = (int)Math.Round(micTestBoostedPeak * 100f);
+            string levels = String.Format(CultureInfo.InvariantCulture,
+                "{0:0.0}× boost · mic {1}% · boosted {2}% · Whisper input {3}%",
+                gain, rawPercent, boostedPercent, whisperInput);
+            if (micTestRawPeak < 0.08f)
+                micTestStatus.Text = levels + " — very quiet at the mic; raise boost or move closer (quiet input causes missed words).";
+            else if (boostedPercent < 20)
+                micTestStatus.Text = levels + " — still low after boost; try " + Math.Min(3f, gain + 0.4f).ToString("0.0", CultureInfo.InvariantCulture) + "×–2.0×.";
+            else if (boostedPercent > 92f || whisperInput > 92)
+                micTestStatus.Text = levels + " — too hot; lower boost to avoid clipping glitches.";
+            else if (whisperInput >= 35 && whisperInput <= 88)
+                micTestStatus.Text = levels + " — good dictation level.";
+            else micTestStatus.Text = levels + " — usable; aim for Whisper input around 50–80%.";
+        }
+
+        private static float MeasurePeakPercent(byte[] pcm)
+        {
+            return MeasurePeak(pcm) * 100f;
+        }
+
+        private static float MeasurePeak(byte[] pcm)
+        {
+            if (pcm == null || pcm.Length < 2) return 0f;
+            float peak = 0;
+            for (int index = 0; index + 1 < pcm.Length; index += 2)
+            {
+                short sample = (short)(pcm[index] | (pcm[index + 1] << 8));
+                peak = Math.Max(peak, Math.Abs(sample / 32768f));
+            }
+            return peak;
         }
 
         private void StopMicTest()

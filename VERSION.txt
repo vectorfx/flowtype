@@ -1,1 +1,1 @@
-Flowtype 1.3.21
+Flowtype 1.3.22

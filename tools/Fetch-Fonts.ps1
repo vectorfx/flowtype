@@ -4,12 +4,12 @@ New-Item -ItemType Directory -Force -Path $fontDir | Out-Null
 
 $fonts = @(
     @{
-        Name = 'RobotoMono-Regular.ttf'
-        Url  = 'https://github.com/googlefonts/RobotoMono/raw/main/fonts/ttf/RobotoMono-Regular.ttf'
+        Name = 'SpaceGrotesk-Regular.ttf'
+        Url  = 'https://github.com/floriankarsten/space-grotesk/raw/master/fonts/ttf/static/SpaceGrotesk-Regular.ttf'
     },
     @{
-        Name = 'RobotoMono-Bold.ttf'
-        Url  = 'https://github.com/googlefonts/RobotoMono/raw/main/fonts/ttf/RobotoMono-Bold.ttf'
+        Name = 'SpaceGrotesk-Bold.ttf'
+        Url  = 'https://github.com/floriankarsten/space-grotesk/raw/master/fonts/ttf/static/SpaceGrotesk-Bold.ttf'
     }
 )
 
