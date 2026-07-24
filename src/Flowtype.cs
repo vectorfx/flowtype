@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.25.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.25.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.26.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.26.0")]
 
 namespace Flowtype
 {
@@ -863,6 +863,9 @@ namespace Flowtype
             }
             catch { return false; }
 
+            // Target can change while transcription runs async — re-check before Ctrl+V.
+            if (!IsSameTarget(original)) return false;
+
             keybd_event(0x11, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -974,6 +977,11 @@ namespace Flowtype
                 }
             }
             return CallNextHookEx(handle, code, wParam, lParam);
+        }
+
+        public void ResetChordTracker()
+        {
+            if (chordTracker != null) chordTracker.Reset();
         }
 
         public void Dispose()
@@ -1547,7 +1555,7 @@ namespace Flowtype
             if (!list.Success)
             {
                 list = Regex.Match(text,
-                    @"^(?<head>.*?\b(?:here are|here is|here's|the following|top\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)|(?:my|our|the)\s+(?:list|checklist))\b(?:\s+(?:the|my|our|a|an)\s+\w+|\s+\w+){0,4})\s*,\s*(?<body>.+)$",
+                    @"^(?<head>.*?\b(?:here are|the following|top\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\b[^,]{0,48})\s*,\s*(?<body>.+)$",
                     RegexOptions.IgnoreCase);
             }
             if (!list.Success)
@@ -1564,7 +1572,7 @@ namespace Flowtype
                 .Select(value => value.Trim(' ', ',', '.', ';'))
                 .Where(value => value.Length > 0)
                 .ToArray();
-            if (parts.Length < 2 || parts.Length > 9 || parts.Any(value => value.Length > 80)) return text;
+            if (parts.Length < 3 || parts.Length > 9 || parts.Any(value => value.Length > 80)) return text;
             if (parts.Any(value => Regex.IsMatch(value, @"\b(?:that|which|because|since|when|while|although|though|if|unless)\b", RegexOptions.IgnoreCase)))
                 return text;
 
@@ -1578,13 +1586,13 @@ namespace Flowtype
             List<SpeechSegment> phrases = transcript.Segments.Where(value => value != null && !String.IsNullOrWhiteSpace(value.Text)).ToList();
             List<SpeechSegment> wordPhrases = BuildWordPhrases(transcript.Words);
             if (wordPhrases.Count > phrases.Count) phrases = wordPhrases;
-            if (phrases.Count < 2 || phrases.Count > 9) return "";
+            if (phrases.Count < 3 || phrases.Count > 9) return "";
             string first = phrases[0].Text.Trim();
             if (!LooksLikeListIntro(first)) return "";
             int realPauses = 0;
             for (int index = 1; index < phrases.Count; index++)
                 if (phrases[index].Start - phrases[index - 1].End >= 0.28) realPauses++;
-            if (phrases.Count < 3 && realPauses == 0) return "";
+            if (realPauses < 2) return "";
 
             Match split = Regex.Match(first, @"^(?<head>.*?(?:\bare\b|\binclude(?:s)?\b|:))\s*(?<tail>.+)$", RegexOptions.IgnoreCase);
             string heading = split.Success ? split.Groups["head"].Value : first;
@@ -1651,6 +1659,15 @@ namespace Flowtype
             "want", "well", "were", "what", "when", "where", "which", "while", "will", "with", "would",
             "yeah", "yes", "your"
         };
+
+        private static bool IsChatProcess(string processName)
+        {
+            string app = (processName ?? "").ToLowerInvariant();
+            return app.Contains("discord") || app.Contains("slack") || app.Contains("teams")
+                || app.Contains("telegram") || app.Contains("whatsapp") || app.Contains("signal")
+                || app.Contains("messenger") || app.Contains("element") || app.Contains("skype")
+                || app.Contains("zoom");
+        }
 
         private static string ApplyFuzzyDictionary(string text, AppSettings settings, ForegroundInfo context)
         {
@@ -1722,8 +1739,18 @@ namespace Flowtype
             }
             if (context != null && !String.IsNullOrWhiteSpace(context.Title))
             {
-                foreach (Match token in Regex.Matches(context.Title, @"\b[A-Za-z][A-Za-z'-]{3,}\b"))
-                    add(token.Value);
+                string title = context.Title.Trim();
+                if (IsChatProcess(context.ProcessName))
+                {
+                    string chatLabel = Regex.Split(title, @"\s*[—\-|]\s*")[0].Trim();
+                    add(chatLabel);
+                }
+                else
+                {
+                    add(title);
+                    foreach (Match token in Regex.Matches(title, @"\b[A-Za-z][A-Za-z'-]{3,}\b"))
+                        add(token.Value);
+                }
             }
             return terms;
         }
@@ -2011,7 +2038,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
             return client;
         }
 
@@ -2142,7 +2169,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2272,7 +2299,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
             boundKey = key;
             return client;
         }
@@ -2779,7 +2806,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.25");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -4347,7 +4374,7 @@ namespace Flowtype
                     {
                         byte[] pcm = new byte[wav.Length - 44];
                         Array.Copy(wav, 44, pcm, 0, pcm.Length);
-                        whisperInput = (int)Math.Round(MeasurePeakPercent(pcm));
+                        whisperInput = WaveRecorder.EstimateWhisperPeakPercent(pcm);
                     }
                     File.Delete(micTestPath);
                 }
@@ -4540,6 +4567,7 @@ namespace Flowtype
         private const int ShortPressMs = 280;
         private SettingsForm settingsForm;
         private HistoryForm historyForm;
+        private IntPtr lastForegroundWindow;
 
         public FlowtypeContext(EventWaitHandle activationEvent)
         {
@@ -4600,6 +4628,8 @@ namespace Flowtype
             activationPoller.Tick += delegate
             {
                 try { if (this.activationEvent != null && this.activationEvent.WaitOne(0)) ShowSettings(); }
+                catch { }
+                try { ReconcileAfterForegroundChange(); }
                 catch { }
             };
             activationPoller.Start();
@@ -4727,6 +4757,26 @@ namespace Flowtype
                 store.LogError(exception);
                 return false;
             }
+        }
+
+        private void ReconcileAfterForegroundChange()
+        {
+            IntPtr foreground = ForegroundContext.Capture(false).Handle;
+            if (foreground == lastForegroundWindow) return;
+            lastForegroundWindow = foreground;
+            if (recorder.IsRecording || processing) return;
+
+            bool physicalDown = Hotkeys.IsModifierChord(settings.Hotkey) && NativeKeyState.IsHotkeyDown(settings.Hotkey);
+            if (hotkeyDown && !physicalDown)
+            {
+                hotkeyDown = false;
+                CancelPendingStop();
+                CancelDoubleTapTimer();
+                ResetRecordingMode();
+            }
+            chordReleaseStreak = 0;
+            chordPolledDown = physicalDown;
+            hook.ResetChordTracker();
         }
 
         private void OnHotkeyChanged(bool down)
@@ -4880,11 +4930,7 @@ namespace Flowtype
         private void StartRecording()
         {
             if (shuttingDown || recorder.IsRecording) return;
-            if (processing)
-            {
-                Notify("Still writing last dictation", "Wait for insertion to finish before recording again.", ToolTipIcon.Info);
-                return;
-            }
+            if (processing) dictationGeneration++;
             try
             {
                 if (settings.Engine == "OpenAI" && String.IsNullOrWhiteSpace(apiKey))

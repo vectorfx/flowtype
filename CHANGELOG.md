@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.26
+
+- Fix random/stale pastes: re-check focus before Ctrl+V and cancel in-flight inserts when a new recording starts
+- Fix voice dead after alt-tab: restore generation-bump interrupt, reset hotkey state on foreground change
+- Fix mic tester Whisper input reading (was using wrong peak metric; gain changes looked identical)
+- Restore Discord/chat fuzzy-correction guard accidentally removed in 1.3.25
+- Tighten inferred list detection again (min 3 items; drop comma-only prose path; stricter pause lists)
+
+---
+
 ## 1.3.25
 
 - Always insert dictation into the focused field (hands-free and hold-to-talk)
