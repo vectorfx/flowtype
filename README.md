@@ -5,12 +5,12 @@
 <h1 align="center">Flowtype</h1>
 
 <p align="center">
-  <strong>Hold a key. Speak. Release. Clean text appears where you were typing.</strong>
+  <strong>System-wide push-to-talk dictation for Windows.</strong>
 </p>
 
 <p align="center">
-  Native Windows push-to-talk — system-wide, offline-first, no account.<br>
-  One executable. ~60 MB full stack. Keys sealed with DPAPI.
+  Offline by default · tray-resident · single executable<br>
+  Local whisper.cpp · optional Groq/OpenAI · API keys stored with DPAPI
 </p>
 
 <p align="center">
@@ -27,11 +27,21 @@
 
 ## Overview
 
-Most dictation tools want a subscription, a cloud login, or a half-gig model before you say a word. Flowtype is built around speed and restraint: a tray-resident app that captures speech globally, cleans it locally, and pastes into whatever had focus — Slack, browser, IDE, terminal, all of it.
+Flowtype is a tray-resident Windows app for push-to-talk dictation. Hold a hotkey, speak, release — the recording is transcribed, cleaned, and inserted into whatever field had focus when you started.
 
-Warm whisper.cpp between takes. Turbo path for long dictations. Built-in cleanup in milliseconds — fillers, punctuation, spoken numbers, lists — without routing every sentence through an LLM. Context-aware writing rules when tone should match the app you're in. Click-through voice capsule with matte themes or liquid glass. Smart paste with clipboard fallback. Latency strip on every take. Mic health diagnostics. Tray shortcut to fix the last misheard word. Recovery when something goes sideways.
+**Default stack:** local whisper.cpp (Instant model, ~60 MB), built-in rule cleanup, paste into the active control. No account, no telemetry, no cloud unless you enable it.
 
-Optional [Groq](https://console.groq.com) or OpenAI for cloud ASR. Optional LLM polish. Both off unless you turn them on.
+**Optional:** Groq or OpenAI for transcription; OpenRouter, OpenAI, or Ollama for LLM cleanup. All cloud paths are off by default.
+
+Implementation notes:
+
+- Single-file C# app (`src/Flowtype.cs`) with a global hotkey hook and WAV capture at 16 kHz
+- whisper.cpp server kept warm between takes; Groq/OpenAI used when configured
+- Cleanup handles fillers, punctuation, spoken lists, dictionary replacements, and app-context hints from the foreground window title
+- Click-through recording overlay; clipboard restored after insert unless you opt to keep dictation on the clipboard
+- Mic level test reports raw, boosted, and estimated Whisper input levels
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline.
 
 ---
 
@@ -44,7 +54,7 @@ Optional [Groq](https://console.groq.com) or OpenAI for cloud ASR. Optional LLM 
 | **Capture** | Global push-to-talk · any focused field |
 | **Overlay** | Animated click-through capsule · no focus steal |
 | **Speech** | Local whisper.cpp · Groq / OpenAI optional |
-| **Output** | Smart paste · offline cleanup · LLM polish optional |
+| **Output** | Paste into focused field · rule cleanup · optional LLM |
 | **Privacy** | No account · no telemetry · DPAPI keys |
 
 ---
@@ -137,9 +147,11 @@ Audio goes to Groq for transcription only unless you opt into cloud cleanup.
 
 ## Settings
 
-**Performance** — turbo path · mic boost · mic health test · latency strip
+**General** — hotkey · hands-free mode · speech engine · cleanup · dictionary · mic boost · mic test
 
-**Writing** — smart cleanup · context-aware rules · dictionary & snippets
+**Cloud** — Groq · OpenAI · OpenRouter cleanup
+
+**Local** — whisper.cpp install · Ollama cleanup
 
 ---
 
@@ -199,7 +211,7 @@ See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 - whisper.cpp (MIT)
 - ggml Whisper models (MIT)
-- Roboto Mono (Apache 2.0)
+- Space Grotesk (SIL Open Font License 1.1)
 
 ---
 
