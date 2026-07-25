@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.26.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.26.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.27.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.27.0")]
 
 namespace Flowtype
 {
@@ -261,7 +261,7 @@ namespace Flowtype
             {
                 if (LastTotalMs <= 0) return "No dictation yet.";
                 return "Last: record " + LastRecordMs + " ms · transcribe " + LastTranscribeMs +
-                    " ms · clean " + LastCleanMs + " ms · total " + LastTotalMs + " ms";
+                    " ms · clean " + LastCleanMs + " ms · pipeline " + LastTotalMs + " ms";
             }
         }
 
@@ -2038,7 +2038,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
             return client;
         }
 
@@ -2169,7 +2169,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2299,7 +2299,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
             boundKey = key;
             return client;
         }
@@ -2806,7 +2806,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.26");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -3851,16 +3851,18 @@ namespace Flowtype
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 920, 650, 48);
+            micTestStatus.SetBounds(24, 920, 650, 64);
             micTestStatus.ForeColor = UiTheme.TextMuted;
+            micTestStatus.AutoSize = false;
             micTestStatus.Text = "Test shows mic level, boosted level, and the level Whisper receives. Aim for Whisper input around 50–80%.";
             page.Controls.Add(micTestStatus);
-            latencyLabel.SetBounds(24, 960, 650, 36);
+            latencyLabel.SetBounds(24, 992, 650, 22);
             latencyLabel.ForeColor = UiTheme.TextMuted;
+            latencyLabel.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
             latencyLabel.Text = LatencyStats.Summary;
             page.Controls.Add(latencyLabel);
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 1004, 640, 40);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 1024, 640, 40);
             privacy.ForeColor = UiTheme.TextMuted;
             page.Controls.Add(privacy);
             return page;

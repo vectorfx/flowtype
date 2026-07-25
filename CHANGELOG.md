@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.27
+
+- Fix cut-off latency stats line in Settings (mic status and stats label were overlapping)
+- Rename latency "total" to "pipeline" so it matches what the number actually measures
+
+---
+
 ## 1.3.26
 
 - Fix random/stale pastes: re-check focus before Ctrl+V and cancel in-flight inserts when a new recording starts
