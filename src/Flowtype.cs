@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.27.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.27.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.28.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.28.0")]
 
 namespace Flowtype
 {
