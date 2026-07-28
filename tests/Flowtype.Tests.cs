@@ -65,7 +65,21 @@ namespace Flowtype.Tests
             repaired.OpenRouterModel = "openrouter/free";
             repaired.Repair();
             failures += AssertEqual("openrouter free blocked", "BuiltIn", repaired.CleanupProvider);
+            failures += AssertTimeout("short clip turbo floor", 60, AudioTranscriptionTimeouts.ForWavFile("", true).TotalSeconds);
+            failures += AssertTimeout("short clip standard floor", 90, AudioTranscriptionTimeouts.ForWavFile("", false).TotalSeconds);
+            failures += AssertTimeout("ten minute clip", 600, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
             return failures;
+        }
+
+        private static int AssertTimeout(string name, int expectedSeconds, double actualSeconds)
+        {
+            if (Math.Abs(expectedSeconds - actualSeconds) < 0.5)
+            {
+                Console.WriteLine("PASS " + name);
+                return 0;
+            }
+            Console.WriteLine("FAIL " + name + " expected=" + expectedSeconds + " actual=" + actualSeconds);
+            return 1;
         }
 
         private static string FuzzySettingsTest()

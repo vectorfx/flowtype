@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.28
+
+- Paste into whichever field is focused when transcription finishes (switch monitors/apps mid-dictation)
+- Scale local/Groq transcription timeouts with clip length so 10-minute recordings complete
+- Notify when the 10-minute recording limit is reached
+
+---
+
 ## 1.3.27
 
 - Fix cut-off latency stats line in Settings (mic status and stats label were overlapping)

@@ -804,28 +804,17 @@ namespace Flowtype
             return current == IntPtr.Zero || current == original.FocusHandle;
         }
 
+        public static bool IsFlowtypeForeground()
+        {
+            ForegroundInfo current = Capture(false);
+            return current != null && String.Equals(current.ProcessName, "Flowtype", StringComparison.OrdinalIgnoreCase);
+        }
+
         public static bool DeliverDictation(string text, ForegroundInfo original, bool keepOnClipboard)
         {
             string payload = text ?? "";
-            if (!IsSameTarget(original))
-            {
-                Exception last = null;
-                for (int attempt = 0; attempt < 6; attempt++)
-                {
-                    try
-                    {
-                        Clipboard.SetText(payload);
-                        return false;
-                    }
-                    catch (Exception exception)
-                    {
-                        last = exception;
-                        Thread.Sleep(40 * (attempt + 1));
-                    }
-                }
-                if (last != null) throw last;
-                return false;
-            }
+            if (payload.Length == 0) return false;
+            if (IsFlowtypeForeground()) return TryClipboardOnly(payload);
 
             string previous = null;
             bool hadPrevious = false;
@@ -863,9 +852,6 @@ namespace Flowtype
             }
             catch { return false; }
 
-            // Target can change while transcription runs async — re-check before Ctrl+V.
-            if (!IsSameTarget(original)) return false;
-
             keybd_event(0x11, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -882,6 +868,26 @@ namespace Flowtype
                 catch { }
             }
             return true;
+        }
+
+        private static bool TryClipboardOnly(string payload)
+        {
+            Exception last = null;
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                try
+                {
+                    Clipboard.SetText(payload);
+                    return false;
+                }
+                catch (Exception exception)
+                {
+                    last = exception;
+                    Thread.Sleep(40 * (attempt + 1));
+                }
+            }
+            if (last != null) throw last;
+            return false;
         }
 
         public static void PressEnter()
@@ -1359,6 +1365,37 @@ namespace Flowtype
             if (gapBeforeSeconds >= 0.25 && gapAfterSeconds >= 0.25) return true;
             if (gapBeforeSeconds >= 0.35 || gapAfterSeconds >= 0.35) return true;
             return false;
+        }
+    }
+
+    public static class AudioTranscriptionTimeouts
+    {
+        private const int MinTurboSeconds = 60;
+        private const int MinStandardSeconds = 90;
+        private const int MaxSeconds = 600;
+
+        public static TimeSpan ForWavFile(string wavePath, bool turbo)
+        {
+            return ForAudioSeconds(EstimateWavDurationSeconds(wavePath), turbo);
+        }
+
+        public static TimeSpan ForAudioSeconds(double audioSeconds, bool turbo)
+        {
+            int floor = turbo ? MinTurboSeconds : MinStandardSeconds;
+            double scale = turbo ? 1.5 : 2.5;
+            int timeoutSeconds = (int)Math.Min(MaxSeconds, Math.Max(floor, audioSeconds * scale + 30));
+            return TimeSpan.FromSeconds(timeoutSeconds);
+        }
+
+        public static double EstimateWavDurationSeconds(string wavePath)
+        {
+            try
+            {
+                FileInfo info = new FileInfo(wavePath);
+                if (!info.Exists || info.Length <= 44) return 0;
+                return (info.Length - 44) / 32000.0;
+            }
+            catch { return 0; }
         }
     }
 
@@ -2038,7 +2075,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
             return client;
         }
 
@@ -2169,7 +2206,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2299,7 +2336,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
             boundKey = key;
             return client;
         }
@@ -2325,6 +2362,7 @@ namespace Flowtype
             string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
             string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
             HttpClient http = GetClient(apiKey);
+            http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
             using (MultipartFormDataContent form = new MultipartFormDataContent())
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
@@ -2490,7 +2528,7 @@ namespace Flowtype
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
             {
-                client.Timeout = TimeSpan.FromSeconds(turbo ? 45 : 90);
+                client.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, turbo);
                 audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
                 form.Add(audio, "file", Path.GetFileName(wavePath));
                 form.Add(new StringContent("0.0"), "temperature");
@@ -2806,7 +2844,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.27");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -4564,6 +4602,7 @@ namespace Flowtype
         private bool latchedRecording;
         private bool awaitingDoubleTap;
         private bool handsFreeStopPending;
+        private bool notifyRecordingLimit;
         private System.Windows.Forms.Timer doubleTapTimer;
         private const int DoubleTapWindowMs = 450;
         private const int ShortPressMs = 280;
@@ -4595,7 +4634,7 @@ namespace Flowtype
             hook.HotkeyChanged += OnHotkeyChanged;
             hook.CancelPressed += CancelRecording;
             recorder.LevelChanged += overlay.SetLevel;
-            overlay.MaximumDurationReached += StopRecording;
+            overlay.MaximumDurationReached += OnMaximumDurationReached;
             chordPoller = new System.Windows.Forms.Timer();
             chordPoller.Interval = 20;
             chordPoller.Tick += delegate
@@ -4759,6 +4798,12 @@ namespace Flowtype
                 store.LogError(exception);
                 return false;
             }
+        }
+
+        private void OnMaximumDurationReached()
+        {
+            notifyRecordingLimit = true;
+            StopRecording();
         }
 
         private void ReconcileAfterForegroundChange()
@@ -5059,7 +5104,8 @@ namespace Flowtype
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
                 if (generation != dictationGeneration) return;
-                raw = TextProcessor.StripPromptHallucinations(transcript.Text, settings, target);
+                ForegroundInfo delivery = ForegroundContext.Capture(settings.ContextEnabled);
+                raw = TextProcessor.StripPromptHallucinations(transcript.Text, settings, delivery);
                 transcript.Text = raw;
 
                 FileInfo audioInfo = new FileInfo(path);
@@ -5072,15 +5118,15 @@ namespace Flowtype
                     Stopwatch cleanTimer = Stopwatch.StartNew();
                     try
                     {
-                        if (settings.CleanupProvider == "OpenAI") finalText = await new OpenAiEngine().CleanupAsync(raw, target, settings, apiKey);
-                        else if (settings.CleanupProvider == "OpenRouter") finalText = await new OpenRouterEngine().CleanupAsync(raw, target, settings, openRouterKey);
-                        else if (settings.CleanupProvider == "Ollama") finalText = await new OllamaEngine().CleanupAsync(raw, target, settings);
-                        else finalText = TextProcessor.Clean(transcript, settings, target);
+                        if (settings.CleanupProvider == "OpenAI") finalText = await new OpenAiEngine().CleanupAsync(raw, delivery, settings, apiKey);
+                        else if (settings.CleanupProvider == "OpenRouter") finalText = await new OpenRouterEngine().CleanupAsync(raw, delivery, settings, openRouterKey);
+                        else if (settings.CleanupProvider == "Ollama") finalText = await new OllamaEngine().CleanupAsync(raw, delivery, settings);
+                        else finalText = TextProcessor.Clean(transcript, settings, delivery);
                     }
                     catch (Exception cleanupError)
                     {
                         store.LogError(cleanupError);
-                        finalText = TextProcessor.Clean(transcript, settings, target);
+                        finalText = TextProcessor.Clean(transcript, settings, delivery);
                     }
                     cleanTimer.Stop();
                     cleanMs = cleanTimer.ElapsedMilliseconds;
@@ -5091,8 +5137,8 @@ namespace Flowtype
 
                 if (generation != dictationGeneration) return;
                 bool inserted;
-                if (String.IsNullOrWhiteSpace(finalText)) inserted = ForegroundContext.IsSameTarget(target);
-                else inserted = ForegroundContext.DeliverDictation(finalText, target, settings.AutoPaste);
+                if (String.IsNullOrWhiteSpace(finalText)) inserted = !ForegroundContext.IsFlowtypeForeground();
+                else inserted = ForegroundContext.DeliverDictation(finalText, delivery, settings.AutoPaste);
                 if (generation != dictationGeneration) return;
                 if (inserted && pressEnter)
                 {
@@ -5103,7 +5149,7 @@ namespace Flowtype
                 {
                     HistoryEntry entry = new HistoryEntry();
                     entry.CreatedUtc = DateTime.UtcNow;
-                    entry.Application = target == null ? "" : target.AppLabel;
+                    entry.Application = delivery == null ? "" : delivery.AppLabel;
                     entry.RawText = raw;
                     entry.FinalText = finalText;
                     entry.Engine = settings.Engine;
@@ -5124,7 +5170,7 @@ namespace Flowtype
                 else if (!String.IsNullOrWhiteSpace(finalText))
                 {
                     statusItem.Text = "Copied — click your field and press Ctrl+V";
-                    Notify("Click your field", "The target changed while Flowtype was writing. Result is on your clipboard.", ToolTipIcon.Info);
+                    Notify("Could not insert", "Text is on your clipboard — click the field you want and press Ctrl+V.", ToolTipIcon.Info);
                 }
             }
             catch (Exception exception)
@@ -5138,6 +5184,11 @@ namespace Flowtype
             finally
             {
                 if (generation == dictationGeneration) processing = false;
+                if (notifyRecordingLimit)
+                {
+                    notifyRecordingLimit = false;
+                    Notify("Recording limit", "Dictation stopped at the 10-minute limit.", ToolTipIcon.Info);
+                }
                 SetReady();
             }
         }
