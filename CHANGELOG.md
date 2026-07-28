@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.29
+
+- Fix Groq dictation failing on every use after 1.3.28 (HttpClient timeout cannot change after warm-up)
+
+---
+
 ## 1.3.28
 
 - Paste into whichever field is focused when transcription finishes (switch monitors/apps mid-dictation)

@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.28.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.28.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.29.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.29.0")]
 
 namespace Flowtype
 {
@@ -2075,7 +2075,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
             return client;
         }
 
@@ -2206,7 +2206,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2336,9 +2336,18 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
             boundKey = key;
             return client;
+        }
+
+        private static HttpClient CreateTranscriptionClient(string apiKey, string wavePath)
+        {
+            HttpClient http = new HttpClient();
+            http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
+            return http;
         }
 
         public async Task WarmAsync(AppSettings settings, string apiKey)
@@ -2361,8 +2370,7 @@ namespace Flowtype
                 throw new InvalidOperationException("Groq mode needs an API key. Get a free key at console.groq.com, then paste it in Settings.");
             string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
             string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
-            HttpClient http = GetClient(apiKey);
-            http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
+            using (HttpClient http = CreateTranscriptionClient(apiKey, wavePath))
             using (MultipartFormDataContent form = new MultipartFormDataContent())
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
@@ -2844,7 +2852,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.28");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
