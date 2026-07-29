@@ -68,6 +68,12 @@ namespace Flowtype.Tests
             failures += AssertTimeout("short clip turbo floor", 60, AudioTranscriptionTimeouts.ForWavFile("", true).TotalSeconds);
             failures += AssertTimeout("short clip standard floor", 90, AudioTranscriptionTimeouts.ForWavFile("", false).TotalSeconds);
             failures += AssertTimeout("ten minute clip", 600, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
+            failures += AssertEqual("duplicate block removed",
+                "Hello world this is a test.",
+                TextProcessor.RemoveExactDuplicateBlocks("Hello world this is a test. --- Hello world this is a test."));
+            failures += AssertEqual("no space when field empty",
+                "Next sentence.",
+                ForegroundContext.PrepareInsertText("Next sentence.", new ForegroundInfo()));
             return failures;
         }
 

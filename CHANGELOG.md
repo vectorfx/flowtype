@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.30
+
+- Fix double-paste: debounce identical inserts and strip exact duplicate transcript blocks
+- Add a leading space when dictating into a field that already has text before the caret
+
+---
+
 ## 1.3.29
 
 - Fix Groq dictation failing on every use after 1.3.28 (HttpClient timeout cannot change after warm-up)

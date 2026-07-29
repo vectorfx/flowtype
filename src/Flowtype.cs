@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.29.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.29.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.30.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.30.0")]
 
 namespace Flowtype
 {
@@ -766,7 +766,19 @@ namespace Flowtype
         [DllImport("user32.dll")]
         private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, StringBuilder lParam);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint EM_GETSEL = 0x00B0;
+        private const uint WM_GETTEXT = 0x000D;
+        private const uint WM_GETTEXTLENGTH = 0x000E;
+        private static DateTime lastPasteUtc = DateTime.MinValue;
+        private static string lastPastePayload = "";
+        private const int PasteDebounceMs = 1500;
 
         public static ForegroundInfo Capture(bool includeContext)
         {
@@ -810,11 +822,50 @@ namespace Flowtype
             return current != null && String.Equals(current.ProcessName, "Flowtype", StringComparison.OrdinalIgnoreCase);
         }
 
+        public static string PrepareInsertText(string text, ForegroundInfo context)
+        {
+            if (String.IsNullOrEmpty(text)) return text ?? "";
+            if (text.StartsWith(" ", StringComparison.Ordinal) || text.StartsWith("\n", StringComparison.Ordinal)) return text;
+            if (!NeedsLeadingSpace(context)) return text;
+            return " " + text;
+        }
+
+        private static bool NeedsLeadingSpace(ForegroundInfo context)
+        {
+            IntPtr hwnd = context == null ? IntPtr.Zero : context.FocusHandle;
+            if (hwnd == IntPtr.Zero)
+            {
+                IntPtr foreground = GetForegroundWindow();
+                if (foreground == IntPtr.Zero) return false;
+                uint processId;
+                uint threadId = GetWindowThreadProcessId(foreground, out processId);
+                hwnd = FocusedWindow(threadId);
+            }
+            if (hwnd == IntPtr.Zero) return false;
+
+            int start = SendMessage(hwnd, EM_GETSEL, IntPtr.Zero, IntPtr.Zero).ToInt32() & 0xFFFF;
+            if (start <= 0) return false;
+
+            int length = SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero).ToInt32();
+            if (length <= 0 || start > length) return false;
+
+            StringBuilder buffer = new StringBuilder(length + 2);
+            SendMessage(hwnd, WM_GETTEXT, new IntPtr(length + 1), buffer);
+            if (start > buffer.Length) return false;
+            char previous = buffer[start - 1];
+            return !Char.IsWhiteSpace(previous);
+        }
+
         public static bool DeliverDictation(string text, ForegroundInfo original, bool keepOnClipboard)
         {
-            string payload = text ?? "";
+            ForegroundInfo field = Capture(false);
+            string payload = PrepareInsertText(text ?? "", field);
             if (payload.Length == 0) return false;
             if (IsFlowtypeForeground()) return TryClipboardOnly(payload);
+
+            if (String.Equals(payload, lastPastePayload, StringComparison.Ordinal) &&
+                (DateTime.UtcNow - lastPasteUtc).TotalMilliseconds < PasteDebounceMs)
+                return true;
 
             string previous = null;
             bool hadPrevious = false;
@@ -867,6 +918,8 @@ namespace Flowtype
                 }
                 catch { }
             }
+            lastPastePayload = payload;
+            lastPasteUtc = DateTime.UtcNow;
             return true;
         }
 
@@ -1430,6 +1483,7 @@ namespace Flowtype
         {
             if (String.IsNullOrWhiteSpace(input)) return "";
             string text = StripPromptHallucinations(input.Trim(), settings, context);
+            text = RemoveExactDuplicateBlocks(text);
 
             foreach (KeyValuePair<string, string> snippet in settings.Snippets)
             {
@@ -1923,6 +1977,35 @@ namespace Flowtype
             return text;
         }
 
+        public static string RemoveExactDuplicateBlocks(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text) || text.Length < 30) return text ?? "";
+            string trimmed = text.Trim();
+
+            int mid = trimmed.Length / 2;
+            if (mid >= 15)
+            {
+                string left = trimmed.Substring(0, mid).TrimEnd();
+                string right = trimmed.Substring(mid).TrimStart();
+                if (String.Equals(left, right, StringComparison.Ordinal) ||
+                    String.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+                    return left;
+            }
+
+            Match split = Regex.Match(trimmed, @"^(?<first>.+?)\s*---\s*(?<second>.+)\s*$", RegexOptions.Singleline);
+            if (split.Success)
+            {
+                string first = split.Groups["first"].Value.Trim();
+                string second = split.Groups["second"].Value.Trim();
+                if (first.Length >= 20 &&
+                    (String.Equals(first, second, StringComparison.Ordinal) ||
+                     String.Equals(first, second, StringComparison.OrdinalIgnoreCase)))
+                    return first;
+            }
+
+            return text;
+        }
+
         private static string RemoveWhisperRepetitions(string text)
         {
             if (String.IsNullOrWhiteSpace(text) || text.Length < 40) return text;
@@ -2075,7 +2158,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
             return client;
         }
 
@@ -2206,7 +2289,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2336,7 +2419,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
             boundKey = key;
             return client;
         }
@@ -2346,7 +2429,7 @@ namespace Flowtype
             HttpClient http = new HttpClient();
             http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
             return http;
         }
 
@@ -2852,7 +2935,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.29");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
