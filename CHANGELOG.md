@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.31
+
+- Fix triple/duplicate inserts: one deliver per recording, stronger transcript dedup, single Ctrl+V paste
+- Fix missing space after periods when continuing dictation (e.g. `can.But` → `can. But`)
+- Improve leading-space detection when appending to existing field text (caret-at-end fallback)
+
+---
+
 ## 1.3.30
 
 - Fix double-paste: debounce identical inserts and strip exact duplicate transcript blocks

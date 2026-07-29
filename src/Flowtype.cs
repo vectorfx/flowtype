@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.30.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.30.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.31.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.31.0")]
 
 namespace Flowtype
 {
@@ -776,9 +776,14 @@ namespace Flowtype
         private const uint EM_GETSEL = 0x00B0;
         private const uint WM_GETTEXT = 0x000D;
         private const uint WM_GETTEXTLENGTH = 0x000E;
+        private const uint WM_PASTE = 0x0302;
+        private static readonly object deliverGate = new object();
+        private static int lastDeliveredGeneration = -1;
         private static DateTime lastPasteUtc = DateTime.MinValue;
         private static string lastPastePayload = "";
-        private const int PasteDebounceMs = 1500;
+        private static IntPtr lastAppendTarget = IntPtr.Zero;
+        private static bool lastAppendEndedWithPunctuation;
+        private const int PasteDebounceMs = 2500;
 
         public static ForegroundInfo Capture(bool includeContext)
         {
@@ -826,37 +831,95 @@ namespace Flowtype
         {
             if (String.IsNullOrEmpty(text)) return text ?? "";
             if (text.StartsWith(" ", StringComparison.Ordinal) || text.StartsWith("\n", StringComparison.Ordinal)) return text;
-            if (!NeedsLeadingSpace(context)) return text;
-            return " " + text;
+            char previous;
+            if (TryGetCharBeforeCaret(context, out previous))
+            {
+                if (!Char.IsWhiteSpace(previous)) return " " + text;
+                return text;
+            }
+            if (ShouldPrependFromLastInsert(context, text)) return " " + text;
+            return text;
         }
 
-        private static bool NeedsLeadingSpace(ForegroundInfo context)
+        public static void NoteSuccessfulInsert(ForegroundInfo context, string insertedText)
         {
-            IntPtr hwnd = context == null ? IntPtr.Zero : context.FocusHandle;
+            lastAppendTarget = context == null ? IntPtr.Zero : context.FocusHandle;
+            string trimmed = (insertedText ?? "").TrimEnd();
+            lastAppendEndedWithPunctuation = trimmed.Length > 0 && ".!?".IndexOf(trimmed[trimmed.Length - 1]) >= 0;
+        }
+
+        private static bool ShouldPrependFromLastInsert(ForegroundInfo context, string text)
+        {
+            if (context == null || context.FocusHandle == IntPtr.Zero) return false;
+            if (context.FocusHandle != lastAppendTarget) return false;
+            if (!lastAppendEndedWithPunctuation || text.Length == 0) return false;
+            return Char.IsUpper(text[0]);
+        }
+
+        private static bool TryGetCharBeforeCaret(ForegroundInfo context, out char previous)
+        {
+            previous = '\0';
+            if (context == null) return false;
+            IntPtr hwnd = context.FocusHandle;
             if (hwnd == IntPtr.Zero)
             {
-                IntPtr foreground = GetForegroundWindow();
-                if (foreground == IntPtr.Zero) return false;
+                if (context.Handle == IntPtr.Zero) return false;
                 uint processId;
-                uint threadId = GetWindowThreadProcessId(foreground, out processId);
+                uint threadId = GetWindowThreadProcessId(context.Handle, out processId);
                 hwnd = FocusedWindow(threadId);
             }
             if (hwnd == IntPtr.Zero) return false;
 
-            int start = SendMessage(hwnd, EM_GETSEL, IntPtr.Zero, IntPtr.Zero).ToInt32() & 0xFFFF;
-            if (start <= 0) return false;
+            int selection = SendMessage(hwnd, EM_GETSEL, IntPtr.Zero, IntPtr.Zero).ToInt32();
+            int caretStart = selection & 0xFFFF;
+            int caretEnd = (selection >> 16) & 0xFFFF;
 
             int length = SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero).ToInt32();
-            if (length <= 0 || start > length) return false;
+            if (length <= 0) return false;
+            if (length > 200000) length = 200000;
 
             StringBuilder buffer = new StringBuilder(length + 2);
             SendMessage(hwnd, WM_GETTEXT, new IntPtr(length + 1), buffer);
-            if (start > buffer.Length) return false;
-            char previous = buffer[start - 1];
-            return !Char.IsWhiteSpace(previous);
+            string fieldText = buffer.ToString();
+            if (fieldText.Length == 0) return false;
+
+            int insertAt = Math.Max(caretStart, caretEnd);
+            if (insertAt <= 0 && caretStart == 0 && caretEnd == 0)
+                insertAt = fieldText.Length;
+
+            if (insertAt <= 0) return false;
+            int index = insertAt - 1;
+            if (index >= fieldText.Length) index = fieldText.Length - 1;
+            if (index < 0) return false;
+            previous = fieldText[index];
+            return true;
+        }
+
+        public static void ResetDeliverGuard(int generation)
+        {
+            lock (deliverGate)
+            {
+                if (generation > lastDeliveredGeneration) lastDeliveredGeneration = generation - 1;
+            }
+        }
+
+        public static bool DeliverDictation(string text, ForegroundInfo original, bool keepOnClipboard, int generation)
+        {
+            lock (deliverGate)
+            {
+                if (generation >= 0 && generation == lastDeliveredGeneration) return true;
+                bool inserted = DeliverDictationCore(text, original, keepOnClipboard);
+                if (inserted && generation >= 0) lastDeliveredGeneration = generation;
+                return inserted;
+            }
         }
 
         public static bool DeliverDictation(string text, ForegroundInfo original, bool keepOnClipboard)
+        {
+            return DeliverDictationCore(text, original, keepOnClipboard);
+        }
+
+        private static bool DeliverDictationCore(string text, ForegroundInfo original, bool keepOnClipboard)
         {
             ForegroundInfo field = Capture(false);
             string payload = PrepareInsertText(text ?? "", field);
@@ -896,13 +959,7 @@ namespace Flowtype
             }
             if (clipError != null) throw clipError;
 
-            Thread.Sleep(60);
-            try
-            {
-                if (!String.Equals(Clipboard.GetText() ?? "", payload, StringComparison.Ordinal)) return false;
-            }
-            catch { return false; }
-
+            // One paste only — Ctrl+V. (SetText + WM_PASTE or double Ctrl+V caused triple inserts in Electron apps.)
             keybd_event(0x11, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, 0, UIntPtr.Zero);
             keybd_event(0x56, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -910,7 +967,7 @@ namespace Flowtype
 
             if (!keepOnClipboard)
             {
-                Thread.Sleep(40);
+                Thread.Sleep(25);
                 try
                 {
                     if (hadPrevious) Clipboard.SetText(previous);
@@ -1558,10 +1615,18 @@ namespace Flowtype
             text = Regex.Replace(text, @" *\n *", "\n");
             text = Regex.Replace(text, @"\n{3,}", "\n\n");
             text = Paragraphize(text, context).Trim();
-            if (IsTerminalContext(context)) return text.TrimEnd('.', ' ');
+            if (IsTerminalContext(context)) return NormalizePunctuationSpacing(text.TrimEnd('.', ' '));
             text = Capitalize(text);
             if (!Regex.IsMatch(text, @"[.!?…,:;\)\]\""']$", RegexOptions.None) && !text.Contains("\n")) text += ".";
-            return ApplyApplicationStyle(text, settings, context);
+            return NormalizePunctuationSpacing(ApplyApplicationStyle(text, settings, context));
+        }
+
+        public static string NormalizePunctuationSpacing(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return text ?? "";
+            text = Regex.Replace(text, @"([.!?])([A-Za-z""'])", "$1 $2");
+            text = Regex.Replace(text, @"([,;:])([A-Za-z""'])", "$1 $2");
+            return text;
         }
 
         private static string FormatBullets(string text)
@@ -1979,17 +2044,15 @@ namespace Flowtype
 
         public static string RemoveExactDuplicateBlocks(string text)
         {
-            if (String.IsNullOrWhiteSpace(text) || text.Length < 30) return text ?? "";
-            string trimmed = text.Trim();
+            if (String.IsNullOrWhiteSpace(text)) return text ?? "";
+            string trimmed = CollapseConsecutiveDuplicateLines(CollapseConsecutiveDuplicateParagraphs(text.Trim()));
 
-            int mid = trimmed.Length / 2;
-            if (mid >= 15)
+            for (int pass = 0; pass < 6; pass++)
             {
-                string left = trimmed.Substring(0, mid).TrimEnd();
-                string right = trimmed.Substring(mid).TrimStart();
-                if (String.Equals(left, right, StringComparison.Ordinal) ||
-                    String.Equals(left, right, StringComparison.OrdinalIgnoreCase))
-                    return left;
+                string next = CollapseHalfDuplicates(trimmed);
+                next = CollapsePeriodDuplicates(next);
+                if (String.Equals(next, trimmed, StringComparison.Ordinal)) break;
+                trimmed = next;
             }
 
             Match split = Regex.Match(trimmed, @"^(?<first>.+?)\s*---\s*(?<second>.+)\s*$", RegexOptions.Singleline);
@@ -1997,13 +2060,80 @@ namespace Flowtype
             {
                 string first = split.Groups["first"].Value.Trim();
                 string second = split.Groups["second"].Value.Trim();
-                if (first.Length >= 20 &&
-                    (String.Equals(first, second, StringComparison.Ordinal) ||
-                     String.Equals(first, second, StringComparison.OrdinalIgnoreCase)))
-                    return first;
+                if (first.Length >= 12 && BlocksEqual(first, second)) return first;
             }
 
+            return trimmed;
+        }
+
+        private static string CollapseHalfDuplicates(string text)
+        {
+            int mid = text.Length / 2;
+            if (mid < 10) return text;
+            string left = text.Substring(0, mid).TrimEnd();
+            string right = text.Substring(mid).TrimStart();
+            if (BlocksEqual(left, right)) return left;
             return text;
+        }
+
+        private static string CollapsePeriodDuplicates(string text)
+        {
+            for (int period = 1; period <= text.Length / 3; period++)
+            {
+                if (text.Length % period != 0) continue;
+                string unit = text.Substring(0, period);
+                if (unit.Length < 8) continue;
+                bool match = true;
+                for (int index = period; index < text.Length; index += period)
+                {
+                    if (!text.Substring(index, period).Equals(unit, StringComparison.Ordinal))
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return unit;
+            }
+            return text;
+        }
+
+        private static string CollapseConsecutiveDuplicateParagraphs(string text)
+        {
+            string[] parts = Regex.Split(text, @"\n\s*\n");
+            if (parts.Length < 2) return text;
+            List<string> kept = new List<string>();
+            foreach (string part in parts)
+            {
+                string value = part.Trim();
+                if (value.Length == 0) continue;
+                if (kept.Count > 0 && BlocksEqual(kept[kept.Count - 1], value)) continue;
+                kept.Add(value);
+            }
+            if (kept.Count < parts.Length) return String.Join("\n\n", kept.ToArray());
+            return text;
+        }
+
+        private static string CollapseConsecutiveDuplicateLines(string text)
+        {
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length < 2) return text;
+            List<string> kept = new List<string>();
+            foreach (string line in lines)
+            {
+                string value = line.TrimEnd();
+                if (kept.Count > 0 && BlocksEqual(kept[kept.Count - 1], value)) continue;
+                kept.Add(value);
+            }
+            if (kept.Count < lines.Length) return String.Join("\n", kept.ToArray());
+            return text;
+        }
+
+        private static bool BlocksEqual(string left, string right)
+        {
+            string a = (left ?? "").Trim();
+            string b = (right ?? "").Trim();
+            return String.Equals(a, b, StringComparison.Ordinal) ||
+                String.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string RemoveWhisperRepetitions(string text)
@@ -2158,7 +2288,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
             return client;
         }
 
@@ -2289,7 +2419,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2419,7 +2549,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
             boundKey = key;
             return client;
         }
@@ -2429,7 +2559,7 @@ namespace Flowtype
             HttpClient http = new HttpClient();
             http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
             return http;
         }
 
@@ -2935,7 +3065,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.30");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -5197,6 +5327,7 @@ namespace Flowtype
                 if (generation != dictationGeneration) return;
                 ForegroundInfo delivery = ForegroundContext.Capture(settings.ContextEnabled);
                 raw = TextProcessor.StripPromptHallucinations(transcript.Text, settings, delivery);
+                raw = TextProcessor.RemoveExactDuplicateBlocks(raw);
                 transcript.Text = raw;
 
                 FileInfo audioInfo = new FileInfo(path);
@@ -5223,13 +5354,16 @@ namespace Flowtype
                     cleanMs = cleanTimer.ElapsedMilliseconds;
                 }
                 if (generation != dictationGeneration) return;
+                finalText = TextProcessor.NormalizePunctuationSpacing(finalText);
                 bool pressEnter = TextProcessor.ExtractPressEnter(ref finalText);
                 if (String.IsNullOrWhiteSpace(finalText) && !pressEnter) throw new InvalidOperationException("No speech was detected.");
 
                 if (generation != dictationGeneration) return;
                 bool inserted;
                 if (String.IsNullOrWhiteSpace(finalText)) inserted = !ForegroundContext.IsFlowtypeForeground();
-                else inserted = ForegroundContext.DeliverDictation(finalText, delivery, settings.AutoPaste);
+                else inserted = ForegroundContext.DeliverDictation(finalText, delivery, settings.AutoPaste, generation);
+                if (inserted && !String.IsNullOrWhiteSpace(finalText))
+                    ForegroundContext.NoteSuccessfulInsert(delivery, finalText);
                 if (generation != dictationGeneration) return;
                 if (inserted && pressEnter)
                 {

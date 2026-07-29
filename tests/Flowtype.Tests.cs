@@ -74,6 +74,12 @@ namespace Flowtype.Tests
             failures += AssertEqual("no space when field empty",
                 "Next sentence.",
                 ForegroundContext.PrepareInsertText("Next sentence.", new ForegroundInfo()));
+            failures += AssertEqual("period spacing",
+                "can. But also reducing the cost.",
+                TextProcessor.NormalizePunctuationSpacing("can.But also reducing the cost."));
+            failures += AssertEqual("triple duplicate collapsed",
+                "Hello world test.",
+                TextProcessor.RemoveExactDuplicateBlocks("Hello world test.Hello world test.Hello world test."));
             return failures;
         }
 
