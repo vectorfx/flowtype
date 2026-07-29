@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.31.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.31.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.32.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.32.0")]
 
 namespace Flowtype
 {
@@ -766,13 +766,41 @@ namespace Flowtype
         [DllImport("user32.dll")]
         private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT
+        {
+            public uint type;
+            public InputUnion union;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct InputUnion
+        {
+            [FieldOffset(0)] public KEYBDINPUT keyboard;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KEYBDINPUT
+        {
+            public ushort virtualKey;
+            public ushort scanCode;
+            public uint flags;
+            public uint time;
+            public IntPtr extraInfo;
+        }
+
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, StringBuilder lParam);
 
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+        private const uint INPUT_KEYBOARD = 1;
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint KEYEVENTF_UNICODE = 0x0004;
         private const uint EM_GETSEL = 0x00B0;
         private const uint WM_GETTEXT = 0x000D;
         private const uint WM_GETTEXTLENGTH = 0x000E;
@@ -895,6 +923,16 @@ namespace Flowtype
             return true;
         }
 
+        public static bool IsClipboardAutoPasteTarget(ForegroundInfo context)
+        {
+            if (context == null) return false;
+            string process = (context.ProcessName ?? "").Trim();
+            if (process.Length == 0) return false;
+            if (String.Equals(process, "Cursor", StringComparison.OrdinalIgnoreCase)) return true;
+            if (String.Equals(process, "Code", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         public static void ResetDeliverGuard(int generation)
         {
             lock (deliverGate)
@@ -929,6 +967,16 @@ namespace Flowtype
             if (String.Equals(payload, lastPastePayload, StringComparison.Ordinal) &&
                 (DateTime.UtcNow - lastPasteUtc).TotalMilliseconds < PasteDebounceMs)
                 return true;
+
+            // Cursor/VS Code composer listens for clipboard changes and auto-inserts.
+            // SetText + Ctrl+V there produces duplicate (or triplicate) text.
+            if (IsClipboardAutoPasteTarget(field))
+            {
+                SendUnicodeText(payload);
+                lastPastePayload = payload;
+                lastPasteUtc = DateTime.UtcNow;
+                return true;
+            }
 
             string previous = null;
             bool hadPrevious = false;
@@ -978,6 +1026,43 @@ namespace Flowtype
             lastPastePayload = payload;
             lastPasteUtc = DateTime.UtcNow;
             return true;
+        }
+
+        private static void SendUnicodeText(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return;
+            int inputSize = Marshal.SizeOf(typeof(INPUT));
+            foreach (char character in text)
+            {
+                if (character == '\r') continue;
+                if (character == '\n')
+                {
+                    SendShiftEnter();
+                    continue;
+                }
+
+                INPUT[] down = new INPUT[1];
+                down[0].type = INPUT_KEYBOARD;
+                down[0].union.keyboard.virtualKey = 0;
+                down[0].union.keyboard.scanCode = character;
+                down[0].union.keyboard.flags = KEYEVENTF_UNICODE;
+                SendInput(1, down, inputSize);
+
+                INPUT[] up = new INPUT[1];
+                up[0].type = INPUT_KEYBOARD;
+                up[0].union.keyboard.virtualKey = 0;
+                up[0].union.keyboard.scanCode = character;
+                up[0].union.keyboard.flags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+                SendInput(1, up, inputSize);
+            }
+        }
+
+        private static void SendShiftEnter()
+        {
+            keybd_event(0x10, 0, 0, UIntPtr.Zero);
+            keybd_event(0x0D, 0, 0, UIntPtr.Zero);
+            keybd_event(0x0D, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event(0x10, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
         }
 
         private static bool TryClipboardOnly(string payload)
@@ -2288,7 +2373,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.32");
             return client;
         }
 
@@ -2419,7 +2504,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.32");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2549,7 +2634,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.32");
             boundKey = key;
             return client;
         }
@@ -2559,7 +2644,7 @@ namespace Flowtype
             HttpClient http = new HttpClient();
             http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.32");
             return http;
         }
 
@@ -3065,7 +3150,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.31");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.32");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {

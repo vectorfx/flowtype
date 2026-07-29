@@ -80,6 +80,9 @@ namespace Flowtype.Tests
             failures += AssertEqual("triple duplicate collapsed",
                 "Hello world test.",
                 TextProcessor.RemoveExactDuplicateBlocks("Hello world test.Hello world test.Hello world test."));
+            ForegroundInfo cursor = new ForegroundInfo();
+            cursor.ProcessName = "Cursor";
+            failures += AssertTrue(ForegroundContext.IsClipboardAutoPasteTarget(cursor));
             return failures;
         }
 

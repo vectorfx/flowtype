@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.32
+
+- Fix duplicate inserts in Cursor/VS Code composer by typing text directly instead of clipboard paste
+
+---
+
 ## 1.3.31
 
 - Fix triple/duplicate inserts: one deliver per recording, stronger transcript dedup, single Ctrl+V paste
