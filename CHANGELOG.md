@@ -1,8 +1,15 @@
 # Changelog
 
+## 1.3.33
+
+- Fix Cursor insert broken by 1.3.32 Unicode typing — restore clipboard + Ctrl+V
+- In Cursor/VS Code, leave dictation on the clipboard after paste (restoring/clearing was causing extra inserts)
+
+---
+
 ## 1.3.32
 
-- Fix duplicate inserts in Cursor/VS Code composer by typing text directly instead of clipboard paste
+- Attempted Cursor-specific Unicode typing to avoid duplicate paste (reverted — did not reach Electron composer)
 
 ---
 

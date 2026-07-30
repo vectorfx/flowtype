@@ -82,7 +82,7 @@ namespace Flowtype.Tests
                 TextProcessor.RemoveExactDuplicateBlocks("Hello world test.Hello world test.Hello world test."));
             ForegroundInfo cursor = new ForegroundInfo();
             cursor.ProcessName = "Cursor";
-            failures += AssertTrue(ForegroundContext.IsClipboardAutoPasteTarget(cursor));
+            failures += AssertTrue(ForegroundContext.IsCursorFamily(cursor));
             return failures;
         }
 
