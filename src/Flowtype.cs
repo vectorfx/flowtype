@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.33.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.33.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.34.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.34.0")]
 
 namespace Flowtype
 {
@@ -941,10 +941,8 @@ namespace Flowtype
             bool cursorFamily = IsCursorFamily(field);
             string previous = null;
             bool hadPrevious = false;
-            // Cursor/VS Code composer auto-inserts on clipboard change. Restoring/clearing
-            // the clipboard after paste can fire a second/third insert — skip restore there.
-            bool restoreClipboard = keepOnClipboard == false && !cursorFamily;
-            if (restoreClipboard)
+            bool restoreClipboard = !keepOnClipboard;
+            if (restoreClipboard && !cursorFamily)
             {
                 try
                 {
@@ -983,10 +981,13 @@ namespace Flowtype
 
             if (restoreClipboard)
             {
-                Thread.Sleep(40);
+                // Cursor auto-pastes on clipboard change — Clear only (don't put previous text
+                // back, or it can insert again). Setting off = don't leave dictation on clipboard.
+                Thread.Sleep(cursorFamily ? 100 : 40);
                 try
                 {
-                    if (hadPrevious) Clipboard.SetText(previous);
+                    if (cursorFamily) Clipboard.Clear();
+                    else if (hadPrevious) Clipboard.SetText(previous);
                     else Clipboard.Clear();
                 }
                 catch { }
@@ -2304,7 +2305,7 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.33");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
             return client;
         }
 
@@ -2435,7 +2436,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.33");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2565,7 +2566,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.33");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
             boundKey = key;
             return client;
         }
@@ -2575,7 +2576,7 @@ namespace Flowtype
             HttpClient http = new HttpClient();
             http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.33");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
             return http;
         }
 
@@ -3081,7 +3082,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.33");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -3403,8 +3404,9 @@ namespace Flowtype
                     captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
 
                 using (Bitmap blurred = BlurBitmap(raw, 4))
+                using (Bitmap distorted = DistortLiquidGlass(blurred))
                 {
-                    glassBackdrop = DistortLiquidGlass(blurred);
+                    glassBackdrop = NeutralizeGlassBackdrop(distorted);
                 }
                 glassBackdropOffset = new Point(pad - (int)Math.Floor(capsule.X), pad - (int)Math.Floor(capsule.Y));
             }
@@ -3457,6 +3459,39 @@ namespace Flowtype
                     int sampleY = Math.Max(0, Math.Min(height - 1, y + offsetY));
                     dest.SetPixel(x, y, source.GetPixel(sampleX, sampleY));
                 }
+            }
+            return dest;
+        }
+
+        // Kill warm/yellow bleed from whatever sat behind the capsule (Cursor accents, highlights).
+        private static Bitmap NeutralizeGlassBackdrop(Bitmap source)
+        {
+            int width = source.Width;
+            int height = source.Height;
+            Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            using (Graphics graphics = Graphics.FromImage(dest))
+            {
+                graphics.Clear(Color.FromArgb(255, 236, 240, 246));
+                float[][] matrix =
+                {
+                    new float[] { 0.22f, 0.22f, 0.22f, 0, 0 },
+                    new float[] { 0.22f, 0.22f, 0.22f, 0, 0 },
+                    new float[] { 0.22f, 0.22f, 0.22f, 0, 0 },
+                    new float[] { 0, 0, 0, 1, 0 },
+                    new float[] { 0.42f, 0.45f, 0.50f, 0, 1 }
+                };
+                using (ImageAttributes attributes = new ImageAttributes())
+                {
+                    attributes.SetColorMatrix(new ColorMatrix(matrix), ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+                    graphics.DrawImage(
+                        source,
+                        new Rectangle(0, 0, width, height),
+                        0, 0, width, height,
+                        GraphicsUnit.Pixel,
+                        attributes);
+                }
+                using (SolidBrush frost = new SolidBrush(Color.FromArgb(155, 244, 247, 252)))
+                    graphics.FillRectangle(frost, 0, 0, width, height);
             }
             return dest;
         }
@@ -3651,12 +3686,14 @@ namespace Flowtype
                 }
                 else
                 {
-                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(48, 28, 32, 42)))
+                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(220, 236, 240, 246)))
                         graphics.FillPath(fallback, capsulePath);
                 }
 
-                using (SolidBrush veil = new SolidBrush(Color.FromArgb(18, 255, 255, 255)))
+                using (SolidBrush veil = new SolidBrush(Color.FromArgb(86, 248, 250, 252)))
                     graphics.FillPath(veil, capsulePath);
+                using (SolidBrush coolSheen = new SolidBrush(Color.FromArgb(28, 210, 220, 235)))
+                    graphics.FillPath(coolSheen, capsulePath);
 
                 DrawGlassInsetShadows(graphics, capsule, cornerRadius);
                 graphics.Restore(clipState);
@@ -3764,8 +3801,9 @@ namespace Flowtype
             int alpha = 125 + (int)(130 * sample);
             if (IsGlassTheme())
             {
-                int grey = 102 + (int)(40 * sample);
-                return Color.FromArgb(Math.Min(255, 220 + (int)(35 * sample)), grey, grey, grey);
+                // Cool graphite bars — never warm/yellow
+                int grey = 88 + (int)(36 * sample);
+                return Color.FromArgb(Math.Min(255, 200 + (int)(40 * sample)), grey, grey, Math.Min(255, grey + 8));
             }
             if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(Math.Min(255, alpha), 24 + (int)(18 * sample), 24 + (int)(18 * sample), 27);
@@ -4087,7 +4125,7 @@ namespace Flowtype
             page.Controls.Add(optionalTitle);
             ConfigureCheck(pasteBox, "Leave each dictation on the clipboard after insert", 24, 572, 620);
             page.Controls.Add(pasteBox);
-            Label pasteHint = LabelAt("Off by default. Flowtype always inserts into your field without replacing your clipboard.", 42, 602, 600, 32);
+            Label pasteHint = LabelAt("Off by default. Inserts into your field, then clears the clipboard so the dictation is not left copied.", 42, 602, 600, 32);
             pasteHint.ForeColor = UiTheme.TextMuted;
             pasteHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
             page.Controls.Add(pasteHint);

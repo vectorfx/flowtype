@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.34
+
+- Fix liquid glass yellow/warm color bleed — desaturate and frost the backdrop to cool silver glass
+- When "leave on clipboard" is off, always clear dictation from the clipboard (including Cursor)
+
+---
+
 ## 1.3.33
 
 - Fix Cursor insert broken by 1.3.32 Unicode typing — restore clipboard + Ctrl+V
