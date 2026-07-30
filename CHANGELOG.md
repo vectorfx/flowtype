@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.35
+
+- Live preview while speaking — partial transcript appears in the voice capsule during dictation (toggle in Settings)
+- In-app auto-update — checks GitHub releases on startup, tray menu "Check for updates…", downloads and installs silently
+
+---
+
 ## 1.3.34
 
 - Fix liquid glass yellow/warm color bleed — desaturate and frost the backdrop to cool silver glass

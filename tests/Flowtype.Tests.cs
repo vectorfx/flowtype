@@ -83,6 +83,10 @@ namespace Flowtype.Tests
             ForegroundInfo cursor = new ForegroundInfo();
             cursor.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursor));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.36"));
+            failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
+            failures += AssertEqual("version label", "1.3.35", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("pcm duration", 1.0, PcmAudio.DurationSeconds(32000), 0.01);
             return failures;
         }
 
@@ -121,6 +125,17 @@ namespace Flowtype.Tests
                 return 0;
             }
             Console.WriteLine("FAIL " + name + " expected=[" + expected + "] actual=[" + actual + "]");
+            return 1;
+        }
+
+        private static int AssertEqual(string name, double expected, double actual, double tolerance)
+        {
+            if (Math.Abs(expected - actual) <= tolerance)
+            {
+                Console.WriteLine("PASS " + name);
+                return 0;
+            }
+            Console.WriteLine("FAIL " + name + " expected=" + expected + " actual=" + actual);
             return 1;
         }
 

@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.34.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.34.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.35.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.35.0")]
 
 namespace Flowtype
 {
@@ -60,6 +60,10 @@ namespace Flowtype
         public bool SuppressNonSpeech;
         public bool CompletionSound;
         public bool ShowInsertNotification;
+        public bool StreamingPreview;
+        public bool AutoCheckUpdates;
+        public string SkippedUpdateVersion;
+        public string LastUpdateCheckUtc;
         public string OverlayTheme;
         public List<string> Dictionary;
         public Dictionary<string, string> Snippets;
@@ -96,6 +100,10 @@ namespace Flowtype
             value.SuppressNonSpeech = false;
             value.CompletionSound = true;
             value.ShowInsertNotification = false;
+            value.StreamingPreview = true;
+            value.AutoCheckUpdates = true;
+            value.SkippedUpdateVersion = "";
+            value.LastUpdateCheckUtc = "";
             value.OverlayTheme = "Dark";
             value.Dictionary = new List<string>();
             value.Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1198,6 +1206,7 @@ namespace Flowtype
         private volatile bool recording;
         public float MicGain { get; set; }
         public event Action<AudioMeterReading> LevelChanged;
+        public event Action<byte[]> AudioChunkReceived;
 
         public sealed class AudioMeterReading
         {
@@ -1278,6 +1287,8 @@ namespace Flowtype
                 reading.Boosted = BuildMeter(boostedPeak);
                 Action<AudioMeterReading> levelHandler = LevelChanged;
                 if (levelHandler != null) levelHandler(reading);
+                Action<byte[]> chunkHandler = AudioChunkReceived;
+                if (chunkHandler != null) chunkHandler(data);
             }
             if (recording) waveInAddBuffer(input, parameter1, (uint)Marshal.SizeOf(typeof(WaveHeader)));
         }
@@ -1456,6 +1467,291 @@ namespace Flowtype
         public void Dispose()
         {
             try { if (recording) Cancel(); } catch { }
+        }
+    }
+
+    public static class PcmAudio
+    {
+        public const int SampleRate = 16000;
+
+        public static void WriteWave(byte[] pcm, string outputPath)
+        {
+            if (pcm == null) pcm = new byte[0];
+            using (FileStream output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+            using (BinaryWriter writer = new BinaryWriter(output, Encoding.ASCII))
+            {
+                writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+                writer.Write((int)(36 + pcm.Length));
+                writer.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
+                writer.Write(16);
+                writer.Write((short)1);
+                writer.Write((short)1);
+                writer.Write(SampleRate);
+                writer.Write(SampleRate * 2);
+                writer.Write((short)2);
+                writer.Write((short)16);
+                writer.Write(Encoding.ASCII.GetBytes("data"));
+                writer.Write(pcm.Length);
+                writer.Write(pcm);
+            }
+        }
+
+        public static double DurationSeconds(int pcmBytes)
+        {
+            if (pcmBytes <= 0) return 0;
+            return pcmBytes / (SampleRate * 2.0);
+        }
+    }
+
+    public static class FlowtypeVersion
+    {
+        private static readonly Version CurrentVersion = typeof(FlowtypeVersion).Assembly.GetName().Version;
+
+        public static Version Current { get { return CurrentVersion; } }
+
+        public static string CurrentLabel
+        {
+            get
+            {
+                return CurrentVersion.Major + "." + CurrentVersion.Minor + "." + CurrentVersion.Build;
+            }
+        }
+
+        public static Version ParseTag(string tag)
+        {
+            if (String.IsNullOrWhiteSpace(tag)) return null;
+            string value = tag.Trim();
+            if (value.StartsWith("v", StringComparison.OrdinalIgnoreCase)) value = value.Substring(1);
+            try { return new Version(value); }
+            catch { return null; }
+        }
+
+        public static bool IsNewerThanCurrent(string tag)
+        {
+            Version remote = ParseTag(tag);
+            if (remote == null) return false;
+            return remote > CurrentVersion;
+        }
+    }
+
+    public sealed class AppUpdater
+    {
+        private const string LatestReleaseUrl = "https://api.github.com/repos/vectorfx/flowtype/releases/latest";
+        private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+
+        public sealed class ReleaseInfo
+        {
+            public string TagName = "";
+            public string Name = "";
+            public string DownloadUrl = "";
+            public string Body = "";
+        }
+
+        public async Task<ReleaseInfo> FetchLatestAsync()
+        {
+            using (HttpClient http = new HttpClient())
+            {
+                http.Timeout = TimeSpan.FromSeconds(30);
+                http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
+                string body = await http.GetStringAsync(LatestReleaseUrl);
+                Dictionary<string, object> release = serializer.DeserializeObject(body) as Dictionary<string, object>;
+                if (release == null) throw new InvalidOperationException("Could not read the latest release.");
+                ReleaseInfo info = new ReleaseInfo();
+                info.TagName = Convert.ToString(release.ContainsKey("tag_name") ? release["tag_name"] : "", CultureInfo.InvariantCulture).Trim();
+                info.Name = Convert.ToString(release.ContainsKey("name") ? release["name"] : info.TagName, CultureInfo.InvariantCulture).Trim();
+                info.Body = Convert.ToString(release.ContainsKey("body") ? release["body"] : "", CultureInfo.InvariantCulture).Trim();
+                object assetsValue;
+                if (!release.TryGetValue("assets", out assetsValue)) throw new InvalidOperationException("Release has no downloadable assets.");
+                IEnumerable assets = assetsValue as IEnumerable;
+                if (assets == null) throw new InvalidOperationException("Release has no downloadable assets.");
+                foreach (object assetValue in assets)
+                {
+                    Dictionary<string, object> asset = assetValue as Dictionary<string, object>;
+                    if (asset == null) continue;
+                    string name = Convert.ToString(asset.ContainsKey("name") ? asset["name"] : "", CultureInfo.InvariantCulture);
+                    if (!name.EndsWith("-Lite.zip", StringComparison.OrdinalIgnoreCase)) continue;
+                    info.DownloadUrl = Convert.ToString(asset.ContainsKey("browser_download_url") ? asset["browser_download_url"] : "", CultureInfo.InvariantCulture).Trim();
+                    break;
+                }
+                if (String.IsNullOrWhiteSpace(info.DownloadUrl)) throw new InvalidOperationException("Lite release ZIP not found on GitHub.");
+                return info;
+            }
+        }
+
+        public async Task DownloadAndInstallAsync(ReleaseInfo release, Action<int, string> progress)
+        {
+            if (release == null || String.IsNullOrWhiteSpace(release.DownloadUrl))
+                throw new InvalidOperationException("No update package is available.");
+            string tempRoot = Path.Combine(Path.GetTempPath(), "Flowtype-update-" + Guid.NewGuid().ToString("N"));
+            string zipPath = Path.Combine(tempRoot, "flowtype.zip");
+            string extractPath = Path.Combine(tempRoot, "package");
+            Directory.CreateDirectory(tempRoot);
+            try
+            {
+                if (progress != null) progress(5, "Downloading update…");
+                using (HttpClient http = new HttpClient())
+                {
+                    http.Timeout = TimeSpan.FromMinutes(20);
+                    http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
+                    using (HttpResponseMessage response = await http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead))
+                    {
+                        response.EnsureSuccessStatusCode();
+                        long total = response.Content.Headers.ContentLength ?? 0;
+                        using (Stream input = await response.Content.ReadAsStreamAsync())
+                        using (FileStream output = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            byte[] buffer = new byte[65536];
+                            long received = 0;
+                            int read;
+                            while ((read = await input.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                            {
+                                await output.WriteAsync(buffer, 0, read);
+                                received += read;
+                                if (progress != null && total > 0)
+                                {
+                                    int percent = 5 + (int)Math.Min(70, received * 70 / total);
+                                    progress(percent, "Downloading update…");
+                                }
+                            }
+                        }
+                    }
+                }
+                if (progress != null) progress(78, "Extracting update…");
+                Directory.CreateDirectory(extractPath);
+                ZipFile.ExtractToDirectory(zipPath, extractPath);
+                string installer = Directory.GetFiles(extractPath, "Install-Flowtype.ps1", SearchOption.AllDirectories).FirstOrDefault();
+                if (String.IsNullOrWhiteSpace(installer)) throw new InvalidOperationException("Installer script missing from update package.");
+                if (progress != null) progress(92, "Installing update…");
+                ProcessStartInfo start = new ProcessStartInfo();
+                start.FileName = "powershell.exe";
+                start.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + installer + "\" -Silent";
+                start.UseShellExecute = false;
+                start.CreateNoWindow = true;
+                Process.Start(start);
+            }
+            catch
+            {
+                try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true); } catch { }
+                throw;
+            }
+        }
+    }
+
+    public sealed class StreamingPreviewSession : IDisposable
+    {
+        private readonly RecordingOverlay overlay;
+        private readonly AppSettings settings;
+        private readonly string apiKey;
+        private readonly string groqKey;
+        private readonly WhisperEngine whisperEngine;
+        private readonly GroqEngine groqEngine;
+        private readonly object gate = new object();
+        private readonly List<byte> pcm = new List<byte>();
+        private readonly System.Windows.Forms.Timer timer;
+        private ForegroundInfo target;
+        private int generation;
+        private bool active;
+        private bool transcribing;
+        private DateTime lastTranscribeUtc = DateTime.MinValue;
+        private const int MinPreviewBytes = 48000;
+        private const int PreviewIntervalMs = 1200;
+
+        public StreamingPreviewSession(RecordingOverlay overlay, AppSettings settings, string apiKey, string groqKey,
+            WhisperEngine whisperEngine, GroqEngine groqEngine)
+        {
+            this.overlay = overlay;
+            this.settings = settings;
+            this.apiKey = apiKey ?? "";
+            this.groqKey = groqKey ?? "";
+            this.whisperEngine = whisperEngine;
+            this.groqEngine = groqEngine;
+            timer = new System.Windows.Forms.Timer();
+            timer.Interval = 900;
+            timer.Tick += delegate { TryTranscribePreview(); };
+        }
+
+        public void Start(ForegroundInfo captureTarget)
+        {
+            generation++;
+            target = captureTarget;
+            lock (gate) pcm.Clear();
+            active = true;
+            lastTranscribeUtc = DateTime.MinValue;
+            transcribing = false;
+            overlay.ClearPreviewText();
+            timer.Start();
+        }
+
+        public void Stop()
+        {
+            active = false;
+            timer.Stop();
+            generation++;
+            transcribing = false;
+            overlay.ClearPreviewText();
+        }
+
+        public void OnAudioChunk(byte[] data)
+        {
+            if (!active || data == null || data.Length == 0) return;
+            lock (gate) pcm.AddRange(data);
+        }
+
+        private void TryTranscribePreview()
+        {
+            if (!active || transcribing) return;
+            byte[] snapshot;
+            lock (gate)
+            {
+                if (pcm.Count < MinPreviewBytes) return;
+                snapshot = pcm.ToArray();
+            }
+            if (lastTranscribeUtc != DateTime.MinValue &&
+                (DateTime.UtcNow - lastTranscribeUtc).TotalMilliseconds < PreviewIntervalMs) return;
+            transcribing = true;
+            int session = generation;
+            Task.Run(async delegate
+            {
+                try
+                {
+                    string text = await TranscribeSnapshotAsync(snapshot);
+                    if (session != generation || !active || String.IsNullOrWhiteSpace(text)) return;
+                    overlay.SetPreviewText(text);
+                }
+                catch { }
+                finally
+                {
+                    transcribing = false;
+                    lastTranscribeUtc = DateTime.UtcNow;
+                }
+            });
+        }
+
+        private async Task<string> TranscribeSnapshotAsync(byte[] snapshot)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "Flowtype-preview");
+            Directory.CreateDirectory(tempDir);
+            string wavePath = Path.Combine(tempDir, "preview-" + Guid.NewGuid().ToString("N") + ".wav");
+            try
+            {
+                PcmAudio.WriteWave(snapshot, wavePath);
+                if (String.Equals(settings.Engine, "Groq", StringComparison.OrdinalIgnoreCase))
+                    return await groqEngine.TranscribePreviewAsync(wavePath, settings, groqKey);
+                if (String.Equals(settings.Engine, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                    return await new OpenAiEngine().TranscribePreviewAsync(wavePath, settings, apiKey);
+                SpeechTranscript transcript = await whisperEngine.TranscribePreviewAsync(wavePath, settings, target);
+                return transcript == null ? "" : transcript.Text;
+            }
+            finally
+            {
+                try { if (File.Exists(wavePath)) File.Delete(wavePath); } catch { }
+            }
+        }
+
+        public void Dispose()
+        {
+            Stop();
+            timer.Dispose();
         }
     }
 
@@ -2305,8 +2601,39 @@ namespace Flowtype
             HttpClient client = new HttpClient();
             client.Timeout = TimeSpan.FromMinutes(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
             return client;
+        }
+
+        public async Task<string> TranscribePreviewAsync(string wavePath, AppSettings settings, string apiKey)
+        {
+            try
+            {
+                if (String.IsNullOrWhiteSpace(apiKey)) return "";
+                string url = settings.ApiBaseUrl.TrimEnd('/') + "/audio/transcriptions";
+                using (HttpClient client = new HttpClient())
+                {
+                    client.Timeout = TimeSpan.FromSeconds(25);
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
+                    using (MultipartFormDataContent form = new MultipartFormDataContent())
+                    using (FileStream stream = File.OpenRead(wavePath))
+                    using (StreamContent audio = new StreamContent(stream))
+                    {
+                        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+                        form.Add(audio, "file", Path.GetFileName(wavePath));
+                        form.Add(new StringContent(settings.TranscriptionModel), "model");
+                        form.Add(new StringContent("json"), "response_format");
+                        HttpResponseMessage response = await client.PostAsync(url, form);
+                        string body = await response.Content.ReadAsStringAsync();
+                        if (!response.IsSuccessStatusCode) return "";
+                        Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
+                        if (value == null || !value.ContainsKey("text")) return "";
+                        return Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
+                    }
+                }
+            }
+            catch { return ""; }
         }
 
         public async Task<string> TranscribeAsync(string wavePath, AppSettings settings, string apiKey)
@@ -2436,7 +2763,7 @@ namespace Flowtype
             string key = (apiKey ?? "").Trim();
             if (key.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7).Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
             client.DefaultRequestHeaders.Add("X-OpenRouter-Title", "Flowtype Desktop");
             return client;
         }
@@ -2566,7 +2893,7 @@ namespace Flowtype
             client = new HttpClient();
             client.Timeout = TimeSpan.FromSeconds(90);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
             boundKey = key;
             return client;
         }
@@ -2576,8 +2903,42 @@ namespace Flowtype
             HttpClient http = new HttpClient();
             http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
             return http;
+        }
+
+        public async Task<string> TranscribePreviewAsync(string wavePath, AppSettings settings, string apiKey)
+        {
+            try
+            {
+                if (String.IsNullOrWhiteSpace(apiKey)) return "";
+                string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
+                string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
+                using (HttpClient http = new HttpClient())
+                {
+                    http.Timeout = TimeSpan.FromSeconds(20);
+                    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+                    http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
+                    using (MultipartFormDataContent form = new MultipartFormDataContent())
+                    using (FileStream stream = File.OpenRead(wavePath))
+                    using (StreamContent audio = new StreamContent(stream))
+                    {
+                        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+                        form.Add(audio, "file", Path.GetFileName(wavePath));
+                        form.Add(new StringContent(model), "model");
+                        form.Add(new StringContent("json"), "response_format");
+                        form.Add(new StringContent("en"), "language");
+                        form.Add(new StringContent("0"), "temperature");
+                        HttpResponseMessage response = await http.PostAsync(url, form);
+                        string body = await response.Content.ReadAsStringAsync();
+                        if (!response.IsSuccessStatusCode) return "";
+                        Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
+                        if (value == null || !value.ContainsKey("text")) return "";
+                        return Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
+                    }
+                }
+            }
+            catch { return ""; }
         }
 
         public async Task WarmAsync(AppSettings settings, string apiKey)
@@ -2702,6 +3063,31 @@ namespace Flowtype
             return await RunCliAsync(wavePath, settings, context);
         }
 
+        public async Task<SpeechTranscript> TranscribePreviewAsync(string wavePath, AppSettings settings, ForegroundInfo context)
+        {
+            try
+            {
+                Validate(settings);
+                if (CanUseServer(settings))
+                {
+                    try
+                    {
+                        await EnsureServerAsync(settings);
+                        return await TranscribeWithServerAsync(wavePath, settings, context, true);
+                    }
+                    catch
+                    {
+                        StopServer();
+                    }
+                }
+                return await RunCliAsync(wavePath, settings, context);
+            }
+            catch
+            {
+                return new SpeechTranscript();
+            }
+        }
+
         private static void Validate(AppSettings settings)
         {
             if (String.IsNullOrWhiteSpace(settings.WhisperExePath) || !File.Exists(settings.WhisperExePath) ||
@@ -2758,15 +3144,15 @@ namespace Flowtype
             finally { serverGate.Release(); }
         }
 
-        private async Task<SpeechTranscript> TranscribeWithServerAsync(string wavePath, AppSettings settings, ForegroundInfo context)
+        private async Task<SpeechTranscript> TranscribeWithServerAsync(string wavePath, AppSettings settings, ForegroundInfo context, bool preview = false)
         {
-            bool turbo = settings.TurboTranscription;
+            bool turbo = preview || settings.TurboTranscription;
             using (HttpClient client = new HttpClient())
             using (MultipartFormDataContent form = new MultipartFormDataContent())
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
             {
-                client.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, turbo);
+                client.Timeout = preview ? TimeSpan.FromSeconds(20) : AudioTranscriptionTimeouts.ForWavFile(wavePath, turbo);
                 audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
                 form.Add(audio, "file", Path.GetFileName(wavePath));
                 form.Add(new StringContent("0.0"), "temperature");
@@ -2785,10 +3171,10 @@ namespace Flowtype
                     form.Add(new StringContent("verbose_json"), "response_format");
                 }
                 form.Add(new StringContent(settings.SuppressNonSpeech ? "true" : "false"), "suppress_non_speech");
-                string prompt = BuildPrompt(settings, context);
-                if (prompt.Length > 0)
+                if (!preview)
                 {
-                    form.Add(new StringContent(prompt), "prompt");
+                    string prompt = BuildPrompt(settings, context);
+                    if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
                 }
                 HttpResponseMessage response = await client.PostAsync("http://127.0.0.1:" + serverPort.ToString(CultureInfo.InvariantCulture) + "/inference", form);
                 string body = await response.Content.ReadAsStringAsync();
@@ -3082,7 +3468,7 @@ namespace Flowtype
                     using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url))
                     {
                         client.Timeout = TimeSpan.FromMinutes(60);
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/1.3.34");
+                        client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
                         if (existing > 0) request.Headers.Range = new RangeHeaderValue(existing, null);
                         using (HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                         {
@@ -3195,6 +3581,7 @@ namespace Flowtype
         private int overlaySession;
         private int pendingHideSession;
         private readonly Stopwatch revealClock = new Stopwatch();
+        private string previewText = "";
         private const int RevealInMs = 130;
         private const int RevealOutMs = 100;
         public event Action MaximumDurationReached;
@@ -3272,6 +3659,9 @@ namespace Flowtype
             overlaySession++;
             SetTheme(overlayTheme);
             level = 0;
+            previewText = "";
+            Width = 108;
+            Height = 36;
             Array.Clear(bands, 0, bands.Length);
             animationTick = 0;
             elapsed.Restart();
@@ -3284,6 +3674,65 @@ namespace Flowtype
             if (IsGlassTheme()) CaptureGlassBackdrop();
             if (!Visible) Show();
             RenderLayered();
+        }
+
+        public void SetPreviewText(string text)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action<string>(SetPreviewText), text); } catch { }
+                return;
+            }
+            previewText = TruncatePreview(text);
+            AdjustSizeForPreview();
+            RenderLayered();
+        }
+
+        public void ClearPreviewText()
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(ClearPreviewText)); } catch { }
+                return;
+            }
+            previewText = "";
+            Width = 108;
+            Height = 36;
+            PositionOverlay();
+            RenderLayered();
+        }
+
+        private static string TruncatePreview(string text)
+        {
+            string value = Regex.Replace(text ?? "", @"\s+", " ").Trim();
+            if (value.Length <= 96) return value;
+            return value.Substring(0, 93) + "…";
+        }
+
+        private bool HasPreview { get { return !String.IsNullOrWhiteSpace(previewText); } }
+
+        private void AdjustSizeForPreview()
+        {
+            if (!HasPreview)
+            {
+                Width = 108;
+                Height = 36;
+            }
+            else
+            {
+                Width = 380;
+                Height = 78;
+            }
+            PositionOverlay();
+        }
+
+        private Color GetPreviewTextColor()
+        {
+            if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(235, 24, 24, 27);
+            if (String.Equals(theme, "Glass", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(230, 24, 24, 27);
+            return Color.FromArgb(228, 244, 244, 245);
         }
 
         public void ShowProcessing() { HideNow(); }
@@ -3362,9 +3811,10 @@ namespace Flowtype
         {
             const float capsuleWidth = 94f;
             const float capsuleHeight = 26f;
+            float top = HasPreview ? Height - capsuleHeight - 8f : (Height - capsuleHeight) / 2f;
             return new RectangleF(
                 (Width - capsuleWidth) / 2f,
-                (Height - capsuleHeight) / 2f,
+                top,
                 capsuleWidth,
                 capsuleHeight);
         }
@@ -3548,6 +3998,21 @@ namespace Flowtype
                 graphics.TranslateTransform(0f, slideY);
 
                 RectangleF capsule = GetCapsuleBounds();
+
+                if (HasPreview)
+                {
+                    RectangleF textBounds = new RectangleF(16f, 8f, Width - 32f, capsule.Y - 10f);
+                    using (Font font = AppFonts.Ui(8.75f, FontStyle.Regular))
+                    using (SolidBrush brush = new SolidBrush(GetPreviewTextColor()))
+                    using (StringFormat format = new StringFormat())
+                    {
+                        format.Alignment = StringAlignment.Center;
+                        format.LineAlignment = StringAlignment.Near;
+                        format.Trimming = StringTrimming.EllipsisCharacter;
+                        format.FormatFlags = StringFormatFlags.NoWrap;
+                        graphics.DrawString(previewText, font, brush, textBounds, format);
+                    }
+                }
 
                 if (IsGlassTheme())
                     DrawLiquidGlassCapsule(graphics, capsule, cornerRadius);
@@ -3894,6 +4359,8 @@ namespace Flowtype
         private readonly CheckBox suppressNonSpeechBox = new CheckBox();
         private readonly CheckBox completionSoundBox = new CheckBox();
         private readonly CheckBox insertNotifyBox = new CheckBox();
+        private readonly CheckBox streamingPreviewBox = new CheckBox();
+        private readonly CheckBox autoUpdateBox = new CheckBox();
         private readonly ComboBox overlayThemeBox = new ComboBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
@@ -4117,29 +4584,31 @@ namespace Flowtype
             ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 422, 540);
             ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 460, 590);
             ConfigureCheck(startupBox, "Start with Windows", 24, 498, 540);
-            page.Controls.AddRange(new Control[] { cleanupBox, contextBox, historyBox, recoveryBox, startupBox });
+            ConfigureCheck(autoUpdateBox, "Check for updates automatically", 24, 536, 620);
+            page.Controls.AddRange(new Control[] { cleanupBox, contextBox, historyBox, recoveryBox, startupBox, autoUpdateBox });
 
-            Label optionalTitle = LabelAt("Optional", 24, 542, 200, 24);
+            Label optionalTitle = LabelAt("Optional", 24, 580, 200, 24);
             optionalTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             optionalTitle.ForeColor = UiTheme.TextMuted;
             page.Controls.Add(optionalTitle);
-            ConfigureCheck(pasteBox, "Leave each dictation on the clipboard after insert", 24, 572, 620);
+            ConfigureCheck(pasteBox, "Leave each dictation on the clipboard after insert", 24, 610, 620);
             page.Controls.Add(pasteBox);
-            Label pasteHint = LabelAt("Off by default. Inserts into your field, then clears the clipboard so the dictation is not left copied.", 42, 602, 600, 32);
+            Label pasteHint = LabelAt("Off by default. Inserts into your field, then clears the clipboard so the dictation is not left copied.", 42, 640, 600, 32);
             pasteHint.ForeColor = UiTheme.TextMuted;
             pasteHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
             page.Controls.Add(pasteHint);
 
-            Label perfTitle = LabelAt("Performance", 24, 644, 200, 24);
+            Label perfTitle = LabelAt("Performance", 24, 682, 200, 24);
             perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(perfTitle);
-            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 674, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 706, 620);
-            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 738, 620);
-            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 770, 620);
-            page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 808, 140, 24));
-            micGainBar.SetBounds(170, 804, 360, 45);
+            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 712, 620);
+            ConfigureCheck(streamingPreviewBox, "Live preview while speaking (shows partial text in the voice capsule)", 24, 744, 620);
+            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 776, 620);
+            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 808, 620);
+            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 840, 620);
+            page.Controls.AddRange(new Control[] { turboBox, streamingPreviewBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
+            page.Controls.Add(LabelAt("Microphone boost", 24, 878, 140, 24));
+            micGainBar.SetBounds(170, 874, 360, 45);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
@@ -4150,21 +4619,21 @@ namespace Flowtype
                 if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
             };
             page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 812, 60, 24);
+            micGainLabel.SetBounds(540, 882, 60, 24);
             page.Controls.Add(micGainLabel);
             Label micHealthTitle = LabelAt("Microphone health", 24, 852, 200, 24);
             micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 882, 420, 18);
+            micLevelBar.SetBounds(24, 922, 420, 18);
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
             page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 874, 110, 34);
+            micTestButton.SetBounds(456, 914, 110, 34);
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 920, 650, 64);
+            micTestStatus.SetBounds(24, 960, 650, 64);
             micTestStatus.ForeColor = UiTheme.TextMuted;
             micTestStatus.AutoSize = false;
             micTestStatus.Text = "Test shows mic level, boosted level, and the level Whisper receives. Aim for Whisper input around 50–80%.";
@@ -4353,6 +4822,8 @@ namespace Flowtype
             suppressNonSpeechBox.Checked = value.SuppressNonSpeech;
             completionSoundBox.Checked = value.CompletionSound;
             insertNotifyBox.Checked = value.ShowInsertNotification;
+            streamingPreviewBox.Checked = value.StreamingPreview;
+            autoUpdateBox.Checked = value.AutoCheckUpdates;
             overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
@@ -4389,6 +4860,8 @@ namespace Flowtype
             value.SuppressNonSpeech = suppressNonSpeechBox.Checked;
             value.CompletionSound = completionSoundBox.Checked;
             value.ShowInsertNotification = insertNotifyBox.Checked;
+            value.StreamingPreview = streamingPreviewBox.Checked;
+            value.AutoCheckUpdates = autoUpdateBox.Checked;
             value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
@@ -4884,6 +5357,10 @@ namespace Flowtype
         private SettingsForm settingsForm;
         private HistoryForm historyForm;
         private IntPtr lastForegroundWindow;
+        private StreamingPreviewSession streamingPreview;
+        private readonly AppUpdater appUpdater = new AppUpdater();
+        private bool updateCheckRunning;
+        private bool updateInstallRunning;
 
         public FlowtypeContext(EventWaitHandle activationEvent)
         {
@@ -4910,6 +5387,8 @@ namespace Flowtype
             hook.CancelPressed += CancelRecording;
             recorder.LevelChanged += overlay.SetLevel;
             overlay.MaximumDurationReached += OnMaximumDurationReached;
+            streamingPreview = new StreamingPreviewSession(overlay, settings, apiKey, groqKey, whisperEngine, groqEngine);
+            recorder.AudioChunkReceived += streamingPreview.OnAudioChunk;
             chordPoller = new System.Windows.Forms.Timer();
             chordPoller.Interval = 20;
             chordPoller.Tick += delegate
@@ -4964,6 +5443,8 @@ namespace Flowtype
             dictionaryFixItem.Click += delegate { AddLastWordToDictionary(); };
             ToolStripMenuItem recoveryItem = new ToolStripMenuItem("Open recovery folder");
             recoveryItem.Click += delegate { OpenFolder(store.RecoveryPath); };
+            ToolStripMenuItem updateItem = new ToolStripMenuItem("Check for updates…");
+            updateItem.Click += delegate { CheckForUpdates(false); };
             ToolStripMenuItem quitItem = new ToolStripMenuItem("Quit Flowtype");
             quitItem.Click += delegate { Quit(); };
             menu.Items.Add(statusItem);
@@ -4973,6 +5454,7 @@ namespace Flowtype
             menu.Items.Add(historyItem);
             menu.Items.Add(dictionaryFixItem);
             menu.Items.Add(recoveryItem);
+            menu.Items.Add(updateItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
@@ -5005,6 +5487,106 @@ namespace Flowtype
                 RemoveLegacyLargeModel();
             }
             else if (settings.Engine == "Groq" && !String.IsNullOrWhiteSpace(groqKey)) WarmGroqEngine();
+            ScheduleAutomaticUpdateCheck();
+        }
+
+        private void ScheduleAutomaticUpdateCheck()
+        {
+            if (!settings.AutoCheckUpdates) return;
+            DateTime lastCheck = DateTime.MinValue;
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(settings.LastUpdateCheckUtc))
+                    lastCheck = DateTime.Parse(settings.LastUpdateCheckUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+            }
+            catch { }
+            if (lastCheck != DateTime.MinValue && (DateTime.UtcNow - lastCheck).TotalHours < 24) return;
+            System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer();
+            updateTimer.Interval = 5000;
+            updateTimer.Tick += delegate
+            {
+                updateTimer.Stop();
+                updateTimer.Dispose();
+                CheckForUpdates(true);
+            };
+            updateTimer.Start();
+        }
+
+        private async void CheckForUpdates(bool silent)
+        {
+            if (updateCheckRunning || updateInstallRunning || shuttingDown) return;
+            updateCheckRunning = true;
+            try
+            {
+                AppUpdater.ReleaseInfo release = await appUpdater.FetchLatestAsync();
+                settings.LastUpdateCheckUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                try { store.Save(settings); } catch (Exception exception) { store.LogError(exception); }
+                if (!FlowtypeVersion.IsNewerThanCurrent(release.TagName))
+                {
+                    if (!silent) Notify("You're up to date", "Flowtype " + FlowtypeVersion.CurrentLabel + " is the latest release.", ToolTipIcon.Info);
+                    return;
+                }
+                if (!String.IsNullOrWhiteSpace(settings.SkippedUpdateVersion) &&
+                    String.Equals(settings.SkippedUpdateVersion, release.TagName, StringComparison.OrdinalIgnoreCase)) return;
+                string message = "Flowtype " + release.TagName.TrimStart('v', 'V') + " is available (you have " + FlowtypeVersion.CurrentLabel + ").";
+                if (!String.IsNullOrWhiteSpace(release.Body))
+                {
+                    string notes = ShortMessage(release.Body);
+                    if (notes.Length > 0) message += "\n\n" + notes;
+                }
+                message += "\n\nUpdate now? Flowtype will restart.";
+                DialogResult choice = MessageBox.Show(message, "Update available", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
+                if (choice == DialogResult.Cancel)
+                {
+                    settings.SkippedUpdateVersion = release.TagName;
+                    try { store.Save(settings); } catch (Exception exception) { store.LogError(exception); }
+                    return;
+                }
+                if (choice != DialogResult.Yes) return;
+                await InstallUpdateAsync(release);
+            }
+            catch (Exception exception)
+            {
+                store.LogError(exception);
+                if (!silent) Notify("Update check failed", exception.Message, ToolTipIcon.Warning);
+            }
+            finally
+            {
+                updateCheckRunning = false;
+            }
+        }
+
+        private async Task InstallUpdateAsync(AppUpdater.ReleaseInfo release)
+        {
+            if (updateInstallRunning) return;
+            updateInstallRunning = true;
+            statusItem.Text = "Downloading update…";
+            try
+            {
+                await appUpdater.DownloadAndInstallAsync(release, delegate(int percent, string message)
+                {
+                    try
+                    {
+                        dispatcher.BeginInvoke(new Action(delegate
+                        {
+                            statusItem.Text = message + "  " + percent.ToString(CultureInfo.InvariantCulture) + "%";
+                        }));
+                    }
+                    catch { }
+                });
+                Notify("Installing update", "Flowtype will restart in a moment.", ToolTipIcon.Info);
+                Quit();
+            }
+            catch (Exception exception)
+            {
+                store.LogError(exception);
+                Notify("Update failed", exception.Message, ToolTipIcon.Error);
+                SetReady();
+            }
+            finally
+            {
+                updateInstallRunning = false;
+            }
         }
 
         private bool IsReadyToDictate()
@@ -5295,6 +5877,7 @@ namespace Flowtype
                 if (lastMicError != null) throw lastMicError;
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
+                if (settings.StreamingPreview) streamingPreview.Start(target);
                 overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
                 if (settings.CompletionSound) RecordingCue.PlayStart();
                 UpdateRecordingStatus();
@@ -5322,6 +5905,7 @@ namespace Flowtype
             latchedRecording = false;
             try
             {
+                streamingPreview.Stop();
                 // The capsule represents physical key-down only. Hide before
                 // finalising the WAV so release always feels immediate.
                 overlay.HideNow();
@@ -5484,6 +6068,7 @@ namespace Flowtype
             if (!recorder.IsRecording) return;
             try
             {
+                streamingPreview.Stop();
                 recorder.Cancel();
                 TryDelete(recordingPath);
             }
@@ -5607,6 +6192,14 @@ namespace Flowtype
                 recorder.MicGain = settings.MicGain;
                 hook.HotkeyName = settings.Hotkey;
                 overlay.SetTheme(settings.OverlayTheme);
+                try
+                {
+                    recorder.AudioChunkReceived -= streamingPreview.OnAudioChunk;
+                    streamingPreview.Dispose();
+                }
+                catch { }
+                streamingPreview = new StreamingPreviewSession(overlay, settings, apiKey, groqKey, whisperEngine, groqEngine);
+                recorder.AudioChunkReceived += streamingPreview.OnAudioChunk;
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();
                 else
@@ -5723,6 +6316,7 @@ namespace Flowtype
             try { chordPoller.Stop(); chordPoller.Dispose(); } catch { }
             try { activationPoller.Stop(); activationPoller.Dispose(); } catch { }
             try { recorder.Dispose(); } catch { }
+            try { streamingPreview.Dispose(); } catch { }
             try { whisperEngine.Dispose(); } catch { }
             try { groqEngine.Dispose(); } catch { }
             try { overlay.Close(); overlay.Dispose(); } catch { }
