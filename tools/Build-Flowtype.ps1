@@ -67,7 +67,7 @@ if (Test-Path -LiteralPath $icon) {
     Write-Warning "Missing $icon - run: python assets/build_icon.py"
 }
 
-& $csc /nologo /target:winexe /out:$output @iconArgs @refArgs $source $embedded
+& $csc /nologo /codepage:65001 /target:winexe /out:$output @iconArgs @refArgs $source $embedded
 if ($LASTEXITCODE -ne 0) {
     throw "csc.exe failed with exit code $LASTEXITCODE"
 }

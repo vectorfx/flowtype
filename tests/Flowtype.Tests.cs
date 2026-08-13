@@ -18,7 +18,13 @@ namespace Flowtype.Tests
                     AppSettings.Defaults(), null));
             failures += AssertEqual("whisper repeat", "The team shipped the feature yesterday.",
                 TextProcessor.Clean("The team shipped the feature yesterday. The team shipped the feature yesterday. The team shipped the feature yesterday.", AppSettings.Defaults()));
-            failures += AssertTrue(TranscriptionQuality.ShouldReject("T", 500, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("T", 500, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("P.", 800, 20000));
+            failures += AssertTrue(TranscriptionQuality.ShouldReject("~", 500, 12000));
+            failures += AssertTrue(TranscriptionQuality.ShouldReject(".", 500, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("5", 400, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("10", 500, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("100.", 600, 20000));
             failures += AssertFalse(TranscriptionQuality.ShouldReject("no", 500, 12000));
             failures += AssertEqual("embedded lone T",
                 "So we need to finish the project by Friday and then send it to the client for review.",
@@ -28,8 +34,59 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("The integration is working well Target window 1x garbage and we should ship tomorrow", AppSettings.Defaults()));
             failures += AssertTrue(TranscriptionQuality.IsLikelyEmbeddedHallucination("T", 0.08, 0.4, 0.5));
             failures += AssertFalse(TranscriptionQuality.IsLikelyEmbeddedHallucination("I", 0.08, 0.4, 0.5));
+            failures += AssertFalse(TranscriptionQuality.IsLikelyEmbeddedHallucination("P", 0.3, 0.4, 0.1));
+            failures += AssertEqual("single letter dictation", "P.", TextProcessor.Clean("P", AppSettings.Defaults()));
+            failures += AssertEqual("cue letter kept",
+                "The drive letter is P okay.",
+                TextProcessor.Clean("the drive letter is P okay", AppSettings.Defaults()));
             failures += AssertContains("1.", TextProcessor.Clean("first get milk second get bread third get eggs", AppSettings.Defaults()));
+            failures += AssertContains("2. Get bread", TextProcessor.Clean("first get milk second get bread third get eggs", AppSettings.Defaults()));
+            failures += AssertContains("3. Email the team",
+                TextProcessor.Clean("first check the logs, then restart the server, then email the team", AppSettings.Defaults()));
+            failures += AssertEqual("no numbered list from prose mentioning ordinals",
+                "When I say first or second it puts it into a one and two order.",
+                TextProcessor.Clean("when I say first or second it puts it into a one and two order", AppSettings.Defaults()));
+            failures += AssertEqual("anchor plus lone then stays prose",
+                "First let me check the logs, then we can decide.",
+                TextProcessor.Clean("first let me check the logs, then we can decide", AppSettings.Defaults()));
+            failures += AssertEqual("sentence-start then stays prose",
+                "First of all thanks for coming. Then we discussed the roadmap. Next quarter looks good.",
+                TextProcessor.Clean("First of all thanks for coming. Then we discussed the roadmap. Next quarter looks good.", AppSettings.Defaults()));
             failures += AssertContains("- ", TextProcessor.Clean("bullet point apples bullet point bananas bullet point cherries", AppSettings.Defaults()));
+            failures += AssertContains("- Apples\n- Bananas",
+                TextProcessor.Clean("bullet point apples and bullet point bananas", AppSettings.Defaults()));
+            failures += AssertContains("2. Restart the server",
+                TextProcessor.Clean("first of all check the logs, second of all restart the server, finally email the team", AppSettings.Defaults()));
+            failures += AssertEqual("period noun kept",
+                "That went on for a long period of time.",
+                TextProcessor.Clean("that went on for a long period of time", AppSettings.Defaults()));
+            failures += AssertEqual("oxford comma noun kept",
+                "You forgot the oxford comma in that sentence.",
+                TextProcessor.Clean("you forgot the oxford comma in that sentence", AppSettings.Defaults()));
+            failures += AssertEqual("existential no kept",
+                "I knocked on the door, no answer.",
+                TextProcessor.Clean("I knocked on the door, no answer", AppSettings.Defaults()));
+            failures += AssertEqual("corrective no still works",
+                "I want pasta.",
+                TextProcessor.Clean("I want pizza, no, pasta", AppSettings.Defaults()));
+            failures += AssertEqual("start over verb kept",
+                "Once you press reset it will start over from the beginning.",
+                TextProcessor.Clean("once you press reset it will start over from the beginning", AppSettings.Defaults()));
+            failures += AssertEqual("let me start over wipes preamble",
+                "Here is the real sentence.",
+                TextProcessor.Clean("blah blah let me start over here is the real sentence", AppSettings.Defaults()));
+            failures += AssertEqual("email preserved",
+                "Send it to kayleb.klopfer@gmail.com.",
+                TextProcessor.Clean("send it to kayleb.klopfer@gmail.com", AppSettings.Defaults()));
+            failures += AssertEqual("filename preserved",
+                "Open flowtype.cs.",
+                TextProcessor.Clean("open flowtype.cs", AppSettings.Defaults()));
+            failures += AssertEqual("url preserved in normalize",
+                "See github.com for details.",
+                TextProcessor.NormalizePunctuationSpacing("See github.com for details."));
+            failures += AssertEqual("title token not fuzzed onto real word",
+                "I was tracing the bug.",
+                TextProcessor.Clean("I was tracing the bug", AppSettings.Defaults(), NotepadContext("Tracking - Notepad")));
             failures += AssertEqual("no inferred list from prose",
                 "The main points are that we should move fast, stay focused, and ship on time.",
                 TextProcessor.Clean("The main points are that we should move fast, stay focused, and ship on time", AppSettings.Defaults()));
@@ -80,13 +137,98 @@ namespace Flowtype.Tests
             failures += AssertEqual("triple duplicate collapsed",
                 "Hello world test.",
                 TextProcessor.RemoveExactDuplicateBlocks("Hello world test.Hello world test.Hello world test."));
+            failures += RunCaretFitTests();
+            ForegroundInfo cursorFamily = new ForegroundInfo();
+            cursorFamily.ProcessName = "Cursor";
+            failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.42"));
+            failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
+            failures += AssertEqual("version label", "1.3.41", FlowtypeVersion.CurrentLabel);
+            return failures;
+        }
+
+        private static int RunCaretFitTests()
+        {
+            int failures = 0;
+            CaretNeighborhood midAfterWord = CaretNeighborhood.Known('d', ' ', false);
+            CaretNeighborhood midAfterSpace = CaretNeighborhood.Known(' ', 't', false);
+            CaretNeighborhood afterPeriod = CaretNeighborhood.Known('.', ' ', false);
+            CaretNeighborhood afterPeriodSpace = CaretNeighborhood.Known(' ', '\0', false, '.');
+            CaretNeighborhood emptyField = CaretNeighborhood.Known('\0', '\0', false);
+            CaretNeighborhood afterOpenParen = CaretNeighborhood.Known('(', '\0', false);
+            CaretNeighborhood selectionMid = CaretNeighborhood.Known(' ', ' ', true, 'e');
+            CaretNeighborhood selectionSentence = CaretNeighborhood.Known('\0', ' ', true);
+            CaretNeighborhood unread = CaretNeighborhood.Unavailable();
+
+            failures += AssertEqual("mid insert lower + strip period",
+                " quick fix",
+                CaretFit.Apply("Quick fix.", midAfterWord, false));
+            failures += AssertEqual("mid after space trailing only",
+                "quick fix ",
+                CaretFit.Apply("Quick fix.", midAfterSpace, false));
+            failures += AssertEqual("user bug macro space shifter",
+                "if it doesn't ",
+                CaretFit.Apply("If it doesn't.", CaretNeighborhood.Known(' ', 's', false), false));
+            failures += AssertEqual("sentence start keeps polish",
+                "Quick fix.",
+                CaretFit.Apply("Quick fix.", afterPeriodSpace, false));
+            failures += AssertEqual("empty field keeps polish",
+                "Quick fix.",
+                CaretFit.Apply("Quick fix.", emptyField, false));
+            failures += AssertEqual("preserve I mid-sentence",
+                " I think so",
+                CaretFit.Apply("I think so.", midAfterWord, false));
+            failures += AssertEqual("preserve I'm mid-sentence",
+                " I'm ready",
+                CaretFit.Apply("I'm ready.", midAfterWord, false));
+            failures += AssertEqual("preserve API acronym",
+                " API is down",
+                CaretFit.Apply("API is down.", midAfterWord, false));
+            failures += AssertEqual("preserve OK acronym",
+                " OK",
+                CaretFit.Apply("OK.", midAfterWord, false));
+            failures += AssertEqual("keep question mark",
+                " does this work?",
+                CaretFit.Apply("Does this work?", midAfterWord, false));
+            failures += AssertEqual("no space after open paren",
+                "quick",
+                CaretFit.Apply("Quick.", afterOpenParen, false));
+            failures += AssertEqual("selection no join space",
+                "the",
+                CaretFit.Apply("The.", selectionMid, false));
+            failures += AssertEqual("selection at sentence start keeps capital",
+                "That.",
+                CaretFit.Apply("That.", selectionSentence, false));
+            failures += AssertEqual("after period six people",
+                " Six people.",
+                CaretFit.Apply("Six people.", CaretNeighborhood.Known('.', '\0', false, '.'), false));
+            failures += AssertEqual("unread long keeps sentence polish",
+                " This is a longer dictation that should stay polished as a full sentence because it is not a short mid fragment anymore.",
+                CaretFit.Apply("This is a longer dictation that should stay polished as a full sentence because it is not a short mid fragment anymore.", unread, false, false, true));
+            failures += AssertEqual("unread short keeps sentence polish",
+                " Quick fix.",
+                CaretFit.Apply("Quick fix.", unread, false, false, true));
+            failures += AssertEqual("unread without soft stays polished",
+                "Quick fix.",
+                CaretFit.Apply("Quick fix.", unread, false, false, false));
+            failures += AssertEqual("unread continuity uses mid fit",
+                " quick fix ",
+                CaretFit.Apply("Quick fix.", unread, true, false, true));
+            failures += AssertEqual("space after sentence punct",
+                " Next.",
+                CaretFit.Apply("Next.", afterPeriod, false));
+            failures += AssertEqual("clean then fit mid",
+                " quick fix",
+                CaretFit.Apply(TextProcessor.Clean("quick fix", AppSettings.Defaults()), midAfterWord, false));
             ForegroundInfo cursor = new ForegroundInfo();
             cursor.ProcessName = "Cursor";
-            failures += AssertTrue(ForegroundContext.IsCursorFamily(cursor));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.36"));
-            failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.35", FlowtypeVersion.CurrentLabel);
-            failures += AssertEqual("pcm duration", 1.0, PcmAudio.DurationSeconds(32000), 0.01);
+            cursor.FocusHandle = new IntPtr(1);
+            failures += AssertEqual("cursor skips caret fit keeps punctuation",
+                "Quick fix.",
+                ForegroundContext.PrepareInsertText("Quick fix.", cursor));
+            failures += AssertEqual("cursor skips mid fragment strip",
+                "If it doesn't.",
+                ForegroundContext.PrepareInsertText("If it doesn't.", cursor));
             return failures;
         }
 
@@ -109,6 +251,14 @@ namespace Flowtype.Tests
             return TextProcessor.Clean("open setsings", settings, context);
         }
 
+        private static ForegroundInfo NotepadContext(string title)
+        {
+            ForegroundInfo context = new ForegroundInfo();
+            context.ProcessName = "notepad";
+            context.Title = title;
+            return context;
+        }
+
         private static ForegroundInfo DiscordContext(string contactName)
         {
             ForegroundInfo context = new ForegroundInfo();
@@ -125,17 +275,6 @@ namespace Flowtype.Tests
                 return 0;
             }
             Console.WriteLine("FAIL " + name + " expected=[" + expected + "] actual=[" + actual + "]");
-            return 1;
-        }
-
-        private static int AssertEqual(string name, double expected, double actual, double tolerance)
-        {
-            if (Math.Abs(expected - actual) <= tolerance)
-            {
-                Console.WriteLine("PASS " + name);
-                return 0;
-            }
-            Console.WriteLine("FAIL " + name + " expected=" + expected + " actual=" + actual);
             return 1;
         }
 

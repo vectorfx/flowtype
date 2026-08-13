@@ -36,11 +36,11 @@ $appRefArgs = foreach ($assemblyName in $appRefNames) {
     "/reference:$(Resolve-FrameworkAssembly $assemblyName)"
 }
 $appDll = Join-Path $outputDir 'Flowtype.App.dll'
-& $csc /nologo /target:library /out:$appDll @appRefArgs $source $embedded
+& $csc /nologo /codepage:65001 /target:library /out:$appDll @appRefArgs $source $embedded
 if ($LASTEXITCODE -ne 0) { throw "Failed to compile Flowtype app sources." }
 
 $testRefArgs = @($appRefArgs) + @("/reference:$appDll")
-& $csc /nologo /target:library /out:$dll @testRefArgs $tests
+& $csc /nologo /codepage:65001 /target:library /out:$dll @testRefArgs $tests
 if ($LASTEXITCODE -ne 0) { throw "Failed to compile Flowtype tests." }
 
 Add-Type -Path $dll

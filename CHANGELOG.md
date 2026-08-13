@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.3.41
+
+Spoken lists:
+- "First X, second Y" no longer mangles prose that merely mentions ordinals — numbered lists require an ascending first/second/third sequence, and a would-be item that is just "And"/"Then" cancels list formatting entirely
+- "First X, then Y, then Z" (comma-separated steps) now formats as a clean 1/2/3 list; "second of all"/"third of all" no longer leak "of all" into items
+
+Single letters and numbers:
+- Dictating a lone letter ("P") or number ("5", "10") now types it instead of being rejected as noise
+- Letters near cue words ("the drive letter is P", "P as in Peter") survive the glitch filter; trailing lone-letter hallucinations at end of recording are now filtered again
+
+Focus loss / lost dictations:
+- If a window steals focus during dictation, text is delivered to the window you started dictating in (refocused if needed) — never blind-pasted into the thief; falls back to clipboard with a notification
+- New tray item "Copy last dictation": every transcript stays recoverable, even superseded, rejected, or failed ones
+- Clipboard restore now waits and checks ownership, so slow apps can't paste the OLD clipboard content; repeated identical dictations within 2.5 s are no longer silently swallowed
+
+Text pipeline:
+- "period"/"comma"/"colon" as ordinary nouns ("a long period of time", "the Oxford comma") are no longer converted to punctuation
+- "no" only acts as a self-correction with punctuation on both sides ("the door, no answer" survives); bare "start over" as a verb phrase no longer wipes the sentence
+- Emails, URLs, and filenames (kayleb.klopfer@gmail.com, github.com, flowtype.cs) are no longer split/capitalized apart
+- Window-title words can no longer rewrite normal words ("tracing" stayed "Tracking" when a Tracking tab was open)
+
+Stability and speed:
+- Escape-cancel no longer runs heavy file work inside the keyboard hook (could kill the hotkey until restart)
+- Caret probing now uses timeouts — a hung target app can no longer freeze Flowtype
+- Groq dictations reuse the warmed connection (saves a TLS handshake per dictation); regex cache sized to the pipeline
+- Build now compiles with /codepage:65001 so em dashes and typographic characters compile correctly
+
+---
+
+## 1.3.40
+
+- Fix Google Docs / browser editors gluing text after periods (`defended.six` → `defended. Six`)
+- Stop treating unread-caret short phrases as mid-sentence fragments — keep normal punctuation unless prior-insert continuity says otherwise
+
+---
+
+## 1.3.39
+
+- Roll back CaretFit in Cursor/VS Code — restore normal punctuation and capitalization (spacing-only insert)
+- CaretFit mid-sentence fit unchanged for apps that expose caret context (Notepad, Google Docs, etc.)
+
+---
+
+## 1.3.38
+
+- Fix mid-sentence spacing: join space before *and* after the insert when neighbors need it
+- Stop treating EM_GETSEL 0,0 as caret-at-end (that caused `macro  if it doesn'tshifter`)
+- When caret can't be read, prefer trailing join space and short-fragment mid fit — never invent a leading space
+
+---
+
+## 1.3.37
+
+- Mid-sentence dictation fit: lowercase fragments, skip forced periods, join with exactly one space using caret neighbors
+- Preserve `I`/`I'm` and acronyms (`API`, `OK`) when fitting
+- Selection replace does not add a join space; unread caret stays sentence-mode unless prior insert continuity says mid-fragment
+
+---
+
+## 1.3.36
+
+- Remove live preview from the voice capsule and restore the original overlay
+- Keep in-app auto-update from 1.3.35
+
+---
+
 ## 1.3.35
 
 - Live preview while speaking — partial transcript appears in the voice capsule during dictation (toggle in Settings)

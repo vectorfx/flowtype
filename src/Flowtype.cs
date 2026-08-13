@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.35.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.35.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.41.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.41.0")]
 
 namespace Flowtype
 {
@@ -60,7 +60,6 @@ namespace Flowtype
         public bool SuppressNonSpeech;
         public bool CompletionSound;
         public bool ShowInsertNotification;
-        public bool StreamingPreview;
         public bool AutoCheckUpdates;
         public string SkippedUpdateVersion;
         public string LastUpdateCheckUtc;
@@ -100,7 +99,6 @@ namespace Flowtype
             value.SuppressNonSpeech = false;
             value.CompletionSound = true;
             value.ShowInsertNotification = false;
-            value.StreamingPreview = true;
             value.AutoCheckUpdates = true;
             value.SkippedUpdateVersion = "";
             value.LastUpdateCheckUtc = "";
@@ -762,6 +760,32 @@ namespace Flowtype
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
 
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetClipboardSequenceNumber();
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, StringBuilder lParam, uint flags, uint timeoutMs, out IntPtr result);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeoutMs, out IntPtr result);
+
+        private const uint SMTO_ABORTIFHUNG = 0x0002;
+        private const uint CaretProbeTimeoutMs = 200;
+
+        private static bool TrySendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, out int value)
+        {
+            IntPtr result;
+            IntPtr ok = SendMessageTimeout(hWnd, msg, wParam, lParam, SMTO_ABORTIFHUNG, CaretProbeTimeoutMs, out result);
+            value = result.ToInt32();
+            return ok != IntPtr.Zero;
+        }
+
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
 
@@ -791,7 +815,9 @@ namespace Flowtype
         private static string lastPastePayload = "";
         private static IntPtr lastAppendTarget = IntPtr.Zero;
         private static bool lastAppendEndedWithPunctuation;
-        private const int PasteDebounceMs = 2500;
+        // Only guards against hook double-fires; a real repeated dictation ("lgtm" twice in a
+        // row) must paste again, so this must stay well under record+transcribe turnaround.
+        private const int PasteDebounceMs = 300;
 
         public static ForegroundInfo Capture(bool includeContext)
         {
@@ -838,6 +864,22 @@ namespace Flowtype
         public static string PrepareInsertText(string text, ForegroundInfo context)
         {
             if (String.IsNullOrEmpty(text)) return text ?? "";
+            // Cursor/VS Code can't expose real caret neighbors — CaretFit heuristics strip
+            // punctuation and break normal dictation. Keep legacy spacing-only there.
+            if (IsCursorFamily(context))
+                return PrepareInsertTextLegacySpacing(text, context);
+
+            CaretNeighborhood caret = TryGetCaretNeighborhood(context);
+            bool midContinuity = CanAssumeMidSentenceContinuity(context);
+            bool afterPriorSentence = context != null
+                && context.FocusHandle != IntPtr.Zero
+                && context.FocusHandle == lastAppendTarget
+                && lastAppendEndedWithPunctuation;
+            return CaretFit.Apply(text, caret, midContinuity, afterPriorSentence, HasRealTarget(context));
+        }
+
+        private static string PrepareInsertTextLegacySpacing(string text, ForegroundInfo context)
+        {
             if (text.StartsWith(" ", StringComparison.Ordinal) || text.StartsWith("\n", StringComparison.Ordinal)) return text;
             char previous;
             if (TryGetCharBeforeCaret(context, out previous))
@@ -849,13 +891,6 @@ namespace Flowtype
             return text;
         }
 
-        public static void NoteSuccessfulInsert(ForegroundInfo context, string insertedText)
-        {
-            lastAppendTarget = context == null ? IntPtr.Zero : context.FocusHandle;
-            string trimmed = (insertedText ?? "").TrimEnd();
-            lastAppendEndedWithPunctuation = trimmed.Length > 0 && ".!?".IndexOf(trimmed[trimmed.Length - 1]) >= 0;
-        }
-
         private static bool ShouldPrependFromLastInsert(ForegroundInfo context, string text)
         {
             if (context == null || context.FocusHandle == IntPtr.Zero) return false;
@@ -864,43 +899,91 @@ namespace Flowtype
             return Char.IsUpper(text[0]);
         }
 
-        private static bool TryGetCharBeforeCaret(ForegroundInfo context, out char previous)
+        private static bool HasRealTarget(ForegroundInfo context)
         {
-            previous = '\0';
-            if (context == null) return false;
+            return context != null && (context.FocusHandle != IntPtr.Zero || context.Handle != IntPtr.Zero);
+        }
+
+        public static void NoteSuccessfulInsert(ForegroundInfo context, string insertedText)
+        {
+            lastAppendTarget = context == null ? IntPtr.Zero : context.FocusHandle;
+            string trimmed = (insertedText ?? "").TrimEnd();
+            lastAppendEndedWithPunctuation = trimmed.Length > 0 && ".!?".IndexOf(trimmed[trimmed.Length - 1]) >= 0;
+        }
+
+        private static bool CanAssumeMidSentenceContinuity(ForegroundInfo context)
+        {
+            if (context == null || context.FocusHandle == IntPtr.Zero) return false;
+            if (context.FocusHandle != lastAppendTarget) return false;
+            return !lastAppendEndedWithPunctuation;
+        }
+
+        public static CaretNeighborhood TryGetCaretNeighborhood(ForegroundInfo context)
+        {
+            if (context == null) return CaretNeighborhood.Unavailable();
             IntPtr hwnd = context.FocusHandle;
             if (hwnd == IntPtr.Zero)
             {
-                if (context.Handle == IntPtr.Zero) return false;
+                if (context.Handle == IntPtr.Zero) return CaretNeighborhood.Unavailable();
                 uint processId;
                 uint threadId = GetWindowThreadProcessId(context.Handle, out processId);
                 hwnd = FocusedWindow(threadId);
             }
-            if (hwnd == IntPtr.Zero) return false;
+            if (hwnd == IntPtr.Zero) return CaretNeighborhood.Unavailable();
 
-            int selection = SendMessage(hwnd, EM_GETSEL, IntPtr.Zero, IntPtr.Zero).ToInt32();
+            // Timeouts everywhere: a plain SendMessage to a hung target (busy Electron/Office
+            // window) blocks Flowtype's UI thread forever. Degrade to Unavailable instead.
+            int selection;
+            if (!TrySendMessageTimeout(hwnd, EM_GETSEL, IntPtr.Zero, IntPtr.Zero, out selection))
+                return CaretNeighborhood.Unavailable();
             int caretStart = selection & 0xFFFF;
             int caretEnd = (selection >> 16) & 0xFFFF;
+            bool hasSelection = caretStart != caretEnd;
 
-            int length = SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero).ToInt32();
-            if (length <= 0) return false;
-            if (length > 200000) length = 200000;
+            int length;
+            if (!TrySendMessageTimeout(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero, out length))
+                return CaretNeighborhood.Unavailable();
+            if (length < 0) return CaretNeighborhood.Unavailable();
+            if (length == 0) return CaretNeighborhood.Known('\0', '\0', hasSelection);
 
+            // EM_GETSEL packs positions into 16 bits, so anything past 65535 is unaddressable —
+            // reading more than that is wasted cross-process marshalling.
+            if (length > 65535) length = 65535;
             StringBuilder buffer = new StringBuilder(length + 2);
-            SendMessage(hwnd, WM_GETTEXT, new IntPtr(length + 1), buffer);
+            IntPtr textResult;
+            if (SendMessageTimeout(hwnd, WM_GETTEXT, new IntPtr(length + 1), buffer, SMTO_ABORTIFHUNG, CaretProbeTimeoutMs, out textResult) == IntPtr.Zero)
+                return CaretNeighborhood.Unavailable();
             string fieldText = buffer.ToString();
-            if (fieldText.Length == 0) return false;
+            if (fieldText.Length == 0) return CaretNeighborhood.Known('\0', '\0', hasSelection);
 
             int insertAt = Math.Max(caretStart, caretEnd);
-            if (insertAt <= 0 && caretStart == 0 && caretEnd == 0)
-                insertAt = fieldText.Length;
+            // EM_GETSEL 0,0 is ambiguous: unsupported control, caret at start, or caret at end.
+            // Guessing "end" made mid-field pastes (Cursor/Electron) get a bogus left char from the
+            // last letter in the buffer → extra leading space and no trailing space before the next word.
+            if (insertAt <= 0 && caretStart == 0 && caretEnd == 0 && !hasSelection)
+                return CaretNeighborhood.Unavailable();
+            if (insertAt < 0) insertAt = 0;
+            if (insertAt > fieldText.Length) insertAt = fieldText.Length;
 
-            if (insertAt <= 0) return false;
-            int index = insertAt - 1;
-            if (index >= fieldText.Length) index = fieldText.Length - 1;
-            if (index < 0) return false;
-            previous = fieldText[index];
-            return true;
+            char immediateLeft = insertAt > 0 ? fieldText[insertAt - 1] : '\0';
+            char immediateRight = insertAt < fieldText.Length ? fieldText[insertAt] : '\0';
+            char semanticLeft = '\0';
+            for (int index = insertAt - 1; index >= 0; index--)
+            {
+                if (!Char.IsWhiteSpace(fieldText[index]))
+                {
+                    semanticLeft = fieldText[index];
+                    break;
+                }
+            }
+            return CaretNeighborhood.Known(immediateLeft, immediateRight, hasSelection, semanticLeft);
+        }
+
+        private static bool TryGetCharBeforeCaret(ForegroundInfo context, out char previous)
+        {
+            CaretNeighborhood caret = TryGetCaretNeighborhood(context);
+            previous = caret.ImmediateLeft;
+            return caret.Available && !caret.AtStart;
         }
 
         public static bool IsCursorFamily(ForegroundInfo context)
@@ -938,6 +1021,20 @@ namespace Flowtype
         private static bool DeliverDictationCore(string text, ForegroundInfo original, bool keepOnClipboard)
         {
             ForegroundInfo field = Capture(false);
+            if (original != null && original.Handle != IntPtr.Zero && field.Handle != original.Handle)
+            {
+                // Another window took focus between dictation and delivery. Never paste blind
+                // into the thief — refocus the window the user dictated into, or leave the
+                // text on the clipboard so it stays reachable.
+                field = TryRefocus(original);
+                if (field == null)
+                {
+                    string rescue = PrepareInsertText(text ?? "", original);
+                    if (rescue.Length == 0) rescue = (text ?? "").Trim();
+                    if (rescue.Length == 0) return false;
+                    return TryClipboardOnly(rescue);
+                }
+            }
             string payload = PrepareInsertText(text ?? "", field);
             if (payload.Length == 0) return false;
             if (IsFlowtypeForeground()) return TryClipboardOnly(payload);
@@ -989,20 +1086,48 @@ namespace Flowtype
 
             if (restoreClipboard)
             {
-                // Cursor auto-pastes on clipboard change — Clear only (don't put previous text
-                // back, or it can insert again). Setting off = don't leave dictation on clipboard.
-                Thread.Sleep(cursorFamily ? 100 : 40);
-                try
+                // Restore later, not now: the injected Ctrl+V is processed asynchronously by the
+                // target app, and restoring within ~40 ms can beat the paste — silently inserting
+                // the OLD clipboard text instead of the dictation. Defer, and skip the restore
+                // entirely if another app took the clipboard meanwhile. (Cursor auto-pastes on
+                // clipboard change — Clear only, never put previous text back there.)
+                uint sequenceAfterSet = GetClipboardSequenceNumber();
+                string restoreText = hadPrevious ? previous : null;
+                bool clearOnly = cursorFamily;
+                System.Windows.Forms.Timer restoreTimer = new System.Windows.Forms.Timer();
+                restoreTimer.Interval = 800;
+                restoreTimer.Tick += delegate
                 {
-                    if (cursorFamily) Clipboard.Clear();
-                    else if (hadPrevious) Clipboard.SetText(previous);
-                    else Clipboard.Clear();
-                }
-                catch { }
+                    restoreTimer.Stop();
+                    restoreTimer.Dispose();
+                    try
+                    {
+                        if (GetClipboardSequenceNumber() != sequenceAfterSet) return;
+                        if (clearOnly) Clipboard.Clear();
+                        else if (restoreText != null) Clipboard.SetText(restoreText);
+                        else Clipboard.Clear();
+                    }
+                    catch { }
+                };
+                restoreTimer.Start();
             }
             lastPastePayload = payload;
             lastPasteUtc = DateTime.UtcNow;
+            NoteSuccessfulInsert(field, payload);
             return true;
+        }
+
+        private static ForegroundInfo TryRefocus(ForegroundInfo original)
+        {
+            try
+            {
+                if (!IsWindow(original.Handle)) return null;
+                SetForegroundWindow(original.Handle);
+                Thread.Sleep(80);
+                ForegroundInfo current = Capture(false);
+                return current.Handle == original.Handle ? current : null;
+            }
+            catch { return null; }
         }
 
         private static bool TryClipboardOnly(string payload)
@@ -1206,7 +1331,6 @@ namespace Flowtype
         private volatile bool recording;
         public float MicGain { get; set; }
         public event Action<AudioMeterReading> LevelChanged;
-        public event Action<byte[]> AudioChunkReceived;
 
         public sealed class AudioMeterReading
         {
@@ -1287,8 +1411,6 @@ namespace Flowtype
                 reading.Boosted = BuildMeter(boostedPeak);
                 Action<AudioMeterReading> levelHandler = LevelChanged;
                 if (levelHandler != null) levelHandler(reading);
-                Action<byte[]> chunkHandler = AudioChunkReceived;
-                if (chunkHandler != null) chunkHandler(data);
             }
             if (recording) waveInAddBuffer(input, parameter1, (uint)Marshal.SizeOf(typeof(WaveHeader)));
         }
@@ -1470,39 +1592,6 @@ namespace Flowtype
         }
     }
 
-    public static class PcmAudio
-    {
-        public const int SampleRate = 16000;
-
-        public static void WriteWave(byte[] pcm, string outputPath)
-        {
-            if (pcm == null) pcm = new byte[0];
-            using (FileStream output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.Read))
-            using (BinaryWriter writer = new BinaryWriter(output, Encoding.ASCII))
-            {
-                writer.Write(Encoding.ASCII.GetBytes("RIFF"));
-                writer.Write((int)(36 + pcm.Length));
-                writer.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
-                writer.Write(16);
-                writer.Write((short)1);
-                writer.Write((short)1);
-                writer.Write(SampleRate);
-                writer.Write(SampleRate * 2);
-                writer.Write((short)2);
-                writer.Write((short)16);
-                writer.Write(Encoding.ASCII.GetBytes("data"));
-                writer.Write(pcm.Length);
-                writer.Write(pcm);
-            }
-        }
-
-        public static double DurationSeconds(int pcmBytes)
-        {
-            if (pcmBytes <= 0) return 0;
-            return pcmBytes / (SampleRate * 2.0);
-        }
-    }
-
     public static class FlowtypeVersion
     {
         private static readonly Version CurrentVersion = typeof(FlowtypeVersion).Assembly.GetName().Version;
@@ -1637,124 +1726,6 @@ namespace Flowtype
         }
     }
 
-    public sealed class StreamingPreviewSession : IDisposable
-    {
-        private readonly RecordingOverlay overlay;
-        private readonly AppSettings settings;
-        private readonly string apiKey;
-        private readonly string groqKey;
-        private readonly WhisperEngine whisperEngine;
-        private readonly GroqEngine groqEngine;
-        private readonly object gate = new object();
-        private readonly List<byte> pcm = new List<byte>();
-        private readonly System.Windows.Forms.Timer timer;
-        private ForegroundInfo target;
-        private int generation;
-        private bool active;
-        private bool transcribing;
-        private DateTime lastTranscribeUtc = DateTime.MinValue;
-        private const int MinPreviewBytes = 48000;
-        private const int PreviewIntervalMs = 1200;
-
-        public StreamingPreviewSession(RecordingOverlay overlay, AppSettings settings, string apiKey, string groqKey,
-            WhisperEngine whisperEngine, GroqEngine groqEngine)
-        {
-            this.overlay = overlay;
-            this.settings = settings;
-            this.apiKey = apiKey ?? "";
-            this.groqKey = groqKey ?? "";
-            this.whisperEngine = whisperEngine;
-            this.groqEngine = groqEngine;
-            timer = new System.Windows.Forms.Timer();
-            timer.Interval = 900;
-            timer.Tick += delegate { TryTranscribePreview(); };
-        }
-
-        public void Start(ForegroundInfo captureTarget)
-        {
-            generation++;
-            target = captureTarget;
-            lock (gate) pcm.Clear();
-            active = true;
-            lastTranscribeUtc = DateTime.MinValue;
-            transcribing = false;
-            overlay.ClearPreviewText();
-            timer.Start();
-        }
-
-        public void Stop()
-        {
-            active = false;
-            timer.Stop();
-            generation++;
-            transcribing = false;
-            overlay.ClearPreviewText();
-        }
-
-        public void OnAudioChunk(byte[] data)
-        {
-            if (!active || data == null || data.Length == 0) return;
-            lock (gate) pcm.AddRange(data);
-        }
-
-        private void TryTranscribePreview()
-        {
-            if (!active || transcribing) return;
-            byte[] snapshot;
-            lock (gate)
-            {
-                if (pcm.Count < MinPreviewBytes) return;
-                snapshot = pcm.ToArray();
-            }
-            if (lastTranscribeUtc != DateTime.MinValue &&
-                (DateTime.UtcNow - lastTranscribeUtc).TotalMilliseconds < PreviewIntervalMs) return;
-            transcribing = true;
-            int session = generation;
-            Task.Run(async delegate
-            {
-                try
-                {
-                    string text = await TranscribeSnapshotAsync(snapshot);
-                    if (session != generation || !active || String.IsNullOrWhiteSpace(text)) return;
-                    overlay.SetPreviewText(text);
-                }
-                catch { }
-                finally
-                {
-                    transcribing = false;
-                    lastTranscribeUtc = DateTime.UtcNow;
-                }
-            });
-        }
-
-        private async Task<string> TranscribeSnapshotAsync(byte[] snapshot)
-        {
-            string tempDir = Path.Combine(Path.GetTempPath(), "Flowtype-preview");
-            Directory.CreateDirectory(tempDir);
-            string wavePath = Path.Combine(tempDir, "preview-" + Guid.NewGuid().ToString("N") + ".wav");
-            try
-            {
-                PcmAudio.WriteWave(snapshot, wavePath);
-                if (String.Equals(settings.Engine, "Groq", StringComparison.OrdinalIgnoreCase))
-                    return await groqEngine.TranscribePreviewAsync(wavePath, settings, groqKey);
-                if (String.Equals(settings.Engine, "OpenAI", StringComparison.OrdinalIgnoreCase))
-                    return await new OpenAiEngine().TranscribePreviewAsync(wavePath, settings, apiKey);
-                SpeechTranscript transcript = await whisperEngine.TranscribePreviewAsync(wavePath, settings, target);
-                return transcript == null ? "" : transcript.Text;
-            }
-            finally
-            {
-                try { if (File.Exists(wavePath)) File.Delete(wavePath); } catch { }
-            }
-        }
-
-        public void Dispose()
-        {
-            Stop();
-            timer.Dispose();
-        }
-    }
-
     public static class TranscriptionQuality
     {
         private static readonly HashSet<string> AllowedShortOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -1769,7 +1740,17 @@ namespace Flowtype
             if (text.Length == 0) return true;
             if (AllowedShortOutputs.Contains(text)) return false;
 
-            // Whisper often hallucinates a lone letter when the clip was cut short.
+            // A deliberately dictated letter ("P", "b.") or number ("5", "10", "100") is valid
+            // output and must insert.
+            string core = text.TrimEnd('.', '!', '?', ',', ' ');
+            if (core.Length == 1 && Char.IsLetter(core[0])) return false;
+            if (core.Length == 0) return true;
+            bool allDigits = true;
+            for (int index = 0; index < core.Length; index++)
+                if (!Char.IsDigit(core[index])) { allDigits = false; break; }
+            if (allDigits && core.Length <= 4) return false;
+
+            // A lone non-letter character from a real clip is garbage.
             if (text.Length == 1 && recordMs >= 250) return true;
 
             // A multi-syllable clip that only produced 1-2 characters is almost always garbage.
@@ -1785,8 +1766,9 @@ namespace Flowtype
             if (String.Equals(text, "I", StringComparison.OrdinalIgnoreCase) ||
                 String.Equals(text, "a", StringComparison.OrdinalIgnoreCase)) return false;
             if (durationSeconds > 0.45) return false;
+            // Only silence on BOTH sides marks a hallucination; a letter spoken right before
+            // or after other words ("P as in Peter") pauses on one side only and must survive.
             if (gapBeforeSeconds >= 0.25 && gapAfterSeconds >= 0.25) return true;
-            if (gapBeforeSeconds >= 0.35 || gapAfterSeconds >= 0.35) return true;
             return false;
         }
     }
@@ -1819,6 +1801,260 @@ namespace Flowtype
                 return (info.Length - 44) / 32000.0;
             }
             catch { return 0; }
+        }
+    }
+
+    public struct CaretNeighborhood
+    {
+        public bool Available;
+        public char ImmediateLeft;
+        public char SemanticLeft;
+        public char ImmediateRight;
+        public bool HasSelection;
+
+        public bool AtStart
+        {
+            get { return Available && ImmediateLeft == '\0' && SemanticLeft == '\0'; }
+        }
+
+        public static CaretNeighborhood Unavailable()
+        {
+            CaretNeighborhood value = new CaretNeighborhood();
+            value.Available = false;
+            return value;
+        }
+
+        public static CaretNeighborhood Known(char immediateLeft, char immediateRight, bool hasSelection)
+        {
+            char semantic = immediateLeft;
+            if (Char.IsWhiteSpace(immediateLeft)) semantic = '\0';
+            return Known(immediateLeft, immediateRight, hasSelection, semantic);
+        }
+
+        public static CaretNeighborhood Known(char immediateLeft, char immediateRight, bool hasSelection, char semanticLeft)
+        {
+            CaretNeighborhood value = new CaretNeighborhood();
+            value.Available = true;
+            value.ImmediateLeft = immediateLeft;
+            value.ImmediateRight = immediateRight;
+            value.HasSelection = hasSelection;
+            value.SemanticLeft = semanticLeft;
+            return value;
+        }
+    }
+
+    public static class CaretFit
+    {
+        private static readonly Regex AbbreviationPeriod = new Regex(
+            @"\b(?:etc|vs|mr|mrs|ms|dr|prof|inc|ltd|jr|sr|st|approx)\.$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        public static string Apply(string text, CaretNeighborhood caret, bool assumeMidContinuity)
+        {
+            return Apply(text, caret, assumeMidContinuity, false, false);
+        }
+
+        public static string Apply(string text, CaretNeighborhood caret, bool assumeMidContinuity, bool assumeAfterPriorSentence)
+        {
+            return Apply(text, caret, assumeMidContinuity, assumeAfterPriorSentence, false);
+        }
+
+        public static string Apply(string text, CaretNeighborhood caret, bool assumeMidContinuity, bool assumeAfterPriorSentence, bool allowSoftFragmentWhenUnread)
+        {
+            if (String.IsNullOrEmpty(text)) return text ?? "";
+
+            bool alreadyLeftPadded = text.StartsWith(" ", StringComparison.Ordinal) || text.StartsWith("\n", StringComparison.Ordinal);
+            bool mid;
+            bool sentenceStart;
+            bool selection = caret.Available && caret.HasSelection;
+
+            if (!caret.Available)
+            {
+                if (assumeMidContinuity)
+                {
+                    mid = true;
+                    sentenceStart = false;
+                }
+                else if (assumeAfterPriorSentence)
+                {
+                    mid = false;
+                    sentenceStart = true;
+                    return alreadyLeftPadded ? text : EnsureLeadingSpace(text, true);
+                }
+                else
+                {
+                    // Browser editors (Google Docs) often hide the caret. Default to cleaned
+                    // sentence polish and join with a leading space — not mid-fragment stripping.
+                    if (!allowSoftFragmentWhenUnread) return text;
+                    return alreadyLeftPadded ? text : EnsureLeadingSpace(text, true);
+                }
+            }
+            else if (selection)
+            {
+                sentenceStart = caret.AtStart || IsSentenceBoundary(caret.SemanticLeft);
+                mid = !sentenceStart;
+            }
+            else
+            {
+                sentenceStart = caret.AtStart || IsSentenceBoundary(caret.SemanticLeft);
+                mid = !sentenceStart;
+            }
+
+            string fitted = text;
+            if (mid)
+            {
+                fitted = LowercaseForMidSentence(fitted);
+                fitted = StripForcedTrailingPeriod(fitted);
+            }
+
+            if (selection) return fitted;
+
+            bool needLeading = false;
+            bool needTrailing = false;
+            if (caret.Available)
+            {
+                if (!alreadyLeftPadded
+                    && caret.ImmediateLeft != '\0'
+                    && !Char.IsWhiteSpace(caret.ImmediateLeft)
+                    && !IsNoSpaceAfter(caret.ImmediateLeft))
+                    needLeading = true;
+
+                if (NeedsSpaceBefore(caret.ImmediateRight) && !EndsWithJoinSpace(fitted))
+                    needTrailing = true;
+            }
+            else if (mid)
+            {
+                // Prior insert continuity without readable caret (non-Cursor apps only).
+                if (!alreadyLeftPadded && !EndsWithJoinSpace(fitted)) needLeading = true;
+                if (!EndsWithJoinSpace(fitted)) needTrailing = true;
+            }
+
+            if (needLeading) fitted = " " + fitted;
+            if (needTrailing) fitted = fitted + " ";
+            return fitted;
+        }
+
+        private static bool IsShortFragment(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text) || text.IndexOf('\n') >= 0) return false;
+            string trimmed = text.Trim();
+            if (trimmed.Length == 0 || trimmed.Length > 60) return false;
+            int words = 0;
+            foreach (string part in Regex.Split(trimmed, @"\s+"))
+            {
+                if (part.Length == 0) continue;
+                words++;
+                if (words > 6) return false;
+            }
+            return words >= 1;
+        }
+
+        private static bool NeedsSpaceBefore(char right)
+        {
+            if (right == '\0' || Char.IsWhiteSpace(right)) return false;
+            if (IsNoSpaceBefore(right)) return false;
+            return Char.IsLetterOrDigit(right) || right == '(' || right == '[' || right == '{' || right == '"' || right == '\'' || right == '“' || right == '‘';
+        }
+
+        private static bool IsNoSpaceBefore(char value)
+        {
+            return value == ')' || value == ']' || value == '}' || value == ',' || value == '.' ||
+                   value == '!' || value == '?' || value == ':' || value == ';' || value == '%' ||
+                   value == '”' || value == '’';
+        }
+
+        private static bool EndsWithJoinSpace(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return false;
+            char last = text[text.Length - 1];
+            return Char.IsWhiteSpace(last);
+        }
+
+        private static string EnsureLeadingSpace(string text, bool needed)
+        {
+            if (!needed || text.Length == 0) return text;
+            if (Char.IsWhiteSpace(text[0])) return text;
+            return " " + text;
+        }
+
+        private static bool IsSentenceBoundary(char value)
+        {
+            return value == '.' || value == '?' || value == '!' || value == '…' || value == '\n';
+        }
+
+        private static bool IsNoSpaceAfter(char value)
+        {
+            return value == '(' || value == '[' || value == '{' || value == '"' || value == '\'' ||
+                   value == '“' || value == '‘' || value == '/' || value == '\\' || value == '-' ||
+                   value == '—' || value == '@' || value == '#';
+        }
+
+        private static string LowercaseForMidSentence(string text)
+        {
+            if (text.Length == 0) return text;
+            int index = 0;
+            while (index < text.Length && Char.IsWhiteSpace(text[index])) index++;
+            if (index >= text.Length) return text;
+
+            string firstToken = FirstToken(text, index);
+            if (IsProtectedPronounI(firstToken)) return text;
+            if (IsProtectedAcronymOrBrand(firstToken)) return text;
+
+            char first = text[index];
+            if (!Char.IsLetter(first) || !Char.IsUpper(first)) return text;
+            if (firstToken.Length >= 2 && Char.IsLetter(firstToken[1]) && Char.IsUpper(firstToken[1]))
+                return text;
+
+            char[] chars = text.ToCharArray();
+            chars[index] = Char.ToLower(first, CultureInfo.CurrentCulture);
+            return new string(chars);
+        }
+
+        private static string FirstToken(string text, int start)
+        {
+            int end = start;
+            while (end < text.Length)
+            {
+                char value = text[end];
+                if (Char.IsWhiteSpace(value) || value == '.' || value == '?' || value == '!' || value == ',')
+                    break;
+                end++;
+            }
+            return text.Substring(start, end - start);
+        }
+
+        private static bool IsProtectedPronounI(string token)
+        {
+            return Regex.IsMatch(token ?? "", @"^I('m|'ll|'d|'ve|'re|’m|’ll|’d|’ve|’re)?$", RegexOptions.IgnoreCase);
+        }
+
+        private static bool IsProtectedAcronymOrBrand(string token)
+        {
+            if (String.IsNullOrEmpty(token) || token.Length < 2) return false;
+            int letters = 0;
+            int uppers = 0;
+            for (int index = 0; index < token.Length; index++)
+            {
+                char value = token[index];
+                if (!Char.IsLetter(value)) continue;
+                letters++;
+                if (Char.IsUpper(value)) uppers++;
+            }
+            return letters >= 2 && uppers == letters;
+        }
+
+        private static string StripForcedTrailingPeriod(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return text;
+            string trimmed = text.TrimEnd();
+            if (!trimmed.EndsWith(".", StringComparison.Ordinal)) return text;
+            if (trimmed.EndsWith("?", StringComparison.Ordinal) || trimmed.EndsWith("!", StringComparison.Ordinal))
+                return text;
+            if (AbbreviationPeriod.IsMatch(trimmed)) return text;
+            if (Regex.IsMatch(trimmed, @"[.!?][^\s].*\.$")) return text;
+            string without = trimmed.Substring(0, trimmed.Length - 1);
+            if (text.Length > trimmed.Length) without += text.Substring(trimmed.Length);
+            return without;
         }
     }
 
@@ -1904,11 +2140,13 @@ namespace Flowtype
             text = FormatNumbered(text);
             text = FormatInferredList(text);
 
-            text = Regex.Replace(text, @"\s+comma\b", ",", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, @"\s+(?:period|full stop)\b", ".", RegexOptions.IgnoreCase);
+            // Guards keep the words usable as ordinary nouns ("a long period of time",
+            // "the Oxford comma", "his colon") — only command usage converts.
+            text = Regex.Replace(text, @"(?<!\b(?:oxford|serial|a|the|another|one))\s+comma\b", ",", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+(?:period|full stop)\b(?!\s+(?:of|in|for|to|when|where|that|between|during|is|was|has|had)\b)", ".", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+question mark\b", "?", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+exclamation (?:mark|point)\b", "!", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, @"\s+colon\b", ":", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"(?<!\b(?:his|her|my|your|their|the|a))\s+colon\b", ":", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+semicolon\b", ";", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+(?:ampersand|and sign)\b", " &", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+(?:percent sign|percentage symbol)\b", "%", RegexOptions.IgnoreCase);
@@ -1922,24 +2160,53 @@ namespace Flowtype
             text = Regex.Replace(text, @"\s+(?:equals sign|equal sign)\b", "=", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+open (?:parenthesis|paren)\s*", " (", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+close (?:parenthesis|paren)\b", ")", RegexOptions.IgnoreCase);
+            // Emails, URLs, filenames, and abbreviations ("kayleb.klopfer@gmail.com",
+            // "github.com", "flowtype.cs", "e.g.") must not be split or re-capitalized by
+            // the sentence-spacing passes below.
+            List<string> protectedTokens = new List<string>();
+            text = ProtectDottedTokens(text, protectedTokens);
             text = Regex.Replace(text, @"[ \t]+([,.;:!?])", "$1");
             text = Regex.Replace(text, @"([,.;:!?])(?=[A-Za-z])", "$1 ");
             text = Regex.Replace(text, @"[ \t]{2,}", " ");
             text = Regex.Replace(text, @" *\n *", "\n");
             text = Regex.Replace(text, @"\n{3,}", "\n\n");
             text = Paragraphize(text, context).Trim();
-            if (IsTerminalContext(context)) return NormalizePunctuationSpacing(text.TrimEnd('.', ' '));
+            if (IsTerminalContext(context)) return RestoreDottedTokens(NormalizePunctuationSpacing(text.TrimEnd('.', ' ')), protectedTokens);
             text = Capitalize(text);
             if (!Regex.IsMatch(text, @"[.!?…,:;\)\]\""']$", RegexOptions.None) && !text.Contains("\n")) text += ".";
-            return NormalizePunctuationSpacing(ApplyApplicationStyle(text, settings, context));
+            return RestoreDottedTokens(NormalizePunctuationSpacing(ApplyApplicationStyle(text, settings, context)), protectedTokens);
+        }
+
+        // Lowercase-after-dot keeps sentence joins like "can.But" eligible for spacing while
+        // shielding real dotted tokens; the email alternation catches mixed-case addresses.
+        private static readonly Regex ProtectedTokenPattern = new Regex(
+            @"[A-Za-z0-9][A-Za-z0-9_+-]*(?:\.[a-z0-9_-]+)+(?:@[A-Za-z0-9.-]+)?|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+",
+            RegexOptions.Compiled);
+
+        private static string ProtectDottedTokens(string text, List<string> stash)
+        {
+            return ProtectedTokenPattern.Replace(text, delegate(Match match)
+            {
+                stash.Add(match.Value);
+                return "\uE000" + (stash.Count - 1).ToString(CultureInfo.InvariantCulture) + "\uE001";
+            });
+        }
+
+        private static string RestoreDottedTokens(string text, List<string> stash)
+        {
+            for (int index = 0; index < stash.Count; index++)
+                text = text.Replace("\uE000" + index.ToString(CultureInfo.InvariantCulture) + "\uE001", stash[index]);
+            return text;
         }
 
         public static string NormalizePunctuationSpacing(string text)
         {
             if (String.IsNullOrWhiteSpace(text)) return text ?? "";
+            List<string> stash = new List<string>();
+            text = ProtectDottedTokens(text, stash);
             text = Regex.Replace(text, @"([.!?])([A-Za-z""'])", "$1 $2");
             text = Regex.Replace(text, @"([,;:])([A-Za-z""'])", "$1 $2");
-            return text;
+            return RestoreDottedTokens(text, stash);
         }
 
         private static string FormatBullets(string text)
@@ -1953,7 +2220,7 @@ namespace Flowtype
             {
                 int start = matches[index].Index + matches[index].Length;
                 int end = index + 1 < matches.Count ? matches[index + 1].Index : text.Length;
-                string item = text.Substring(start, end - start).Trim(' ', ',', '.', ';');
+                string item = TrimConnectorEdges(text.Substring(start, end - start));
                 if (item.Length > 0) items.Add(item);
             }
             StringBuilder output = new StringBuilder();
@@ -1962,24 +2229,112 @@ namespace Flowtype
             return output.ToString().TrimEnd();
         }
 
+        // Ordinal markers ("first", "number two") anchor a spoken list; continuation markers
+        // ("then", "next") only count once an anchor was seen, so plain prose that happens to
+        // contain "then" never becomes a list. Articles before an ordinal ("the first time")
+        // mark adjectival use, not enumeration.
+        private static readonly Regex NumberedMarkerPattern = new Regex(
+            @"(?<=^|[\s,;:])(?<!\b(?:the|a|an|my|our|your|his|her|their|its|this|that|at|of|for|very)\s)(?<ordinal>(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)(?:ly|\s+of\s+all)?|(?:number|step)\s+(?:one|two|three|four|five|six|seven|eight|nine))\s*[:,]?\s+" +
+            @"|(?<=[,;]\s{0,4})(?<continuation>and\s+then|then|next|after\s+that)\s*[:,]?\s+" +
+            @"|(?<=^|[\s,;:])(?<terminal>finally|lastly)\s*[:,]?\s+",
+            RegexOptions.IgnoreCase);
+
+        private static int OrdinalValue(string marker)
+        {
+            string value = Regex.Replace(marker.ToLowerInvariant(), @"\s+", " ").Trim();
+            value = Regex.Replace(value, @"^(?:number|step) ", "");
+            if (value.StartsWith("first")) return 1;
+            if (value.StartsWith("second") || value == "two") return 2;
+            if (value.StartsWith("third") || value == "three") return 3;
+            if (value.StartsWith("fourth") || value == "four") return 4;
+            if (value.StartsWith("fifth") || value == "five") return 5;
+            if (value.StartsWith("sixth") || value == "six") return 6;
+            if (value.StartsWith("seventh") || value == "seven") return 7;
+            if (value.StartsWith("eighth") || value == "eight") return 8;
+            if (value.StartsWith("ninth") || value == "nine") return 9;
+            if (value == "one") return 1;
+            return -1;
+        }
+
         private static string FormatNumbered(string text)
         {
-            Regex marker = new Regex(@"(?:^|[\s,;:])(?:first(?:ly)?|second(?:ly)?|third(?:ly)?|fourth(?:ly)?|fifth(?:ly)?|finally|number\s+(?:one|two|three|four|five))\s*[:,]?\s+", RegexOptions.IgnoreCase);
-            MatchCollection matches = marker.Matches(text);
+            MatchCollection matches = NumberedMarkerPattern.Matches(text);
             if (matches.Count < 2) return FormatCardinalList(text);
-            string prefix = text.Substring(0, matches[0].Index).Trim();
-            List<string> items = new List<string>();
-            for (int index = 0; index < matches.Count; index++)
+
+            List<Match> markers = new List<Match>();
+            int expected = 0;
+            int ordinalCount = 0;
+            bool terminalSeen = false;
+            foreach (Match match in matches)
             {
-                int start = matches[index].Index + matches[index].Length;
-                int end = index + 1 < matches.Count ? matches[index + 1].Index : text.Length;
-                string item = text.Substring(start, end - start).Trim(' ', ',', '.', ';');
-                if (item.Length > 0) items.Add(item);
+                if (match.Groups["ordinal"].Success)
+                {
+                    int value = OrdinalValue(match.Groups["ordinal"].Value);
+                    // Out-of-order ordinals mean prose ("second thoughts", "first ... first"),
+                    // not an enumerated list — leave the text untouched.
+                    if (terminalSeen || value != expected + 1) return FormatCardinalList(text);
+                    expected = value;
+                    ordinalCount++;
+                    markers.Add(match);
+                }
+                else if (match.Groups["terminal"].Success)
+                {
+                    if (markers.Count == 0) continue;
+                    if (terminalSeen) return FormatCardinalList(text);
+                    terminalSeen = true;
+                    expected++;
+                    markers.Add(match);
+                }
+                else
+                {
+                    if (markers.Count == 0) continue;
+                    if (terminalSeen) return FormatCardinalList(text);
+                    expected++;
+                    markers.Add(match);
+                }
+            }
+            if (markers.Count < 2) return FormatCardinalList(text);
+            // A two-item list needs two explicit ordinals ("first X second Y"); an anchor plus a
+            // single "then" is normal prose ("first let me check, then we can decide").
+            if (markers.Count == 2 && ordinalCount < 2) return FormatCardinalList(text);
+
+            string prefix = text.Substring(0, markers[0].Index).Trim();
+            List<string> items = new List<string>();
+            for (int index = 0; index < markers.Count; index++)
+            {
+                int start = markers[index].Index + markers[index].Length;
+                int end = index + 1 < markers.Count ? markers[index + 1].Index : text.Length;
+                string item = TrimConnectorEdges(text.Substring(start, end - start));
+                // A connector-only or empty fragment between markers means this was prose,
+                // not an enumeration — never emit "And" as a list item.
+                if (!IsSubstantiveListItem(item)) return text;
+                items.Add(item);
             }
             StringBuilder output = new StringBuilder();
-            if (prefix.Length > 0) output.Append(prefix.TrimEnd(':') + ":\n");
+            if (prefix.Length > 0) output.Append(prefix.TrimEnd(':', ',') + ":\n");
             for (int index = 0; index < items.Count; index++) output.Append((index + 1).ToString(CultureInfo.InvariantCulture) + ". " + items[index] + "\n");
             return output.ToString().TrimEnd();
+        }
+
+        private static readonly HashSet<string> ConnectorOnlyItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "and", "or", "then", "also", "so", "but", "plus", "next", "and then", "after that",
+            "it", "that", "this", "a", "an", "the"
+        };
+
+        private static string TrimConnectorEdges(string item)
+        {
+            string value = (item ?? "").Trim(' ', ',', '.', ';', ':');
+            value = Regex.Replace(value, @"^(?:(?:and|or|then|also|so|but|plus)\b[\s,]*)+", "", RegexOptions.IgnoreCase);
+            value = Regex.Replace(value, @"(?:[\s,]+(?:and|or|then|also|so|but|plus))+[\s,.]*$", "", RegexOptions.IgnoreCase);
+            return value.Trim(' ', ',', '.', ';', ':');
+        }
+
+        private static bool IsSubstantiveListItem(string item)
+        {
+            if (String.IsNullOrWhiteSpace(item)) return false;
+            if (!Regex.IsMatch(item, @"[A-Za-z0-9]")) return false;
+            return !ConnectorOnlyItems.Contains(item.Trim());
         }
 
         private static string FormatCardinalList(string text)
@@ -2003,8 +2358,9 @@ namespace Flowtype
             {
                 int start = matches[index].Index + matches[index].Length;
                 int end = index + 1 < matches.Count ? matches[index + 1].Index : text.Length;
-                string item = text.Substring(start, end - start).Trim(' ', ',', '.', ';');
-                if (item.Length > 0) items.Add(item);
+                string item = TrimConnectorEdges(text.Substring(start, end - start));
+                if (!IsSubstantiveListItem(item)) return text;
+                items.Add(item);
             }
             if (items.Count < 2) return text;
             StringBuilder output = new StringBuilder();
@@ -2038,8 +2394,8 @@ namespace Flowtype
             string body = list.Groups["body"].Value.Trim();
             string[] parts = Regex.Split(body, @"\s*(?:;|\b(?:and then|then|next|also|finally)\b)\s*", RegexOptions.IgnoreCase)
                 .SelectMany(value => Regex.Split(value, @"(?<=\S)\s*,\s*(?:and\s+)?(?=\S)", RegexOptions.None))
-                .Select(value => value.Trim(' ', ',', '.', ';'))
-                .Where(value => value.Length > 0)
+                .Select(value => TrimConnectorEdges(value))
+                .Where(value => IsSubstantiveListItem(value))
                 .ToArray();
             if (parts.Length < 3 || parts.Length > 9 || parts.Any(value => value.Length > 80)) return text;
             if (parts.Any(value => Regex.IsMatch(value, @"\b(?:that|which|because|since|when|while|although|though|if|unless)\b", RegexOptions.IgnoreCase)))
@@ -2140,13 +2496,20 @@ namespace Flowtype
 
         private static string ApplyFuzzyDictionary(string text, AppSettings settings, ForegroundInfo context)
         {
-            List<string> terms = CollectCanonicalTerms(settings, context);
-            if (terms.Count == 0) return text;
+            List<string> userTerms = new List<string>();
+            List<string> titleTerms = new List<string>();
+            CollectCanonicalTerms(settings, context, userTerms, titleTerms);
+            if (userTerms.Count == 0 && titleTerms.Count == 0) return text;
             return Regex.Replace(text, @"\b[A-Za-z][A-Za-z'-]{2,}\b", delegate(Match match)
             {
                 string word = match.Value;
                 if (FuzzyProtectedWords.Contains(word)) return word;
-                foreach (string term in terms)
+                foreach (string term in userTerms)
+                {
+                    if (String.Equals(term, word, StringComparison.OrdinalIgnoreCase))
+                        return PreserveCase(word, term);
+                }
+                foreach (string term in titleTerms)
                 {
                     if (String.Equals(term, word, StringComparison.OrdinalIgnoreCase))
                         return PreserveCase(word, term);
@@ -2154,31 +2517,41 @@ namespace Flowtype
                 string best = null;
                 int bestDistance = int.MaxValue;
                 int tieCount = 0;
-                foreach (string term in terms)
-                {
-                    if (Math.Abs(term.Length - word.Length) > 2) continue;
-                    if (!Char.Equals(Char.ToLowerInvariant(word[0]), Char.ToLowerInvariant(term[0]))) continue;
-                    int distance = LevenshteinDistance(word, term);
-                    int maxDistance = term.Length <= 5 ? 1 : 2;
-                    if (distance <= 0 || distance > maxDistance) continue;
-                    if (distance < bestDistance)
-                    {
-                        bestDistance = distance;
-                        best = term;
-                        tieCount = 1;
-                    }
-                    else if (distance == bestDistance)
-                    {
-                        tieCount++;
-                    }
-                }
+                foreach (string term in userTerms)
+                    ConsiderFuzzyTerm(word, term, false, ref best, ref bestDistance, ref tieCount);
+                // Window-title tokens are auto-harvested guesses, not user intent — hold them
+                // to a stricter bar so an active tab name can't rewrite normal words
+                // ("world" must never become "Word" because Word is open).
+                foreach (string term in titleTerms)
+                    ConsiderFuzzyTerm(word, term, true, ref best, ref bestDistance, ref tieCount);
                 return best != null && tieCount == 1 ? PreserveCase(word, best) : word;
             });
         }
 
-        private static List<string> CollectCanonicalTerms(AppSettings settings, ForegroundInfo context)
+        private static void ConsiderFuzzyTerm(string word, string term, bool titleTerm, ref string best, ref int bestDistance, ref int tieCount)
         {
-            List<string> terms = new List<string>();
+            if (Math.Abs(term.Length - word.Length) > 2) return;
+            if (!Char.Equals(Char.ToLowerInvariant(word[0]), Char.ToLowerInvariant(term[0]))) return;
+            // Title tokens may only repair same-length substitution typos ("setsings" →
+            // "Settings"); insertions/deletions land on real words ("tracing" → "Tracking").
+            if (titleTerm && (term.Length < 6 || term.Length != word.Length)) return;
+            int distance = LevenshteinDistance(word, term);
+            int maxDistance = titleTerm ? 1 : (term.Length <= 5 ? 1 : 2);
+            if (distance <= 0 || distance > maxDistance) return;
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = term;
+                tieCount = 1;
+            }
+            else if (distance == bestDistance)
+            {
+                tieCount++;
+            }
+        }
+
+        private static void CollectCanonicalTerms(AppSettings settings, ForegroundInfo context, List<string> terms, List<string> titleTerms)
+        {
             HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             Action<string> add = delegate(string value)
             {
@@ -2206,22 +2579,29 @@ namespace Flowtype
                     add(snippet.Value);
                 }
             }
+            Action<string> addTitle = delegate(string value)
+            {
+                if (String.IsNullOrWhiteSpace(value)) return;
+                value = value.Trim();
+                if (value.Length < 4 || seen.Contains(value)) return;
+                seen.Add(value);
+                titleTerms.Add(value);
+            };
             if (context != null && !String.IsNullOrWhiteSpace(context.Title))
             {
                 string title = context.Title.Trim();
                 if (IsChatProcess(context.ProcessName))
                 {
                     string chatLabel = Regex.Split(title, @"\s*[—\-|]\s*")[0].Trim();
-                    add(chatLabel);
+                    addTitle(chatLabel);
                 }
                 else
                 {
-                    add(title);
+                    addTitle(title);
                     foreach (Match token in Regex.Matches(title, @"\b[A-Za-z][A-Za-z'-]{3,}\b"))
-                        add(token.Value);
+                        addTitle(token.Value);
                 }
             }
-            return terms;
         }
 
         private static string PreserveCase(string original, string replacement)
@@ -2265,10 +2645,17 @@ namespace Flowtype
                 @"\b(?<old>" + valuePattern + @")\s*(?:[,….—-]+\s*)?(?:no|sorry|actually|I mean|scratch that)\s*[,.:—-]?\s*(?<new>" + valuePattern + @")\b",
                 "${new}", RegexOptions.IgnoreCase);
             text = Regex.Replace(text,
-                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*(?:no|sorry|I mean|scratch that)\s*[,.:—-]?\s*(?<new>[A-Za-z][A-Za-z'-]{1,})\b",
+                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*(?:sorry|I mean|scratch that)\s*[,.:—-]?\s*(?<new>[A-Za-z][A-Za-z'-]{1,})\b",
                 "${new}", RegexOptions.IgnoreCase);
+            // Corrective "no" needs punctuation on BOTH sides ("Tuesday, no, Wednesday") —
+            // existential "no" ("the door, no answer") has none after and must survive.
             text = Regex.Replace(text,
-                @"^.{1,160}\b(?:start over|never mind)\b\s*[,.:—-]?\s*", "", RegexOptions.IgnoreCase);
+                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*no\s*[,.:—-]\s*(?<new>[A-Za-z][A-Za-z'-]{1,})\b",
+                "${new}", RegexOptions.IgnoreCase);
+            // "start over" only wipes the preamble inside a corrective frame ("let me start
+            // over") — the bare verb phrase ("it will start over from zero") is normal speech.
+            text = Regex.Replace(text,
+                @"^.{0,160}?\b(?:let(?:'s|\s+me)?|actually|wait|no|okay|scratch that)[,\s]+(?:start over|never mind)\b\s*[,.:—-]?\s*", "", RegexOptions.IgnoreCase);
             text = Regex.Replace(text,
                 @"\b(as\s+(?:a|an|the)\s+)([A-Za-z'-]+(?:\s+[A-Za-z'-]+){0,2})\s*(?:[,….]+\s*)?\1([A-Za-z'-]+(?:\s+[A-Za-z'-]+){0,2})\b",
                 "$1$3", RegexOptions.IgnoreCase);
@@ -2321,17 +2708,21 @@ namespace Flowtype
             // Whisper often inserts a lone letter during a breath or audio gap in longer dictation.
             for (int pass = 0; pass < 3; pass++)
             {
+                string current = text;
                 string next = Regex.Replace(text,
                     @"(?<=\S{2,})\s+(?<glitch>[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z])(?=\s+\S{2,})",
                     delegate(Match match)
                     {
                         string letter = match.Groups["glitch"].Value;
-                        if (String.Equals(letter, "X", StringComparison.OrdinalIgnoreCase))
-                        {
-                            int index = match.Index;
-                            string before = index >= 11 ? text.Substring(index - 11, 11) : text.Substring(0, index);
-                            if (Regex.IsMatch(before, @"Generation\s+$", RegexOptions.IgnoreCase)) return match.Value;
-                        }
+                        int index = match.Index;
+                        string before = index >= 18 ? current.Substring(index - 18, 18) : current.Substring(0, index);
+                        int afterStart = index + match.Length;
+                        string after = current.Substring(afterStart, Math.Min(8, current.Length - afterStart));
+                        if (String.Equals(letter, "X", StringComparison.OrdinalIgnoreCase)
+                            && Regex.IsMatch(before, @"Generation\s+$", RegexOptions.IgnoreCase)) return match.Value;
+                        // A nearby cue word means the letter was dictated on purpose, not glitched.
+                        if (Regex.IsMatch(before, @"\b(?:letter|letters|press|type|typed|hit|key|option|plan|section|column|row|drive|vitamin|grade|as in)\b[\s\S]*$", RegexOptions.IgnoreCase)) return match.Value;
+                        if (Regex.IsMatch(after, @"^\s*(?:as in|for|key)\b", RegexOptions.IgnoreCase)) return match.Value;
                         return " ";
                     });
                 if (String.Equals(next, text, StringComparison.Ordinal)) break;
@@ -2605,37 +2996,6 @@ namespace Flowtype
             return client;
         }
 
-        public async Task<string> TranscribePreviewAsync(string wavePath, AppSettings settings, string apiKey)
-        {
-            try
-            {
-                if (String.IsNullOrWhiteSpace(apiKey)) return "";
-                string url = settings.ApiBaseUrl.TrimEnd('/') + "/audio/transcriptions";
-                using (HttpClient client = new HttpClient())
-                {
-                    client.Timeout = TimeSpan.FromSeconds(25);
-                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-                    client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
-                    using (MultipartFormDataContent form = new MultipartFormDataContent())
-                    using (FileStream stream = File.OpenRead(wavePath))
-                    using (StreamContent audio = new StreamContent(stream))
-                    {
-                        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-                        form.Add(audio, "file", Path.GetFileName(wavePath));
-                        form.Add(new StringContent(settings.TranscriptionModel), "model");
-                        form.Add(new StringContent("json"), "response_format");
-                        HttpResponseMessage response = await client.PostAsync(url, form);
-                        string body = await response.Content.ReadAsStringAsync();
-                        if (!response.IsSuccessStatusCode) return "";
-                        Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
-                        if (value == null || !value.ContainsKey("text")) return "";
-                        return Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
-                    }
-                }
-            }
-            catch { return ""; }
-        }
-
         public async Task<string> TranscribeAsync(string wavePath, AppSettings settings, string apiKey)
         {
             if (String.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("OpenAI speech mode needs an API key. Open Flowtype Settings from the tray icon.");
@@ -2670,6 +3030,7 @@ namespace Flowtype
                 "Preserve the speaker's meaning, facts, names, tone, and level of certainty. Remove filler words and abandoned false starts. " +
                 "Apply spoken self-corrections using the final intended wording. Add punctuation and paragraph breaks. " +
                 "Infer structure from speech patterns: when ideas are enumerated or delivered as distinct points, format them as Markdown bullets or numbers even if the speaker did not literally say 'bullet point'. " +
+                "When the speaker counts steps aloud (first, second, then, finally), keep that exact spoken order as one numbered list. Never emit a list item that is only a connector word such as 'And', 'And then', or 'Then' — fold connectors into the next item's content or drop them. If the speaker dictates a lone letter, output just that letter. " +
                 "Use natural em dashes for genuine asides or sharp pivots, but do not overuse them. Match the target app: short conversational text in chat, polished prose in documents/email, and exact tokens in developer tools. " +
                 "Expand configured snippets and use preferred spellings. Do not invent information. Do not answer the dictated text. " +
                 "For code, commands, URLs, identifiers, or quoted wording, preserve exact tokens. Style: " + settings.Style + ".";
@@ -2732,7 +3093,7 @@ namespace Flowtype
             string prompt =
                 "Clean the following voice dictation for insertion into " + (context == null ? "an app" : context.AppLabel) + ". " +
                 "Return only the cleaned text. Preserve meaning and tone; remove fillers and false starts; honor corrections; add punctuation; " +
-                "infer lists from the way points are spoken and format them as bullets or numbers; use em dashes for natural asides; adapt to the target app; " +
+                "infer lists from the way points are spoken and format them as bullets or numbers; number spoken step sequences (first, second, then) in their spoken order and never emit a bullet that is only a connector word like 'and' or 'then'; keep a deliberately dictated single letter as-is; use em dashes for natural asides; adapt to the target app; " +
                 "never answer or comment on the dictation. Style: " + settings.Style + ".\n\n" + raw;
             Dictionary<string, object> payload = new Dictionary<string, object>();
             payload["model"] = settings.OllamaModel;
@@ -2792,7 +3153,7 @@ namespace Flowtype
             string system =
                 "You clean push-to-talk dictation. Return only text to insert, with no preface. Preserve meaning, names, tone, facts, and uncertainty. " +
                 "Remove fillers and abandoned starts, honor the speaker's final self-correction, add punctuation and paragraphs, and format spoken enumerations as bullets or numbers. " +
-                "Infer lists from rhythm and enumerated ideas even when the speaker does not literally say 'bullet point'. Use natural em dashes for real asides or pivots without overusing them. " +
+                "Infer lists from rhythm and enumerated ideas even when the speaker does not literally say 'bullet point'. When steps are counted aloud (first, second, then, finally), number them in that spoken order; never emit a list item that is only a connector word such as 'And' or 'And then'. Keep a deliberately dictated lone letter as-is. Use natural em dashes for real asides or pivots without overusing them. " +
                 "Adapt to the target app: concise conversational text in chat, polished prose in email/documents, exact tokens in developer tools. " +
                 "Never answer the dictation or invent information. Preserve exact code, URLs, commands, and identifiers. Style: " + settings.Style + ".";
             StringBuilder user = new StringBuilder(raw);
@@ -2891,61 +3252,21 @@ namespace Flowtype
             if (client != null && String.Equals(boundKey, key, StringComparison.Ordinal)) return client;
             if (client != null) client.Dispose();
             client = new HttpClient();
-            client.Timeout = TimeSpan.FromSeconds(90);
+            // Per-request deadlines come from CancellationTokenSource so the warmed keep-alive
+            // connection can be reused by transcription; this is only the hard ceiling.
+            client.Timeout = TimeSpan.FromSeconds(610);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
             boundKey = key;
             return client;
         }
 
-        private static HttpClient CreateTranscriptionClient(string apiKey, string wavePath)
-        {
-            HttpClient http = new HttpClient();
-            http.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, false);
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
-            return http;
-        }
-
-        public async Task<string> TranscribePreviewAsync(string wavePath, AppSettings settings, string apiKey)
-        {
-            try
-            {
-                if (String.IsNullOrWhiteSpace(apiKey)) return "";
-                string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
-                string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
-                using (HttpClient http = new HttpClient())
-                {
-                    http.Timeout = TimeSpan.FromSeconds(20);
-                    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-                    http.DefaultRequestHeaders.UserAgent.ParseAdd("Flowtype-Desktop/" + FlowtypeVersion.CurrentLabel);
-                    using (MultipartFormDataContent form = new MultipartFormDataContent())
-                    using (FileStream stream = File.OpenRead(wavePath))
-                    using (StreamContent audio = new StreamContent(stream))
-                    {
-                        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-                        form.Add(audio, "file", Path.GetFileName(wavePath));
-                        form.Add(new StringContent(model), "model");
-                        form.Add(new StringContent("json"), "response_format");
-                        form.Add(new StringContent("en"), "language");
-                        form.Add(new StringContent("0"), "temperature");
-                        HttpResponseMessage response = await http.PostAsync(url, form);
-                        string body = await response.Content.ReadAsStringAsync();
-                        if (!response.IsSuccessStatusCode) return "";
-                        Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
-                        if (value == null || !value.ContainsKey("text")) return "";
-                        return Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
-                    }
-                }
-            }
-            catch { return ""; }
-        }
-
         public async Task WarmAsync(AppSettings settings, string apiKey)
         {
             if (String.IsNullOrWhiteSpace(apiKey)) return;
             string url = settings.GroqApiUrl.TrimEnd('/') + "/models";
-            using (HttpResponseMessage response = await GetClient(apiKey).GetAsync(url))
+            using (CancellationTokenSource warmCts = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+            using (HttpResponseMessage response = await GetClient(apiKey).GetAsync(url, warmCts.Token))
             {
                 if (!response.IsSuccessStatusCode)
                 {
@@ -2961,10 +3282,13 @@ namespace Flowtype
                 throw new InvalidOperationException("Groq mode needs an API key. Get a free key at console.groq.com, then paste it in Settings.");
             string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
             string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
-            using (HttpClient http = CreateTranscriptionClient(apiKey, wavePath))
+            // Reuse the warmed keep-alive client — a fresh HttpClient per dictation pays a full
+            // DNS+TCP+TLS handshake every time, exactly the latency WarmAsync exists to prepay.
+            HttpClient http = GetClient(apiKey);
             using (MultipartFormDataContent form = new MultipartFormDataContent())
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
+            using (CancellationTokenSource cts = new CancellationTokenSource(AudioTranscriptionTimeouts.ForWavFile(wavePath, false)))
             {
                 audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
                 form.Add(audio, "file", Path.GetFileName(wavePath));
@@ -2974,7 +3298,7 @@ namespace Flowtype
                 form.Add(new StringContent("0"), "temperature");
                 string prompt = WhisperEngine.BuildPrompt(settings, context);
                 if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
-                HttpResponseMessage response = await http.PostAsync(url, form);
+                HttpResponseMessage response = await http.PostAsync(url, form, cts.Token);
                 string body = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
                 Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
@@ -3063,31 +3387,6 @@ namespace Flowtype
             return await RunCliAsync(wavePath, settings, context);
         }
 
-        public async Task<SpeechTranscript> TranscribePreviewAsync(string wavePath, AppSettings settings, ForegroundInfo context)
-        {
-            try
-            {
-                Validate(settings);
-                if (CanUseServer(settings))
-                {
-                    try
-                    {
-                        await EnsureServerAsync(settings);
-                        return await TranscribeWithServerAsync(wavePath, settings, context, true);
-                    }
-                    catch
-                    {
-                        StopServer();
-                    }
-                }
-                return await RunCliAsync(wavePath, settings, context);
-            }
-            catch
-            {
-                return new SpeechTranscript();
-            }
-        }
-
         private static void Validate(AppSettings settings)
         {
             if (String.IsNullOrWhiteSpace(settings.WhisperExePath) || !File.Exists(settings.WhisperExePath) ||
@@ -3144,15 +3443,15 @@ namespace Flowtype
             finally { serverGate.Release(); }
         }
 
-        private async Task<SpeechTranscript> TranscribeWithServerAsync(string wavePath, AppSettings settings, ForegroundInfo context, bool preview = false)
+        private async Task<SpeechTranscript> TranscribeWithServerAsync(string wavePath, AppSettings settings, ForegroundInfo context)
         {
-            bool turbo = preview || settings.TurboTranscription;
+            bool turbo = settings.TurboTranscription;
             using (HttpClient client = new HttpClient())
             using (MultipartFormDataContent form = new MultipartFormDataContent())
             using (FileStream stream = File.OpenRead(wavePath))
             using (StreamContent audio = new StreamContent(stream))
             {
-                client.Timeout = preview ? TimeSpan.FromSeconds(20) : AudioTranscriptionTimeouts.ForWavFile(wavePath, turbo);
+                client.Timeout = AudioTranscriptionTimeouts.ForWavFile(wavePath, turbo);
                 audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
                 form.Add(audio, "file", Path.GetFileName(wavePath));
                 form.Add(new StringContent("0.0"), "temperature");
@@ -3171,11 +3470,8 @@ namespace Flowtype
                     form.Add(new StringContent("verbose_json"), "response_format");
                 }
                 form.Add(new StringContent(settings.SuppressNonSpeech ? "true" : "false"), "suppress_non_speech");
-                if (!preview)
-                {
-                    string prompt = BuildPrompt(settings, context);
-                    if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
-                }
+                string prompt = BuildPrompt(settings, context);
+                if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
                 HttpResponseMessage response = await client.PostAsync("http://127.0.0.1:" + serverPort.ToString(CultureInfo.InvariantCulture) + "/inference", form);
                 string body = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new InvalidOperationException("Local transcription service failed: " + response.StatusCode + ".");
@@ -3220,7 +3516,7 @@ namespace Flowtype
 
         private static void FilterEmbeddedHallucinationSegments(SpeechTranscript transcript)
         {
-            if (transcript == null || transcript.Segments == null || transcript.Segments.Count < 3) return;
+            if (transcript == null || transcript.Segments == null || transcript.Segments.Count < 2) return;
             List<SpeechSegment> kept = new List<SpeechSegment>();
             for (int index = 0; index < transcript.Segments.Count; index++)
             {
@@ -3228,9 +3524,15 @@ namespace Flowtype
                 SpeechSegment previous = index > 0 ? transcript.Segments[index - 1] : null;
                 SpeechSegment next = index + 1 < transcript.Segments.Count ? transcript.Segments[index + 1] : null;
                 double gapBefore = previous == null ? 0 : Math.Max(0, segment.Start - previous.End);
-                double gapAfter = next == null ? 0 : Math.Max(0, next.Start - segment.End);
+                // End-of-recording is silence, not a zero gap — a trailing lone letter after a
+                // breath is Whisper's most common hallucination. A leading letter keeps gap 0 so
+                // deliberate spellings ("P as in Peter") are never eaten.
+                double gapAfter = next == null ? 9.0 : Math.Max(0, next.Start - segment.End);
                 double duration = Math.Max(0, segment.End - segment.Start);
-                if (TranscriptionQuality.IsLikelyEmbeddedHallucination(segment.Text, duration, gapBefore, gapAfter)) continue;
+                bool cueBefore = previous != null && Regex.IsMatch(previous.Text ?? "",
+                    @"\b(?:letter|letters|press|type|typed|hit|key|option|plan|section|column|row|drive|vitamin|grade|as in|is)\s*[,.:;]?\s*$",
+                    RegexOptions.IgnoreCase);
+                if (!cueBefore && TranscriptionQuality.IsLikelyEmbeddedHallucination(segment.Text, duration, gapBefore, gapAfter)) continue;
                 kept.Add(segment);
             }
             if (kept.Count == 0 || kept.Count >= transcript.Segments.Count) return;
@@ -3581,7 +3883,6 @@ namespace Flowtype
         private int overlaySession;
         private int pendingHideSession;
         private readonly Stopwatch revealClock = new Stopwatch();
-        private string previewText = "";
         private const int RevealInMs = 130;
         private const int RevealOutMs = 100;
         public event Action MaximumDurationReached;
@@ -3659,9 +3960,6 @@ namespace Flowtype
             overlaySession++;
             SetTheme(overlayTheme);
             level = 0;
-            previewText = "";
-            Width = 108;
-            Height = 36;
             Array.Clear(bands, 0, bands.Length);
             animationTick = 0;
             elapsed.Restart();
@@ -3674,65 +3972,6 @@ namespace Flowtype
             if (IsGlassTheme()) CaptureGlassBackdrop();
             if (!Visible) Show();
             RenderLayered();
-        }
-
-        public void SetPreviewText(string text)
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired)
-            {
-                try { BeginInvoke(new Action<string>(SetPreviewText), text); } catch { }
-                return;
-            }
-            previewText = TruncatePreview(text);
-            AdjustSizeForPreview();
-            RenderLayered();
-        }
-
-        public void ClearPreviewText()
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired)
-            {
-                try { BeginInvoke(new Action(ClearPreviewText)); } catch { }
-                return;
-            }
-            previewText = "";
-            Width = 108;
-            Height = 36;
-            PositionOverlay();
-            RenderLayered();
-        }
-
-        private static string TruncatePreview(string text)
-        {
-            string value = Regex.Replace(text ?? "", @"\s+", " ").Trim();
-            if (value.Length <= 96) return value;
-            return value.Substring(0, 93) + "…";
-        }
-
-        private bool HasPreview { get { return !String.IsNullOrWhiteSpace(previewText); } }
-
-        private void AdjustSizeForPreview()
-        {
-            if (!HasPreview)
-            {
-                Width = 108;
-                Height = 36;
-            }
-            else
-            {
-                Width = 380;
-                Height = 78;
-            }
-            PositionOverlay();
-        }
-
-        private Color GetPreviewTextColor()
-        {
-            if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(235, 24, 24, 27);
-            if (String.Equals(theme, "Glass", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(230, 24, 24, 27);
-            return Color.FromArgb(228, 244, 244, 245);
         }
 
         public void ShowProcessing() { HideNow(); }
@@ -3811,10 +4050,9 @@ namespace Flowtype
         {
             const float capsuleWidth = 94f;
             const float capsuleHeight = 26f;
-            float top = HasPreview ? Height - capsuleHeight - 8f : (Height - capsuleHeight) / 2f;
             return new RectangleF(
                 (Width - capsuleWidth) / 2f,
-                top,
+                (Height - capsuleHeight) / 2f,
                 capsuleWidth,
                 capsuleHeight);
         }
@@ -3998,21 +4236,6 @@ namespace Flowtype
                 graphics.TranslateTransform(0f, slideY);
 
                 RectangleF capsule = GetCapsuleBounds();
-
-                if (HasPreview)
-                {
-                    RectangleF textBounds = new RectangleF(16f, 8f, Width - 32f, capsule.Y - 10f);
-                    using (Font font = AppFonts.Ui(8.75f, FontStyle.Regular))
-                    using (SolidBrush brush = new SolidBrush(GetPreviewTextColor()))
-                    using (StringFormat format = new StringFormat())
-                    {
-                        format.Alignment = StringAlignment.Center;
-                        format.LineAlignment = StringAlignment.Near;
-                        format.Trimming = StringTrimming.EllipsisCharacter;
-                        format.FormatFlags = StringFormatFlags.NoWrap;
-                        graphics.DrawString(previewText, font, brush, textBounds, format);
-                    }
-                }
 
                 if (IsGlassTheme())
                     DrawLiquidGlassCapsule(graphics, capsule, cornerRadius);
@@ -4359,7 +4582,6 @@ namespace Flowtype
         private readonly CheckBox suppressNonSpeechBox = new CheckBox();
         private readonly CheckBox completionSoundBox = new CheckBox();
         private readonly CheckBox insertNotifyBox = new CheckBox();
-        private readonly CheckBox streamingPreviewBox = new CheckBox();
         private readonly CheckBox autoUpdateBox = new CheckBox();
         private readonly ComboBox overlayThemeBox = new ComboBox();
         private readonly TextBox dictionaryBox = new TextBox();
@@ -4602,13 +4824,12 @@ namespace Flowtype
             perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(perfTitle);
             ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 712, 620);
-            ConfigureCheck(streamingPreviewBox, "Live preview while speaking (shows partial text in the voice capsule)", 24, 744, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 776, 620);
-            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 808, 620);
-            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 840, 620);
-            page.Controls.AddRange(new Control[] { turboBox, streamingPreviewBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 878, 140, 24));
-            micGainBar.SetBounds(170, 874, 360, 45);
+            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 744, 620);
+            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 776, 620);
+            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 808, 620);
+            page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
+            page.Controls.Add(LabelAt("Microphone boost", 24, 846, 140, 24));
+            micGainBar.SetBounds(170, 842, 360, 45);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
@@ -4619,21 +4840,21 @@ namespace Flowtype
                 if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
             };
             page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 882, 60, 24);
+            micGainLabel.SetBounds(540, 850, 60, 24);
             page.Controls.Add(micGainLabel);
             Label micHealthTitle = LabelAt("Microphone health", 24, 852, 200, 24);
             micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 922, 420, 18);
+            micLevelBar.SetBounds(24, 890, 420, 18);
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
             page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 914, 110, 34);
+            micTestButton.SetBounds(456, 882, 110, 34);
             micTestButton.Text = "Test 3s";
             micTestButton.Click += MicTestClicked;
             page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 960, 650, 64);
+            micTestStatus.SetBounds(24, 928, 650, 64);
             micTestStatus.ForeColor = UiTheme.TextMuted;
             micTestStatus.AutoSize = false;
             micTestStatus.Text = "Test shows mic level, boosted level, and the level Whisper receives. Aim for Whisper input around 50–80%.";
@@ -4822,7 +5043,6 @@ namespace Flowtype
             suppressNonSpeechBox.Checked = value.SuppressNonSpeech;
             completionSoundBox.Checked = value.CompletionSound;
             insertNotifyBox.Checked = value.ShowInsertNotification;
-            streamingPreviewBox.Checked = value.StreamingPreview;
             autoUpdateBox.Checked = value.AutoCheckUpdates;
             overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
@@ -4860,7 +5080,6 @@ namespace Flowtype
             value.SuppressNonSpeech = suppressNonSpeechBox.Checked;
             value.CompletionSound = completionSoundBox.Checked;
             value.ShowInsertNotification = insertNotifyBox.Checked;
-            value.StreamingPreview = streamingPreviewBox.Checked;
             value.AutoCheckUpdates = autoUpdateBox.Checked;
             value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
@@ -5318,6 +5537,7 @@ namespace Flowtype
         private readonly ToolStripMenuItem statusItem;
         private readonly ToolStripMenuItem toggleItem;
         private readonly ToolStripMenuItem dictionaryFixItem;
+        private readonly ToolStripMenuItem copyLastItem;
         private readonly RecordingOverlay overlay;
         private readonly WaveRecorder recorder;
         private readonly WhisperEngine whisperEngine;
@@ -5335,6 +5555,8 @@ namespace Flowtype
         private ForegroundInfo target;
         private string recordingPath;
         private string lastDictationWord = "";
+        private string lastDictationText = "";
+        private int lastRememberedGeneration = -1;
         private Stopwatch recordTimer;
         private bool hotkeyDown;
         private bool chordPolledDown;
@@ -5357,7 +5579,6 @@ namespace Flowtype
         private SettingsForm settingsForm;
         private HistoryForm historyForm;
         private IntPtr lastForegroundWindow;
-        private StreamingPreviewSession streamingPreview;
         private readonly AppUpdater appUpdater = new AppUpdater();
         private bool updateCheckRunning;
         private bool updateInstallRunning;
@@ -5384,11 +5605,12 @@ namespace Flowtype
             groqEngine = new GroqEngine();
             hook = new GlobalKeyHook(settings.Hotkey);
             hook.HotkeyChanged += OnHotkeyChanged;
-            hook.CancelPressed += CancelRecording;
+            // Never run cancel (WAV finalization, file IO) inside the low-level keyboard hook
+            // callback — a slow callback gets the hook silently removed by Windows and the
+            // hotkey dies until restart. Defer to the UI thread like the hotkey path does.
+            hook.CancelPressed += delegate { try { dispatcher.BeginInvoke(new Action(CancelRecording)); } catch { } };
             recorder.LevelChanged += overlay.SetLevel;
             overlay.MaximumDurationReached += OnMaximumDurationReached;
-            streamingPreview = new StreamingPreviewSession(overlay, settings, apiKey, groqKey, whisperEngine, groqEngine);
-            recorder.AudioChunkReceived += streamingPreview.OnAudioChunk;
             chordPoller = new System.Windows.Forms.Timer();
             chordPoller.Interval = 20;
             chordPoller.Tick += delegate
@@ -5441,6 +5663,9 @@ namespace Flowtype
             dictionaryFixItem = new ToolStripMenuItem("Add last word to dictionary…");
             dictionaryFixItem.Enabled = false;
             dictionaryFixItem.Click += delegate { AddLastWordToDictionary(); };
+            copyLastItem = new ToolStripMenuItem("Copy last dictation");
+            copyLastItem.Enabled = false;
+            copyLastItem.Click += delegate { CopyLastDictation(); };
             ToolStripMenuItem recoveryItem = new ToolStripMenuItem("Open recovery folder");
             recoveryItem.Click += delegate { OpenFolder(store.RecoveryPath); };
             ToolStripMenuItem updateItem = new ToolStripMenuItem("Check for updates…");
@@ -5452,6 +5677,7 @@ namespace Flowtype
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(settingsItem);
             menu.Items.Add(historyItem);
+            menu.Items.Add(copyLastItem);
             menu.Items.Add(dictionaryFixItem);
             menu.Items.Add(recoveryItem);
             menu.Items.Add(updateItem);
@@ -5834,7 +6060,10 @@ namespace Flowtype
         private void StartRecording()
         {
             if (shuttingDown || recorder.IsRecording) return;
-            if (processing) dictationGeneration++;
+            // Superseding an in-flight pipeline transfers ownership of the busy flag here —
+            // the old generation's finally refuses to clear it, and the new recording may
+            // abort before ProcessRecording ever runs (too-short clip, mic failure).
+            if (processing) { dictationGeneration++; processing = false; }
             try
             {
                 if (settings.Engine == "OpenAI" && String.IsNullOrWhiteSpace(apiKey))
@@ -5877,7 +6106,6 @@ namespace Flowtype
                 if (lastMicError != null) throw lastMicError;
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
-                if (settings.StreamingPreview) streamingPreview.Start(target);
                 overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
                 if (settings.CompletionSound) RecordingCue.PlayStart();
                 UpdateRecordingStatus();
@@ -5905,7 +6133,6 @@ namespace Flowtype
             latchedRecording = false;
             try
             {
-                streamingPreview.Stop();
                 // The capsule represents physical key-down only. Hide before
                 // finalising the WAV so release always feels immediate.
                 overlay.HideNow();
@@ -5942,6 +6169,7 @@ namespace Flowtype
         private async void ProcessRecording(string path, int generation, long recordMs)
         {
             string raw = "";
+            ForegroundInfo intended = target;
             Stopwatch totalTimer = Stopwatch.StartNew();
             long transcribeMs = 0;
             long cleanMs = 0;
@@ -5962,15 +6190,25 @@ namespace Flowtype
                 else transcript = await whisperEngine.TranscribeAsync(path, settings, target);
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
-                if (generation != dictationGeneration) return;
                 ForegroundInfo delivery = ForegroundContext.Capture(settings.ContextEnabled);
+                // If focus moved during dictation (a popup stole it, or transcription ran long),
+                // deliver to the window the user was dictating into, not whatever is on top now.
+                bool intendedReal = intended != null && intended.Handle != IntPtr.Zero
+                    && !String.Equals(intended.ProcessName, "Flowtype", StringComparison.OrdinalIgnoreCase);
+                if (intendedReal && delivery != null && delivery.Handle != intended.Handle) delivery = intended;
                 raw = TextProcessor.StripPromptHallucinations(transcript.Text, settings, delivery);
                 raw = TextProcessor.RemoveExactDuplicateBlocks(raw);
                 transcript.Text = raw;
 
+                // Keep every non-empty transcript reachable from the tray — even one the
+                // quality gate rejects (a false rejection is exactly when recovery matters).
+                RememberDictation(raw, generation);
+
                 FileInfo audioInfo = new FileInfo(path);
                 if (TranscriptionQuality.ShouldReject(raw, recordMs, audioInfo.Exists ? audioInfo.Length : 0))
                     throw new InvalidOperationException("Speech was too unclear to insert. Hold the hotkey a moment longer and try again.");
+
+                if (generation != dictationGeneration) return;
 
                 string finalText = raw;
                 if (settings.CleanupEnabled)
@@ -5991,8 +6229,9 @@ namespace Flowtype
                     cleanTimer.Stop();
                     cleanMs = cleanTimer.ElapsedMilliseconds;
                 }
-                if (generation != dictationGeneration) return;
                 finalText = TextProcessor.NormalizePunctuationSpacing(finalText);
+                RememberDictation(finalText, generation);
+                if (generation != dictationGeneration) return;
                 bool pressEnter = TextProcessor.ExtractPressEnter(ref finalText);
                 if (String.IsNullOrWhiteSpace(finalText) && !pressEnter) throw new InvalidOperationException("No speech was detected.");
 
@@ -6000,8 +6239,6 @@ namespace Flowtype
                 bool inserted;
                 if (String.IsNullOrWhiteSpace(finalText)) inserted = !ForegroundContext.IsFlowtypeForeground();
                 else inserted = ForegroundContext.DeliverDictation(finalText, delivery, settings.AutoPaste, generation);
-                if (inserted && !String.IsNullOrWhiteSpace(finalText))
-                    ForegroundContext.NoteSuccessfulInsert(delivery, finalText);
                 if (generation != dictationGeneration) return;
                 if (inserted && pressEnter)
                 {
@@ -6068,7 +6305,6 @@ namespace Flowtype
             if (!recorder.IsRecording) return;
             try
             {
-                streamingPreview.Stop();
                 recorder.Cancel();
                 TryDelete(recordingPath);
             }
@@ -6087,6 +6323,27 @@ namespace Flowtype
             statusItem.Text = "Ready — hold " + settings.Hotkey;
             tray.Text = "Flowtype — hold " + settings.Hotkey + " to dictate";
             if (!recorder.IsRecording) overlay.EnsureHidden();
+        }
+
+        private void RememberDictation(string text, int generation)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return;
+            // A slow superseded transcription must never clobber a newer dictation's text.
+            if (generation < lastRememberedGeneration) return;
+            lastRememberedGeneration = generation;
+            lastDictationText = text;
+            if (copyLastItem != null) copyLastItem.Enabled = true;
+        }
+
+        private void CopyLastDictation()
+        {
+            if (String.IsNullOrWhiteSpace(lastDictationText)) return;
+            try
+            {
+                Clipboard.SetText(lastDictationText);
+                statusItem.Text = "Last dictation copied — press Ctrl+V";
+            }
+            catch (Exception exception) { store.LogError(exception); }
         }
 
         private void UpdateDictionaryFixItem()
@@ -6192,14 +6449,6 @@ namespace Flowtype
                 recorder.MicGain = settings.MicGain;
                 hook.HotkeyName = settings.Hotkey;
                 overlay.SetTheme(settings.OverlayTheme);
-                try
-                {
-                    recorder.AudioChunkReceived -= streamingPreview.OnAudioChunk;
-                    streamingPreview.Dispose();
-                }
-                catch { }
-                streamingPreview = new StreamingPreviewSession(overlay, settings, apiKey, groqKey, whisperEngine, groqEngine);
-                recorder.AudioChunkReceived += streamingPreview.OnAudioChunk;
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();
                 else
@@ -6316,7 +6565,6 @@ namespace Flowtype
             try { chordPoller.Stop(); chordPoller.Dispose(); } catch { }
             try { activationPoller.Stop(); activationPoller.Dispose(); } catch { }
             try { recorder.Dispose(); } catch { }
-            try { streamingPreview.Dispose(); } catch { }
             try { whisperEngine.Dispose(); } catch { }
             try { groqEngine.Dispose(); } catch { }
             try { overlay.Close(); overlay.Dispose(); } catch { }
@@ -6376,6 +6624,9 @@ namespace Flowtype
                     catch { }
                     return;
                 }
+                // The text pipeline uses ~55 distinct inline regex patterns per dictation; the
+                // default 15-entry static cache thrashes and re-parses every pattern each run.
+                Regex.CacheSize = 128;
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 using (EventWaitHandle activation = new EventWaitHandle(false, EventResetMode.AutoReset, ActivationEventName))
