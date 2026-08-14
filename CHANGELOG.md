@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.42
+
+Google Docs / browser continuation:
+- Chrome and other browser editors often hide the caret and report no focused control. The next dictation in the same window is now treated as a continuation when the last insert did not end with `.?!` — so "okay so this one" + "is what I was using" becomes "okay so this one is what I was using" instead of a capital `Is` and a second space
+- Unread mid-sentence inserts no longer invent join spaces (the user usually typed the space already)
+- After a real sentence end, the leading space + capital is unchanged (`defended. Six`)
+- Cursor / VS Code still skip caret-fit (spacing-only)
+
+---
+
 ## 1.3.41
 
 Spoken lists:

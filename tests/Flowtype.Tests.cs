@@ -141,9 +141,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.42"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.43"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.41", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.42", FlowtypeVersion.CurrentLabel);
             return failures;
         }
 
@@ -212,7 +212,7 @@ namespace Flowtype.Tests
                 "Quick fix.",
                 CaretFit.Apply("Quick fix.", unread, false, false, false));
             failures += AssertEqual("unread continuity uses mid fit",
-                " quick fix ",
+                "quick fix",
                 CaretFit.Apply("Quick fix.", unread, true, false, true));
             failures += AssertEqual("space after sentence punct",
                 " Next.",
@@ -229,6 +229,29 @@ namespace Flowtype.Tests
             failures += AssertEqual("cursor skips mid fragment strip",
                 "If it doesn't.",
                 ForegroundContext.PrepareInsertText("If it doesn't.", cursor));
+
+            ForegroundInfo docs = new ForegroundInfo();
+            docs.ProcessName = "chrome";
+            docs.Handle = new IntPtr(42);
+            docs.FocusHandle = IntPtr.Zero;
+            ForegroundContext.NoteSuccessfulInsert(docs, "okay so this one");
+            failures += AssertEqual("docs continuation lowercases without extra space",
+                "is what I was using",
+                ForegroundContext.PrepareInsertText("Is what I was using.", docs));
+            ForegroundContext.NoteSuccessfulInsert(docs, "Okay so this one.");
+            failures += AssertEqual("docs after period keeps sentence polish",
+                " Next sentence.",
+                ForegroundContext.PrepareInsertText("Next sentence.", docs));
+            ForegroundInfo otherDocs = new ForegroundInfo();
+            otherDocs.ProcessName = "chrome";
+            otherDocs.Handle = new IntPtr(99);
+            otherDocs.FocusHandle = IntPtr.Zero;
+            failures += AssertEqual("docs different window keeps sentence polish",
+                " Is what I was using.",
+                ForegroundContext.PrepareInsertText("Is what I was using.", otherDocs));
+            failures += AssertEqual("cursor still skips continuation lowercase",
+                "Is what I was using.",
+                ForegroundContext.PrepareInsertText("Is what I was using.", cursor));
             return failures;
         }
 

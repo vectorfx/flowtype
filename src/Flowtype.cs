@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.41.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.41.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.42.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.42.0")]
 
 namespace Flowtype
 {
@@ -871,9 +871,9 @@ namespace Flowtype
 
             CaretNeighborhood caret = TryGetCaretNeighborhood(context);
             bool midContinuity = CanAssumeMidSentenceContinuity(context);
-            bool afterPriorSentence = context != null
-                && context.FocusHandle != IntPtr.Zero
-                && context.FocusHandle == lastAppendTarget
+            IntPtr identity = InsertIdentity(context);
+            bool afterPriorSentence = identity != IntPtr.Zero
+                && identity == lastAppendTarget
                 && lastAppendEndedWithPunctuation;
             return CaretFit.Apply(text, caret, midContinuity, afterPriorSentence, HasRealTarget(context));
         }
@@ -906,15 +906,23 @@ namespace Flowtype
 
         public static void NoteSuccessfulInsert(ForegroundInfo context, string insertedText)
         {
-            lastAppendTarget = context == null ? IntPtr.Zero : context.FocusHandle;
+            lastAppendTarget = InsertIdentity(context);
             string trimmed = (insertedText ?? "").TrimEnd();
             lastAppendEndedWithPunctuation = trimmed.Length > 0 && ".!?".IndexOf(trimmed[trimmed.Length - 1]) >= 0;
         }
 
+        private static IntPtr InsertIdentity(ForegroundInfo context)
+        {
+            if (context == null) return IntPtr.Zero;
+            if (context.FocusHandle != IntPtr.Zero) return context.FocusHandle;
+            return context.Handle;
+        }
+
         private static bool CanAssumeMidSentenceContinuity(ForegroundInfo context)
         {
-            if (context == null || context.FocusHandle == IntPtr.Zero) return false;
-            if (context.FocusHandle != lastAppendTarget) return false;
+            IntPtr identity = InsertIdentity(context);
+            if (identity == IntPtr.Zero) return false;
+            if (identity != lastAppendTarget) return false;
             return !lastAppendEndedWithPunctuation;
         }
 
@@ -922,14 +930,15 @@ namespace Flowtype
         {
             if (context == null) return CaretNeighborhood.Unavailable();
             IntPtr hwnd = context.FocusHandle;
-            if (hwnd == IntPtr.Zero)
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
             {
-                if (context.Handle == IntPtr.Zero) return CaretNeighborhood.Unavailable();
+                if (context.Handle == IntPtr.Zero || !IsWindow(context.Handle))
+                    return CaretNeighborhood.Unavailable();
                 uint processId;
                 uint threadId = GetWindowThreadProcessId(context.Handle, out processId);
                 hwnd = FocusedWindow(threadId);
             }
-            if (hwnd == IntPtr.Zero) return CaretNeighborhood.Unavailable();
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return CaretNeighborhood.Unavailable();
 
             // Timeouts everywhere: a plain SendMessage to a hung target (busy Electron/Office
             // window) blocks Flowtype's UI thread forever. Degrade to Unavailable instead.
@@ -1922,13 +1931,6 @@ namespace Flowtype
                 if (NeedsSpaceBefore(caret.ImmediateRight) && !EndsWithJoinSpace(fitted))
                     needTrailing = true;
             }
-            else if (mid)
-            {
-                // Prior insert continuity without readable caret (non-Cursor apps only).
-                if (!alreadyLeftPadded && !EndsWithJoinSpace(fitted)) needLeading = true;
-                if (!EndsWithJoinSpace(fitted)) needTrailing = true;
-            }
-
             if (needLeading) fitted = " " + fitted;
             if (needTrailing) fitted = fitted + " ";
             return fitted;
