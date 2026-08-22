@@ -26,6 +26,73 @@ namespace Flowtype.Tests
             failures += AssertFalse(TranscriptionQuality.ShouldReject("10", 500, 12000));
             failures += AssertFalse(TranscriptionQuality.ShouldReject("100.", 600, 20000));
             failures += AssertFalse(TranscriptionQuality.ShouldReject("no", 500, 12000));
+            failures += AssertFalse(TranscriptionQuality.ShouldReject("Thank you.", 900, 20000));
+            failures += AssertTrue(TranscriptionQuality.ShouldReject("Thank you.", 4500, 140000));
+            failures += AssertTrue(TranscriptionQuality.ShouldReject("Thanks for watching.", 4000, 120000));
+            failures += AssertEqual("trailing thanks hallucination",
+                "Yo bro, this shit keeps saying thank you.",
+                TextProcessor.Clean("Yo bro, this shit keeps saying thank you. Thank you.", AppSettings.Defaults()));
+            failures += AssertEqual("leading thanks hallucination",
+                "Yo bro, this shit keeps saying thank you.",
+                TextProcessor.Clean("Thank you. Yo bro, this shit keeps saying thank you.", AppSettings.Defaults()));
+            failures += AssertEqual("thanks for watching hallucination",
+                "The team shipped the feature yesterday.",
+                TextProcessor.Clean("The team shipped the feature yesterday. Thanks for watching.", AppSettings.Defaults()));
+            failures += AssertEqual("genuine short thanks kept", "Thank you.", TextProcessor.Clean("thank you", AppSettings.Defaults()));
+            failures += AssertEqual("short closer thanks kept",
+                "Let me know. Thanks.",
+                TextProcessor.Clean("Let me know. Thanks.", AppSettings.Defaults()));
+            failures += AssertEqual("inline thank you kept",
+                "I told them thank you and left.",
+                TextProcessor.Clean("I told them thank you and left", AppSettings.Defaults()));
+            AppSettings epaDictionary = AppSettings.Defaults();
+            epaDictionary.Dictionary.Add("eppi => epa");
+            failures += AssertEqual("dictionary exact eppi",
+                "The epa ruling came through.",
+                TextProcessor.Clean("the eppi ruling came through", epaDictionary));
+            failures += AssertEqual("dictionary whisper variant eppy",
+                "The epa ruling came through.",
+                TextProcessor.Clean("the eppy ruling came through", epaDictionary));
+            failures += AssertEqual("dictionary still applies without cleanup path",
+                "the epa ruling came through",
+                TextProcessor.ApplyDictionaryReplacements("the eppy ruling came through", epaDictionary));
+            failures += AssertTrue(TextProcessor.IsUndoLastCommand("scratch that"));
+            failures += AssertTrue(TextProcessor.IsUndoLastCommand("Undo that."));
+            failures += AssertFalse(TextProcessor.IsUndoLastCommand("I said scratch that yesterday"));
+            failures += AssertTrue(TextProcessor.IsLightCleanup("yeah"));
+            failures += AssertTrue(TextProcessor.IsLightCleanup("ok send it"));
+            failures += AssertFalse(TextProcessor.IsLightCleanup("first get milk second get bread third get eggs"));
+            failures += AssertEqual("short take does not become a list",
+                "First get milk.",
+                TextProcessor.Clean("first get milk", AppSettings.Defaults()));
+            failures += AssertFalse(MicLevel.ShouldRaiseBoost(0.32f, 2.0f));
+            failures += AssertTrue(MicLevel.ShouldRaiseBoost(0.04f, 1.2f));
+            failures += AssertTrue(MicLevel.IsTooHot(0.94f));
+            failures += AssertEqual("mic advice not 2x when voice is already loud",
+                "ok",
+                MicLevel.Evaluate(0.32f, 0.64f, 2.0f).Band);
+            OrderedInsertQueue queue = new OrderedInsertQueue();
+            List<string> early = queue.Complete(2, "second");
+            failures += AssertTrue(early.Count == 0);
+            List<string> drained = queue.Complete(1, "first");
+            failures += AssertEqual("insert queue order", "first|second", String.Join("|", drained.ToArray()));
+            OrderedInsertQueue skipQueue = new OrderedInsertQueue();
+            skipQueue.Skip(1);
+            List<string> afterFail = skipQueue.Complete(2, "kept");
+            failures += AssertEqual("insert queue skips failed", "kept", String.Join("|", afterFail.ToArray()));
+            byte[] padded = MakePcmTone(8000, 0.30, 0.50, 0.50);
+            byte[] trimmed = WaveRecorder.TrimSilence(padded, 16000, 100);
+            double trimmedSeconds = trimmed.Length / 32000.0;
+            failures += AssertTrue(trimmedSeconds > 0.40 && trimmedSeconds < 0.65);
+            failures += AssertEqual("trailing thanks without period",
+                "So we need to finish the project by Friday and then send it.",
+                TextProcessor.Clean("So we need to finish the project by Friday and then send it Thank you", AppSettings.Defaults()));
+            failures += AssertEqual("leading thanks without period",
+                "Yo bro, this shit keeps saying thank you.",
+                TextProcessor.Clean("Thank you Yo bro, this shit keeps saying thank you.", AppSettings.Defaults()));
+            failures += AssertTrue(TranscriptionQuality.IsLikelyThanksHallucination("Thank you.", 0.6, 9.0));
+            failures += AssertFalse(TranscriptionQuality.IsLikelyThanksHallucination("Thank you.", 0.05, 9.0));
+            failures += AssertFalse(TranscriptionQuality.IsLikelyThanksHallucination("Thank you for coming.", 0.8, 9.0));
             failures += AssertEqual("embedded lone T",
                 "So we need to finish the project by Friday and then send it to the client for review.",
                 TextProcessor.Clean("So we need to finish the project by Friday and T then send it to the client for review", AppSettings.Defaults()));
@@ -141,9 +208,17 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.43"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.48"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.42", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.47", FlowtypeVersion.CurrentLabel);
+            AppSettings monoTheme = AppSettings.Defaults();
+            monoTheme.OverlayTheme = "Mono";
+            monoTheme.Repair();
+            failures += AssertEqual("mono theme migrated", "Dark", monoTheme.OverlayTheme);
+            AppSettings emberTheme = AppSettings.Defaults();
+            emberTheme.OverlayTheme = "Ember";
+            emberTheme.Repair();
+            failures += AssertEqual("ember theme kept", "Ember", emberTheme.OverlayTheme);
             return failures;
         }
 
@@ -264,6 +339,21 @@ namespace Flowtype.Tests
             }
             Console.WriteLine("FAIL " + name + " expected=" + expectedSeconds + " actual=" + actualSeconds);
             return 1;
+        }
+
+        private static byte[] MakePcmTone(int amplitude, double toneSeconds, double leadSilenceSeconds, double trailSilenceSeconds)
+        {
+            int lead = (int)Math.Round(leadSilenceSeconds * 16000);
+            int tone = (int)Math.Round(toneSeconds * 16000);
+            int trail = (int)Math.Round(trailSilenceSeconds * 16000);
+            byte[] pcm = new byte[(lead + tone + trail) * 2];
+            for (int index = 0; index < tone; index++)
+            {
+                int offset = (lead + index) * 2;
+                pcm[offset] = (byte)(amplitude & 0xFF);
+                pcm[offset + 1] = (byte)((amplitude >> 8) & 0xFF);
+            }
+            return pcm;
         }
 
         private static string FuzzySettingsTest()

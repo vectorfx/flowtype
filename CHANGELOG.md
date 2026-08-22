@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.3.47
+
+Voice capsule:
+- Mid-size stadium (104×26) with even padding and a single 1px rim so the sides are not thicker than the top
+- Spinner only while Whisper is writing; talking uses a gentle pulse on the hex dots, not a chase
+- Filled, pixel-aligned waveform bars with real contrast on Dark (no more grey hairlines)
+- **Ember** theme (OLED black, copper-to-cream). **Mono** is gone — existing Mono users move to Dark
+
+Updates:
+- Launch checks GitHub every time (no 24-hour skip) and silent-installs a newer Lite zip without a dialog
+- Tray **Check for updates…** still asks first; Cancel still skips that version
+
+---
+
+## 1.3.46
+
+Voice capsule:
+- Smaller pill (96×22) and shorter waveform so it sits tighter on the desktop
+- Live mark is a hex dot-matrix (sv-matrix Hex Orbit / Glyph Cluster language) instead of concentric ping rings
+- Processing spinner kept, scaled to the smaller capsule
+
+---
+
+## 1.3.45
+
+Voice capsule:
+- Tighter instrument chrome — double rim, hairline ticks, live/processing glyph on the left
+- After you release, the peel stays up with a small AI loader while Whisper is writing
+- Bars scan instead of going dead during transcription
+
+Release tail:
+- 150 ms after key-up (was 110, originally 180) plus 120 ms of pad after detected speech
+- Dictation length does not need a longer tail — Whisper wants a short clean ending, not extra silence
+
+---
+
+## 1.3.44
+
+Daily-driver pipeline:
+- Trim leading/trailing silence on each take, then a shorter 110 ms release tail so Whisper gets less dead air
+- Holding the hotkey again no longer cancels the previous transcription — takes queue and insert in order
+- Tray "Undo last dictation", plus saying "scratch that" / "undo that" undoes the last paste (Ctrl+Z)
+- Short takes (8 words or fewer) skip inferred list formatting so "first get milk" stays a sentence; spoken "bullet point" / "first…second…third" lists still format
+
+Microphone health:
+- The meter is now your real voice at the mic (raw peak). Aim for 15–40% while talking
+- Advice no longer uses post-normalize "Whisper input" (that always looked ~70%, so 2× looked "perfect")
+- If your voice is already loud, Flowtype tells you to leave boost alone — or lower it if you are at 2×
+
+Dictionary:
+- `eppi => epa` now converts Whisper variants like `eppy` to `epa`, instead of snapping `eppy` back to `eppi`
+- Replacements apply even when cleanup is off
+
+---
+
+## 1.3.43
+
+Whisper "thank you" silence hallucination:
+- A thinking pause at the start or end of hold-to-talk no longer inserts a standalone "Thank you." / "Thanks." / "thanks for watching"
+- A real "thank you", "thanks for coming", or a short closer like "Let me know. Thanks." is kept
+- Long silence-only clips that decode to just "thank you" are rejected instead of pasted
+
+---
+
 ## 1.3.42
 
 Google Docs / browser continuation:
@@ -233,7 +297,7 @@ Stability and speed:
 
 ### Voice capsule
 - Compact centred pill with matte **Dark** default theme (near-black + zinc borders)
-- **Dark purple**, **Light**, **Mono**, and **Liquid glass** themes
+- **Dark purple**, **Light**, **Ember**, and **Liquid glass** themes
 - Liquid glass captures and blurs the desktop behind the pill
 
 ### Audio & UI

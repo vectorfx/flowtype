@@ -110,7 +110,7 @@ Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds s
 | **Dark** *(default)* | Matte near-black, zinc borders |
 | **Dark purple** | Matte purple |
 | **Light** | Clean white |
-| **Mono** | High-contrast black & white |
+| **Ember** | OLED black, copper-to-cream waveform |
 | **Liquid glass** | Live-desktop glass |
 
 Optional embedded audio cues on start and finish.
