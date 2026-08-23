@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.47.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.47.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.49.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.49.0")]
 
 namespace Flowtype
 {
@@ -64,6 +64,7 @@ namespace Flowtype
         public string SkippedUpdateVersion;
         public string LastUpdateCheckUtc;
         public string OverlayTheme;
+        public string OverlayMark;
         public List<string> Dictionary;
         public Dictionary<string, string> Snippets;
 
@@ -103,6 +104,7 @@ namespace Flowtype
             value.SkippedUpdateVersion = "";
             value.LastUpdateCheckUtc = "";
             value.OverlayTheme = "Dark";
+            value.OverlayMark = "Orb";
             value.Dictionary = new List<string>();
             value.Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             return value;
@@ -144,6 +146,12 @@ namespace Flowtype
                 !String.Equals(OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayTheme, "Ember", StringComparison.OrdinalIgnoreCase))
                 OverlayTheme = "Dark";
+            if (String.IsNullOrWhiteSpace(OverlayMark)) OverlayMark = "Orb";
+            if (!String.Equals(OverlayMark, "Orb", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayMark, "Hex", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayMark, "Iris", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayMark, "Grid", StringComparison.OrdinalIgnoreCase))
+                OverlayMark = "Orb";
             if (Dictionary == null) Dictionary = new List<string>();
             if (Snippets == null) Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
@@ -1822,6 +1830,8 @@ namespace Flowtype
                     break;
                 }
                 if (String.IsNullOrWhiteSpace(info.DownloadUrl)) throw new InvalidOperationException("Lite release ZIP not found on GitHub.");
+                if (!info.DownloadUrl.StartsWith("https://github.com/vectorfx/flowtype/releases/download/", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Unexpected update download URL.");
                 return info;
             }
         }
@@ -1866,9 +1876,12 @@ namespace Flowtype
                 }
                 if (progress != null) progress(78, "Extracting update…");
                 Directory.CreateDirectory(extractPath);
-                ZipFile.ExtractToDirectory(zipPath, extractPath);
+                ExtractZipSafely(zipPath, extractPath);
                 string installer = Directory.GetFiles(extractPath, "Install-Flowtype.ps1", SearchOption.AllDirectories).FirstOrDefault();
                 if (String.IsNullOrWhiteSpace(installer)) throw new InvalidOperationException("Installer script missing from update package.");
+                string extractRoot = Path.GetFullPath(extractPath);
+                if (!Path.GetFullPath(installer).StartsWith(extractRoot, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Installer path was outside the update package.");
                 if (progress != null) progress(92, "Installing update…");
                 ProcessStartInfo start = new ProcessStartInfo();
                 start.FileName = "powershell.exe";
@@ -1881,6 +1894,31 @@ namespace Flowtype
             {
                 try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true); } catch { }
                 throw;
+            }
+        }
+
+        private static void ExtractZipSafely(string zipPath, string destination)
+        {
+            string root = Path.GetFullPath(destination);
+            if (!root.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                root += Path.DirectorySeparatorChar;
+            using (ZipArchive archive = ZipFile.OpenRead(zipPath))
+            {
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    string relative = (entry.FullName ?? "").Replace('/', Path.DirectorySeparatorChar);
+                    if (relative.Length == 0) continue;
+                    string full = Path.GetFullPath(Path.Combine(root, relative));
+                    if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("Update package contained an unsafe path.");
+                    if (String.IsNullOrEmpty(entry.Name))
+                    {
+                        Directory.CreateDirectory(full);
+                        continue;
+                    }
+                    Directory.CreateDirectory(Path.GetDirectoryName(full));
+                    entry.ExtractToFile(full, true);
+                }
             }
         }
     }
@@ -4171,6 +4209,7 @@ namespace Flowtype
         private bool maxRaised;
         private bool processingMode;
         private string theme = "Dark";
+        private string mark = "Orb";
         private Bitmap glassBackdrop;
         private Point glassBackdropOffset;
         private float revealProgress = 1f;
@@ -4178,13 +4217,18 @@ namespace Flowtype
         private int overlaySession;
         private int pendingHideSession;
         private readonly Stopwatch revealClock = new Stopwatch();
-        private const int RevealInMs = 130;
-        private const int RevealOutMs = 100;
+        private const int RevealInMs = 160;
+        private const int RevealOutMs = 120;
         public event Action MaximumDurationReached;
 
         public void SetTheme(string value)
         {
             theme = String.IsNullOrWhiteSpace(value) ? "Dark" : value.Trim();
+        }
+
+        public void SetMark(string value)
+        {
+            mark = String.IsNullOrWhiteSpace(value) ? "Orb" : value.Trim();
         }
 
         public RecordingOverlay()
@@ -4244,8 +4288,15 @@ namespace Flowtype
 
         private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
         {
-            float diameter = radius * 2;
             GraphicsPath path = new GraphicsPath();
+            float max = Math.Min(bounds.Width, bounds.Height) / 2f;
+            if (max < 0.6f)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            radius = Math.Max(0.5f, Math.Min(radius, max));
+            float diameter = radius * 2f;
             path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
             path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
             path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
@@ -4254,10 +4305,11 @@ namespace Flowtype
             return path;
         }
 
-        public void ShowRecording(string hotkey, string overlayTheme)
+        public void ShowRecording(string hotkey, string overlayTheme, string overlayMark)
         {
             overlaySession++;
             SetTheme(overlayTheme);
+            SetMark(overlayMark);
             processingMode = false;
             level = 0;
             Array.Clear(bands, 0, bands.Length);
@@ -4392,7 +4444,7 @@ namespace Flowtype
             if (!IsHandleCreated) CreateHandle();
 
             RectangleF capsule = GetCapsuleBounds();
-            const int pad = 10;
+            const int pad = 40;
             int screenX = Left + (int)Math.Floor(capsule.X) - pad;
             int screenY = Top + (int)Math.Floor(capsule.Y) - pad;
             int captureWidth = (int)Math.Ceiling(capsule.Width) + pad * 2;
@@ -4413,12 +4465,10 @@ namespace Flowtype
                 using (Graphics captureGraphics = Graphics.FromImage(raw))
                     captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
 
-                using (Bitmap blurred = BlurBitmap(raw, 4))
-                using (Bitmap distorted = DistortLiquidGlass(blurred))
-                {
-                    glassBackdrop = NeutralizeGlassBackdrop(distorted);
-                }
-                glassBackdropOffset = new Point(pad - (int)Math.Floor(capsule.X), pad - (int)Math.Floor(capsule.Y));
+                glassBackdrop = ApplyContainerGlassFilter(raw);
+                glassBackdropOffset = new Point(
+                    (int)Math.Floor(capsule.X) - pad,
+                    (int)Math.Floor(capsule.Y) - pad);
             }
             catch
             {
@@ -4452,58 +4502,152 @@ namespace Flowtype
             }
         }
 
-        private static Bitmap DistortLiquidGlass(Bitmap source)
+        // Ports LiquidButton's SVG filter:
+        // feTurbulence fractalNoise 0.05/1 octave → blur 2 → displace scale 70 → blur 4.
+        private static Bitmap ApplyContainerGlassFilter(Bitmap source)
         {
             int width = source.Width;
             int height = source.Height;
-            Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            int count = width * height;
+            byte[] red = new byte[count];
+            byte[] blue = new byte[count];
             for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
                 {
-                    float nx = x * 0.11f;
-                    float ny = y * 0.11f;
-                    int offsetX = (int)(Math.Sin(nx * 1.7f + ny * 0.6f) * 2.2f + Math.Sin(ny * 2.3f) * 1.2f);
-                    int offsetY = (int)(Math.Cos(ny * 1.5f + nx * 0.4f) * 2.2f + Math.Cos(nx * 2.1f) * 1.2f);
-                    int sampleX = Math.Max(0, Math.Min(width - 1, x + offsetX));
-                    int sampleY = Math.Max(0, Math.Min(height - 1, y + offsetY));
-                    dest.SetPixel(x, y, source.GetPixel(sampleX, sampleY));
+                    int index = y * width + x;
+                    red[index] = (byte)(ValueNoise(x * 0.05f, y * 0.05f, 1) * 255f);
+                    blue[index] = (byte)(ValueNoise(x * 0.05f + 19.7f, y * 0.05f + 7.3f, 1) * 255f);
                 }
             }
+            BoxBlur(red, width, height, 2);
+            BoxBlur(blue, width, height, 2);
+
+            Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            BitmapData sourceData = source.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+            BitmapData destData = dest.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+            try
+            {
+                byte[] sourceBytes = new byte[sourceData.Stride * height];
+                byte[] destBytes = new byte[destData.Stride * height];
+                Marshal.Copy(sourceData.Scan0, sourceBytes, 0, sourceBytes.Length);
+                const float scale = 70f;
+                for (int y = 0; y < height; y++)
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        int noiseIndex = y * width + x;
+                        int sampleX = x + (int)Math.Round(scale * (red[noiseIndex] / 255f - 0.5f));
+                        int sampleY = y + (int)Math.Round(scale * (blue[noiseIndex] / 255f - 0.5f));
+                        if (sampleX < 0) sampleX = 0;
+                        else if (sampleX >= width) sampleX = width - 1;
+                        if (sampleY < 0) sampleY = 0;
+                        else if (sampleY >= height) sampleY = height - 1;
+                        int src = sampleY * sourceData.Stride + sampleX * 4;
+                        int dst = y * destData.Stride + x * 4;
+                        destBytes[dst] = sourceBytes[src];
+                        destBytes[dst + 1] = sourceBytes[src + 1];
+                        destBytes[dst + 2] = sourceBytes[src + 2];
+                        destBytes[dst + 3] = sourceBytes[src + 3];
+                    }
+                }
+                Marshal.Copy(destBytes, 0, destData.Scan0, destBytes.Length);
+            }
+            finally
+            {
+                source.UnlockBits(sourceData);
+                dest.UnlockBits(destData);
+            }
+            BoxBlurBitmap(dest, 4);
             return dest;
         }
 
-        // Kill warm/yellow bleed from whatever sat behind the capsule (Cursor accents, highlights).
-        private static Bitmap NeutralizeGlassBackdrop(Bitmap source)
+        private static float ValueNoise(float x, float y, int seed)
         {
-            int width = source.Width;
-            int height = source.Height;
-            Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
-            using (Graphics graphics = Graphics.FromImage(dest))
+            int x0 = (int)Math.Floor(x);
+            int y0 = (int)Math.Floor(y);
+            float tx = x - x0;
+            float ty = y - y0;
+            tx = tx * tx * (3f - 2f * tx);
+            ty = ty * ty * (3f - 2f * ty);
+            float n00 = Hash01(x0, y0, seed);
+            float n10 = Hash01(x0 + 1, y0, seed);
+            float n01 = Hash01(x0, y0 + 1, seed);
+            float n11 = Hash01(x0 + 1, y0 + 1, seed);
+            return n00 + (n10 - n00) * tx + (n01 - n00) * ty + (n00 - n10 - n01 + n11) * tx * ty;
+        }
+
+        private static float Hash01(int x, int y, int seed)
+        {
+            int n = x * 374761393 + y * 668265263 + seed * 1274126177;
+            n = (n ^ (n >> 13)) * 1274126177;
+            n ^= n >> 16;
+            return (n & 0x7fffffff) / 2147483647f;
+        }
+
+        private static void BoxBlur(byte[] pixels, int width, int height, int radius)
+        {
+            if (radius < 1) return;
+            byte[] scratch = new byte[pixels.Length];
+            int span = radius * 2 + 1;
+            for (int y = 0; y < height; y++)
             {
-                graphics.Clear(Color.FromArgb(255, 236, 240, 246));
-                float[][] matrix =
+                int sum = 0;
+                int row = y * width;
+                for (int i = -radius; i <= radius; i++)
+                    sum += pixels[row + ClampCoord(i, width)];
+                for (int x = 0; x < width; x++)
                 {
-                    new float[] { 0.22f, 0.22f, 0.22f, 0, 0 },
-                    new float[] { 0.22f, 0.22f, 0.22f, 0, 0 },
-                    new float[] { 0.22f, 0.22f, 0.22f, 0, 0 },
-                    new float[] { 0, 0, 0, 1, 0 },
-                    new float[] { 0.42f, 0.45f, 0.50f, 0, 1 }
-                };
-                using (ImageAttributes attributes = new ImageAttributes())
-                {
-                    attributes.SetColorMatrix(new ColorMatrix(matrix), ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-                    graphics.DrawImage(
-                        source,
-                        new Rectangle(0, 0, width, height),
-                        0, 0, width, height,
-                        GraphicsUnit.Pixel,
-                        attributes);
+                    scratch[row + x] = (byte)(sum / span);
+                    sum += pixels[row + ClampCoord(x + radius + 1, width)] - pixels[row + ClampCoord(x - radius, width)];
                 }
-                using (SolidBrush frost = new SolidBrush(Color.FromArgb(155, 244, 247, 252)))
-                    graphics.FillRectangle(frost, 0, 0, width, height);
             }
-            return dest;
+            for (int x = 0; x < width; x++)
+            {
+                int sum = 0;
+                for (int i = -radius; i <= radius; i++)
+                    sum += scratch[ClampCoord(i, height) * width + x];
+                for (int y = 0; y < height; y++)
+                {
+                    pixels[y * width + x] = (byte)(sum / span);
+                    sum += scratch[ClampCoord(y + radius + 1, height) * width + x] - scratch[ClampCoord(y - radius, height) * width + x];
+                }
+            }
+        }
+
+        private static void BoxBlurBitmap(Bitmap bitmap, int radius)
+        {
+            int width = bitmap.Width;
+            int height = bitmap.Height;
+            BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadWrite, PixelFormat.Format32bppPArgb);
+            try
+            {
+                byte[] bytes = new byte[data.Stride * height];
+                Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
+                byte[] channel = new byte[width * height];
+                for (int band = 0; band < 3; band++)
+                {
+                    for (int y = 0; y < height; y++)
+                        for (int x = 0; x < width; x++)
+                            channel[y * width + x] = bytes[y * data.Stride + x * 4 + band];
+                    BoxBlur(channel, width, height, radius);
+                    for (int y = 0; y < height; y++)
+                        for (int x = 0; x < width; x++)
+                            bytes[y * data.Stride + x * 4 + band] = channel[y * width + x];
+                }
+                Marshal.Copy(bytes, 0, data.Scan0, bytes.Length);
+            }
+            finally
+            {
+                bitmap.UnlockBits(data);
+            }
+        }
+
+        private static int ClampCoord(int value, int max)
+        {
+            if (value < 0) return 0;
+            if (value >= max) return max - 1;
+            return value;
         }
 
         public void SetLevel(float value)
@@ -4604,6 +4748,11 @@ namespace Flowtype
             Color ink = GetChromeInk();
             if (processingMode)
             {
+                if (String.Equals(mark, "Grid", StringComparison.OrdinalIgnoreCase))
+                {
+                    DrawLiveGrid(graphics, cx, cy, true);
+                    return;
+                }
                 using (Pen track = new Pen(Color.FromArgb(IsGlassTheme() ? 64 : 42, ink), 1f))
                     graphics.DrawEllipse(track, cx - 5.4f, cy - 5.4f, 10.8f, 10.8f);
                 float start = (animationTick * 13f) % 360f;
@@ -4618,27 +4767,136 @@ namespace Flowtype
                 return;
             }
 
+            if (String.Equals(mark, "Hex", StringComparison.OrdinalIgnoreCase))
+                DrawLiveHex(graphics, cx, cy);
+            else if (String.Equals(mark, "Iris", StringComparison.OrdinalIgnoreCase))
+                DrawLiveIris(graphics, cx, cy);
+            else if (String.Equals(mark, "Grid", StringComparison.OrdinalIgnoreCase))
+                DrawLiveGrid(graphics, cx, cy, false);
+            else
+                DrawLiveOrb(graphics, cx, cy);
+        }
+
+        private void DrawLiveGrid(Graphics graphics, float cx, float cy, bool processing)
+        {
+            const int cols = 5;
+            const int rows = 5;
+            const float gap = 2.15f;
+            const float dot = 0.78f;
+            float live = Math.Max(0f, Math.Min(1f, level));
+            float progress = processing ? ((animationTick % 55) / 55f) * 24f : 0f;
+            float originX = cx - (cols - 1) * gap / 2f;
+            float originY = cy - (rows - 1) * gap / 2f;
+            for (int col = 0; col < cols; col++)
+            {
+                float colPhase = processing
+                    ? progress * 0.52f + col * 1.15f
+                    : animationTick * 0.07f + col * 1.15f;
+                float wave = (float)((Math.Sin(colPhase) + 1.0) * 0.5);
+                int fill = processing
+                    ? (int)Math.Round(1 + wave * 4)
+                    : (int)Math.Round(1 + Math.Max(0.18f, live) * (0.45f + 0.55f * wave) * 4);
+                if (fill < 1) fill = 1;
+                if (fill > 5) fill = 5;
+                int topLit = 5 - fill;
+                for (int row = 0; row < rows; row++)
+                {
+                    float amount = row > topLit ? 0.94f : (row == topLit ? 1f : 0.08f);
+                    DrawLiveDot(graphics, originX + col * gap, originY + row * gap, dot, amount);
+                }
+            }
+        }
+
+        private void DrawLiveHex(Graphics graphics, float cx, float cy)
+        {
             float live = Math.Max(0f, Math.Min(1f, level));
             float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * 0.085);
             float pulse = 0.28f + 0.42f * live + 0.22f * breathe * (0.4f + 0.6f * live);
-            DrawMatrixDot(graphics, cx, cy, 1.65f, Math.Min(1f, pulse + 0.12f));
+            DrawLiveDot(graphics, cx, cy, 1.65f, Math.Min(1f, pulse + 0.12f));
             for (int spoke = 0; spoke < 6; spoke++)
             {
                 double angle = spoke * Math.PI / 3.0 - Math.PI / 2.0;
                 float x = cx + (float)Math.Cos(angle) * 4.7f;
                 float y = cy + (float)Math.Sin(angle) * 4.7f;
-                DrawMatrixDot(graphics, x, y, 1.4f, pulse * 0.92f);
+                DrawLiveDot(graphics, x, y, 1.4f, pulse * 0.92f);
             }
         }
 
-        private void DrawMatrixDot(Graphics graphics, float x, float y, float radius, float amount)
+        private void DrawLiveIris(Graphics graphics, float cx, float cy)
+        {
+            float live = Math.Max(0f, Math.Min(1f, level));
+            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * 0.085);
+            float pulse = 0.18f + 0.62f * live + 0.16f * breathe * (0.3f + 0.7f * live);
+            Color ink = GetBarColor(Math.Min(1f, 0.55f + pulse));
+            float ringR = 6.15f;
+            using (Pen track = new Pen(Color.FromArgb((int)(40 + 70 * pulse), ink), 1.15f))
+                graphics.DrawEllipse(track, cx - ringR, cy - ringR, ringR * 2f, ringR * 2f);
+            float fillR = 1.35f + 3.55f * pulse;
+            using (GraphicsPath fill = new GraphicsPath())
+            {
+                fill.AddEllipse(cx - fillR, cy - fillR, fillR * 2f, fillR * 2f);
+                using (PathGradientBrush glow = new PathGradientBrush(fill))
+                {
+                    glow.CenterColor = Color.FromArgb((int)(200 + 55 * pulse), ink);
+                    glow.SurroundColors = new[] { Color.FromArgb((int)(30 + 50 * pulse), ink) };
+                    glow.FocusScales = new PointF(0.38f, 0.38f);
+                    graphics.FillPath(glow, fill);
+                }
+            }
+            using (SolidBrush core = new SolidBrush(Color.FromArgb((int)(220 + 35 * pulse), GetBarColor(1f))))
+                graphics.FillEllipse(core, cx - 1.15f, cy - 1.15f, 2.3f, 2.3f);
+        }
+
+        private void DrawLiveDot(Graphics graphics, float x, float y, float radius, float amount)
         {
             amount = Math.Max(0.08f, Math.Min(1f, amount));
             Color color = GetBarColor(amount);
             int alpha = Math.Max(28, Math.Min(255, (int)(38 + 217 * amount)));
-            color = Color.FromArgb(alpha, color);
-            using (SolidBrush fill = new SolidBrush(color))
+            using (SolidBrush fill = new SolidBrush(Color.FromArgb(alpha, color)))
                 graphics.FillEllipse(fill, x - radius, y - radius, radius * 2f, radius * 2f);
+        }
+
+        private void DrawLiveOrb(Graphics graphics, float cx, float cy)
+        {
+            float live = Math.Max(0f, Math.Min(1f, level));
+            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * 0.085);
+            float pulse = 0.22f + 0.58f * live + 0.18f * breathe * (0.35f + 0.65f * live);
+            Color ink = GetBarColor(Math.Min(1f, 0.5f + pulse));
+            Color peak = GetBarColor(Math.Min(1f, pulse + 0.25f));
+            float haloR = 7.0f + 1.6f * live;
+            float bodyR = 4.2f + 0.9f * pulse;
+            float coreR = 1.45f + 0.75f * pulse;
+
+            using (GraphicsPath halo = new GraphicsPath())
+            {
+                halo.AddEllipse(cx - haloR, cy - haloR, haloR * 2f, haloR * 2f);
+                using (PathGradientBrush glow = new PathGradientBrush(halo))
+                {
+                    glow.CenterColor = Color.FromArgb((int)(24 + 120 * pulse), ink);
+                    glow.SurroundColors = new[] { Color.FromArgb(0, ink) };
+                    glow.FocusScales = new PointF(0.2f, 0.2f);
+                    graphics.FillPath(glow, halo);
+                }
+            }
+
+            using (GraphicsPath body = new GraphicsPath())
+            {
+                body.AddEllipse(cx - bodyR, cy - bodyR, bodyR * 2f, bodyR * 2f);
+                using (PathGradientBrush fill = new PathGradientBrush(body))
+                {
+                    fill.CenterColor = Color.FromArgb((int)(170 + 85 * pulse), peak);
+                    fill.SurroundColors = new[] { Color.FromArgb((int)(40 + 80 * pulse), ink) };
+                    fill.FocusScales = new PointF(0.4f, 0.4f);
+                    graphics.FillPath(fill, body);
+                }
+            }
+
+            float specX = cx - bodyR * 0.28f;
+            float specY = cy - bodyR * 0.32f;
+            using (SolidBrush spec = new SolidBrush(Color.FromArgb((int)(36 + 70 * pulse), 255, 255, 255)))
+                graphics.FillEllipse(spec, specX - 1.15f, specY - 0.9f, 2.3f, 1.8f);
+            using (SolidBrush core = new SolidBrush(Color.FromArgb((int)(205 + 50 * pulse), peak)))
+                graphics.FillEllipse(core, cx - coreR, cy - coreR, coreR * 2f, coreR * 2f);
         }
 
         private void DrawVoiceBands(Graphics graphics, RectangleF capsule)
@@ -4646,8 +4904,10 @@ namespace Flowtype
             float left = capsule.X + 29f;
             float right = capsule.Right - 8f;
             float region = right - left;
-            float slot = region / bands.Length;
-            float barWidth = Math.Min(3.2f, slot * 0.62f);
+            const int barPx = 3;
+            const int gapPx = 2;
+            int total = bands.Length * barPx + (bands.Length - 1) * gapPx;
+            float startX = (float)Math.Round(left + (region - total) / 2f);
             float centerY = capsule.Y + capsule.Height / 2f;
             float maxTravel = capsule.Height - 10f;
             float mid = (bands.Length - 1) / 2f;
@@ -4656,12 +4916,12 @@ namespace Flowtype
                 float envelope = 0.62f + 0.38f * (float)Math.Cos((index - mid) / Math.Max(1f, mid) * Math.PI * 0.5);
                 float sample = Math.Max(0.08f, Math.Min(1f, bands[index] * envelope));
                 float barHeight = 3.2f + sample * maxTravel;
-                float x = (float)Math.Round(left + index * slot + (slot - barWidth) / 2f);
+                float x = startX + index * (barPx + gapPx);
                 float y = (float)Math.Round(centerY - barHeight / 2f);
-                RectangleF bar = new RectangleF(x, y, barWidth, (float)Math.Round(barHeight));
+                RectangleF bar = new RectangleF(x, y, barPx, (float)Math.Round(barHeight));
                 Color peak = GetBarColor(sample);
                 Color dim = GetBarColor(sample * 0.42f);
-                using (GraphicsPath barPath = RoundedRectangle(bar, barWidth / 2f))
+                using (GraphicsPath barPath = RoundedRectangle(bar, barPx / 2f))
                 using (LinearGradientBrush fill = new LinearGradientBrush(bar, peak, dim, LinearGradientMode.Vertical))
                     graphics.FillPath(fill, barPath);
             }
@@ -4669,7 +4929,7 @@ namespace Flowtype
 
         private Color GetChromeInk()
         {
-            if (IsGlassTheme()) return Color.FromArgb(255, 36, 42, 52);
+            if (IsGlassTheme()) return Color.FromArgb(255, 244, 246, 250);
             if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(255, 24, 24, 27);
             if (String.Equals(theme, "Purple", StringComparison.OrdinalIgnoreCase))
@@ -4706,55 +4966,38 @@ namespace Flowtype
         private void DrawMatteBorder(Graphics graphics, RectangleF capsule, float cornerRadius, GraphicsPath capsulePath, Color borderColor)
         {
             Color outer = borderColor;
-            Color hairline = Color.FromArgb(40, 255, 255, 255);
             if (String.Equals(theme, "Dark", StringComparison.OrdinalIgnoreCase))
-            {
                 outer = Color.FromArgb(255, 86, 86, 94);
-                hairline = Color.FromArgb(52, 180, 180, 190);
-            }
             else if (String.Equals(theme, "Purple", StringComparison.OrdinalIgnoreCase))
-            {
                 outer = Color.FromArgb(255, 108, 96, 148);
-                hairline = Color.FromArgb(50, 176, 164, 230);
-            }
             else if (String.Equals(theme, "Ember", StringComparison.OrdinalIgnoreCase))
-            {
                 outer = Color.FromArgb(255, 168, 92, 42);
-                hairline = Color.FromArgb(70, 255, 196, 120);
-            }
             else if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
-            {
                 outer = Color.FromArgb(255, 148, 148, 156);
-                hairline = Color.FromArgb(90, 255, 255, 255);
-            }
 
             using (Pen rim = new Pen(outer, 1f))
                 graphics.DrawPath(rim, capsulePath);
-            float highlightY = capsule.Y + 1.5f;
-            using (Pen topLine = new Pen(hairline, 1f))
-                graphics.DrawLine(topLine, capsule.X + cornerRadius, highlightY, capsule.Right - cornerRadius, highlightY);
         }
 
         private void DrawLiquidGlassCapsule(Graphics graphics, RectangleF capsule, float cornerRadius)
         {
-            // Outer shadows from the reference: 0 0 8px, 0 2px 6px, 0 0 12px
-            for (int spread = 1; spread <= 6; spread++)
-            {
-                float yShift = spread <= 2 ? spread * 0.35f : 0f;
-                RectangleF outer = new RectangleF(
-                    capsule.X - spread * 0.45f,
-                    capsule.Y - spread * 0.25f + yShift,
-                    capsule.Width + spread * 0.9f,
-                    capsule.Height + spread * 0.65f);
-                int alpha = spread <= 2 ? 8 + spread * 6 : 3 + spread;
-                using (GraphicsPath outerPath = RoundedRectangle(outer, cornerRadius + spread * 0.15f))
-                using (SolidBrush outerBrush = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0)))
-                    graphics.FillPath(outerBrush, outerPath);
-            }
-            RectangleF glow = new RectangleF(capsule.X - 4f, capsule.Y - 3f, capsule.Width + 8f, capsule.Height + 6f);
-            using (GraphicsPath glowPath = RoundedRectangle(glow, cornerRadius + 2f))
-            using (SolidBrush glowBrush = new SolidBrush(Color.FromArgb(38, 0, 0, 0)))
-                graphics.FillPath(glowBrush, glowPath);
+            // LiquidButton dark: 0 0 8px / 0 2px 6px / 0 0 12px
+            RectangleF glowA = capsule;
+            glowA.Inflate(4f, 4f);
+            using (GraphicsPath path = RoundedRectangle(glowA, cornerRadius + 2f))
+            using (SolidBrush brush = new SolidBrush(Color.FromArgb(8, 0, 0, 0)))
+                graphics.FillPath(brush, path);
+            RectangleF glowB = capsule;
+            glowB.Inflate(3f, 3f);
+            glowB.Y += 2f;
+            using (GraphicsPath path = RoundedRectangle(glowB, cornerRadius + 1.5f))
+            using (SolidBrush brush = new SolidBrush(Color.FromArgb(20, 0, 0, 0)))
+                graphics.FillPath(brush, path);
+            RectangleF glowC = capsule;
+            glowC.Inflate(6f, 6f);
+            using (GraphicsPath path = RoundedRectangle(glowC, cornerRadius + 3f))
+            using (SolidBrush brush = new SolidBrush(Color.FromArgb(38, 0, 0, 0)))
+                graphics.FillPath(brush, path);
 
             using (GraphicsPath capsulePath = RoundedRectangle(capsule, cornerRadius))
             {
@@ -4762,80 +5005,65 @@ namespace Flowtype
                 graphics.SetClip(capsulePath);
 
                 if (glassBackdrop != null)
-                {
-                    graphics.DrawImage(
-                        glassBackdrop,
-                        capsule.X + glassBackdropOffset.X,
-                        capsule.Y + glassBackdropOffset.Y);
-                }
+                    graphics.DrawImage(glassBackdrop, glassBackdropOffset.X, glassBackdropOffset.Y);
                 else
                 {
-                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(220, 236, 240, 246)))
+                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(180, 12, 14, 18)))
                         graphics.FillPath(fallback, capsulePath);
                 }
 
-                using (SolidBrush veil = new SolidBrush(Color.FromArgb(86, 248, 250, 252)))
-                    graphics.FillPath(veil, capsulePath);
-                using (SolidBrush coolSheen = new SolidBrush(Color.FromArgb(28, 210, 220, 235)))
-                    graphics.FillPath(coolSheen, capsulePath);
+                // inset 0 0 6px 6px white/12 and 0 0 2px 2px white/06
+                using (PathGradientBrush innerGlow = new PathGradientBrush(capsulePath))
+                {
+                    innerGlow.CenterColor = Color.FromArgb(0, 255, 255, 255);
+                    innerGlow.SurroundColors = new[] { Color.FromArgb(31, 255, 255, 255) };
+                    innerGlow.FocusScales = new PointF(0.72f, 0.62f);
+                    graphics.FillPath(innerGlow, capsulePath);
+                }
+                using (PathGradientBrush tightGlow = new PathGradientBrush(capsulePath))
+                {
+                    tightGlow.CenterColor = Color.FromArgb(0, 255, 255, 255);
+                    tightGlow.SurroundColors = new[] { Color.FromArgb(15, 255, 255, 255) };
+                    tightGlow.FocusScales = new PointF(0.9f, 0.86f);
+                    graphics.FillPath(tightGlow, capsulePath);
+                }
 
-                DrawGlassInsetShadows(graphics, capsule, cornerRadius);
+                // inset 3px 3px / -3px -3px highlights (the liquid rim)
+                RectangleF topLeft = new RectangleF(capsule.X - 1f, capsule.Y - 1f, capsule.Width * 0.55f, capsule.Height * 0.7f);
+                using (GraphicsPath spec = new GraphicsPath())
+                {
+                    spec.AddEllipse(topLeft);
+                    using (PathGradientBrush brush = new PathGradientBrush(spec))
+                    {
+                        brush.CenterColor = Color.FromArgb(23, 255, 255, 255);
+                        brush.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
+                        graphics.FillPath(brush, spec);
+                    }
+                }
+                RectangleF bottomRight = new RectangleF(
+                    capsule.Right - capsule.Width * 0.58f,
+                    capsule.Y + capsule.Height * 0.18f,
+                    capsule.Width * 0.62f,
+                    capsule.Height * 0.92f);
+                using (GraphicsPath spec = new GraphicsPath())
+                {
+                    spec.AddEllipse(bottomRight);
+                    using (PathGradientBrush brush = new PathGradientBrush(spec))
+                    {
+                        brush.CenterColor = Color.FromArgb(217, 255, 255, 255);
+                        brush.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
+                        brush.FocusScales = new PointF(0.18f, 0.22f);
+                        graphics.FillPath(brush, spec);
+                    }
+                }
+                RectangleF near = capsule;
+                near.Inflate(-0.6f, -0.6f);
+                using (GraphicsPath nearPath = RoundedRectangle(near, cornerRadius - 0.6f))
+                using (Pen nearPen = new Pen(Color.FromArgb(153, 255, 255, 255), 1f))
+                    graphics.DrawPath(nearPen, nearPath);
+
                 graphics.Restore(clipState);
-
-                DrawGlassRim(graphics, capsule, cornerRadius, capsulePath);
             }
-        }
-
-        private static void DrawGlassInsetShadows(Graphics graphics, RectangleF capsule, float cornerRadius)
-        {
-            RectangleF topLeft = new RectangleF(capsule.X, capsule.Y, capsule.Width * 0.72f, capsule.Height * 0.72f);
-            using (GraphicsPath topLeftPath = RoundedRectangle(topLeft, cornerRadius))
-            using (PathGradientBrush topLeftGlow = new PathGradientBrush(topLeftPath))
-            {
-                topLeftGlow.CenterColor = Color.FromArgb(42, 255, 255, 255);
-                topLeftGlow.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
-                topLeftGlow.FocusScales = new PointF(0.2f, 0.2f);
-                graphics.FillPath(topLeftGlow, topLeftPath);
-            }
-
-            RectangleF bottomRight = new RectangleF(
-                capsule.X + capsule.Width * 0.28f,
-                capsule.Y + capsule.Height * 0.28f,
-                capsule.Width * 0.72f,
-                capsule.Height * 0.72f);
-            using (GraphicsPath bottomRightPath = RoundedRectangle(bottomRight, cornerRadius))
-            using (PathGradientBrush bottomRightGlow = new PathGradientBrush(bottomRightPath))
-            {
-                bottomRightGlow.CenterColor = Color.FromArgb(96, 255, 255, 255);
-                bottomRightGlow.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
-                bottomRightGlow.FocusScales = new PointF(0.78f, 0.78f);
-                graphics.FillPath(bottomRightGlow, bottomRightPath);
-            }
-
-            RectangleF edgeBloom = new RectangleF(capsule.X + 1f, capsule.Y + 1f, capsule.Width - 2f, capsule.Height - 2f);
-            using (GraphicsPath edgePath = RoundedRectangle(edgeBloom, cornerRadius - 1f))
-            using (SolidBrush edgeBrush = new SolidBrush(Color.FromArgb(30, 255, 255, 255)))
-                graphics.FillPath(edgeBrush, edgePath);
-
-            RectangleF innerPool = new RectangleF(capsule.X, capsule.Y + capsule.Height * 0.45f, capsule.Width, capsule.Height * 0.55f);
-            using (LinearGradientBrush innerPoolBrush = new LinearGradientBrush(
-                innerPool, Color.FromArgb(0, 0, 0, 0), Color.FromArgb(36, 0, 0, 0), LinearGradientMode.Vertical))
-                graphics.FillRectangle(innerPoolBrush, innerPool);
-        }
-
-        private static void DrawGlassRim(Graphics graphics, RectangleF capsule, float cornerRadius, GraphicsPath capsulePath)
-        {
-            RectangleF shine = new RectangleF(capsule.X + 2f, capsule.Y + 1.5f, capsule.Width - 4f, capsule.Height * 0.42f);
-            using (GraphicsPath shinePath = RoundedRectangle(shine, cornerRadius - 1f))
-            using (LinearGradientBrush gloss = new LinearGradientBrush(
-                shine, Color.FromArgb(72, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), LinearGradientMode.Vertical))
-                graphics.FillPath(gloss, shinePath);
-
-            using (Pen outerRim = new Pen(Color.FromArgb(120, 255, 255, 255), 1f))
-                graphics.DrawPath(outerRim, capsulePath);
-            float highlightY = capsule.Y + 1.5f;
-            using (Pen topLine = new Pen(Color.FromArgb(90, 255, 255, 255), 1f))
-                graphics.DrawLine(topLine, capsule.X + cornerRadius, highlightY, capsule.Right - cornerRadius, highlightY);
         }
 
         private bool IsGlassTheme()
@@ -4884,8 +5112,8 @@ namespace Flowtype
             int alpha = 210 + (int)(45 * sample);
             if (IsGlassTheme())
             {
-                int grey = 72 + (int)(48 * sample);
-                return Color.FromArgb(Math.Min(255, 220 + (int)(35 * sample)), grey, grey, Math.Min(255, grey + 10));
+                int grey = 210 + (int)(40 * sample);
+                return Color.FromArgb(255, grey, grey, Math.Min(255, grey + 6));
             }
             if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(255, 28 + (int)(12 * sample), 28 + (int)(12 * sample), 32);
@@ -4975,6 +5203,7 @@ namespace Flowtype
         private readonly CheckBox insertNotifyBox = new CheckBox();
         private readonly CheckBox autoUpdateBox = new CheckBox();
         private readonly ComboBox overlayThemeBox = new ComboBox();
+        private readonly ComboBox overlayMarkBox = new ComboBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
         private readonly Label localStatus = new Label();
@@ -5177,10 +5406,14 @@ namespace Flowtype
             ConfigureDropDown(styleBox, 210, 200, 230);
             styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
             page.Controls.Add(styleBox);
-            page.Controls.Add(LabelAt("Voice capsule", 24, 248, 170, 24));
-            ConfigureDropDown(overlayThemeBox, 210, 244, 230);
+            page.Controls.Add(LabelAt("Voice capsule", 24, 248, 92, 24));
+            ConfigureDropDown(overlayThemeBox, 118, 244, 168);
             overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Ember", "Liquid glass" });
             page.Controls.Add(overlayThemeBox);
+            page.Controls.Add(LabelAt("Live mark", 300, 248, 72, 24));
+            ConfigureDropDown(overlayMarkBox, 374, 244, 150);
+            overlayMarkBox.Items.AddRange(new object[] { "Orb", "Hex", "Iris", "Grid" });
+            page.Controls.Add(overlayMarkBox);
 
             ConfigureCheck(cleanupBox, "Smart cleanup (fillers, punctuation, lists)", 24, 294, 540);
             page.Controls.Add(LabelAt("Cleanup engine", 24, 342, 170, 24));
@@ -5436,6 +5669,7 @@ namespace Flowtype
             insertNotifyBox.Checked = value.ShowInsertNotification;
             autoUpdateBox.Checked = value.AutoCheckUpdates;
             overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
+            overlayMarkBox.SelectedIndex = OverlayMarkToIndex(value.OverlayMark);
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
             latencyLabel.Text = LatencyStats.Summary;
@@ -5473,6 +5707,7 @@ namespace Flowtype
             value.ShowInsertNotification = insertNotifyBox.Checked;
             value.AutoCheckUpdates = autoUpdateBox.Checked;
             value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
+            value.OverlayMark = OverlayMarkFromIndex(overlayMarkBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
             value.ApiBaseUrl = apiUrlBox.Text.Trim();
@@ -5823,6 +6058,22 @@ namespace Flowtype
             if (index == 4) return "Glass";
             return "Dark";
         }
+
+        private static int OverlayMarkToIndex(string overlayMark)
+        {
+            if (String.Equals(overlayMark, "Hex", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (String.Equals(overlayMark, "Iris", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (String.Equals(overlayMark, "Grid", StringComparison.OrdinalIgnoreCase)) return 3;
+            return 0;
+        }
+
+        private static string OverlayMarkFromIndex(int index)
+        {
+            if (index == 1) return "Hex";
+            if (index == 2) return "Iris";
+            if (index == 3) return "Grid";
+            return "Orb";
+        }
     }
 
     public sealed class HistoryForm : Form
@@ -5979,6 +6230,7 @@ namespace Flowtype
             dispatcher.CreateControl();
             overlay = new RecordingOverlay();
             overlay.SetTheme(settings.OverlayTheme);
+            overlay.SetMark(settings.OverlayMark);
             recorder = new WaveRecorder();
             RecordingCue.Preload();
             recorder.MicGain = settings.MicGain;
@@ -6485,7 +6737,7 @@ namespace Flowtype
                 if (lastMicError != null) throw lastMicError;
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
-                overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme);
+                overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark);
                 if (settings.CompletionSound) RecordingCue.PlayStart();
                 UpdateRecordingStatus();
             }
@@ -6918,6 +7170,7 @@ namespace Flowtype
                 recorder.MicGain = settings.MicGain;
                 hook.HotkeyName = settings.Hotkey;
                 overlay.SetTheme(settings.OverlayTheme);
+            overlay.SetMark(settings.OverlayMark);
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();
                 else

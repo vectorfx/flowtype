@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.49
+
+Voice capsule:
+- Liquid glass now ports the LiquidButton filter: fractal noise, displacement scale 70, then blur — plus the dark inset rim stack, clipped to a stadium (no inner rectangle)
+- **Grid** live mark (sv-matrix Square 18): columns fill from the bottom with your voice; the loader cycle only runs while Whisper is writing
+
+Updates:
+- Silent launch check still auto-installs a newer Lite zip
+- Download URL must be this repo’s GitHub release, and the zip cannot write outside its extract folder
+
+---
+
+## 1.3.48
+
+Voice capsule:
+- Liquid glass is a dark refractive pill with a single stadium clip — no inner rectangle, no top hairline
+- Live mark is now a setting: **Orb**, **Hex**, or **Iris**
+- Start/finish cues use the new recordings, trimmed to the hit and timed with the pop in/out
+
+---
+
 ## 1.3.47
 
 Voice capsule:

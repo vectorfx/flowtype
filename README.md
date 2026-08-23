@@ -111,7 +111,16 @@ Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds s
 | **Dark purple** | Matte purple |
 | **Light** | Clean white |
 | **Ember** | OLED black, copper-to-cream waveform |
-| **Liquid glass** | Live-desktop glass |
+| **Liquid glass** | Distorted desktop through a liquid rim |
+
+**Settings → General → Live mark**
+
+| Mark | |
+|---|---|
+| **Orb** *(default)* | Soft glowing sphere that blooms when you talk |
+| **Hex** | Seven-dot cluster |
+| **Iris** | Aperture that opens with your voice |
+| **Grid** | Square-18 equalizer dots |
 
 Optional embedded audio cues on start and finish.
 

@@ -208,9 +208,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.48"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.50"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.47", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.49", FlowtypeVersion.CurrentLabel);
             AppSettings monoTheme = AppSettings.Defaults();
             monoTheme.OverlayTheme = "Mono";
             monoTheme.Repair();
@@ -219,6 +219,18 @@ namespace Flowtype.Tests
             emberTheme.OverlayTheme = "Ember";
             emberTheme.Repair();
             failures += AssertEqual("ember theme kept", "Ember", emberTheme.OverlayTheme);
+            AppSettings hexMark = AppSettings.Defaults();
+            hexMark.OverlayMark = "Hex";
+            hexMark.Repair();
+            failures += AssertEqual("hex mark kept", "Hex", hexMark.OverlayMark);
+            AppSettings gridMark = AppSettings.Defaults();
+            gridMark.OverlayMark = "Grid";
+            gridMark.Repair();
+            failures += AssertEqual("grid mark kept", "Grid", gridMark.OverlayMark);
+            AppSettings badMark = AppSettings.Defaults();
+            badMark.OverlayMark = "Spinner";
+            badMark.Repair();
+            failures += AssertEqual("unknown mark becomes orb", "Orb", badMark.OverlayMark);
             return failures;
         }
 
