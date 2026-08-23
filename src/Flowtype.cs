@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.54.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.54.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.56.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.56.0")]
 
 namespace Flowtype
 {
@@ -4420,6 +4420,7 @@ namespace Flowtype
         private string mark = "Orb";
         private Bitmap glassBackdrop;
         private Point glassBackdropOffset;
+        private bool pendingGlassRecapture;
         private float revealProgress = 1f;
         private bool exiting;
         private int overlaySession;
@@ -4452,6 +4453,11 @@ namespace Flowtype
             {
                 UpdateRevealAnimation();
                 animationTick++;
+                if (pendingGlassRecapture && IsGlassTheme() && Visible && !exiting)
+                {
+                    pendingGlassRecapture = false;
+                    CaptureGlassBackdrop();
+                }
                 if (processingMode) DriveProcessingBands();
                 else
                 {
@@ -4649,7 +4655,10 @@ namespace Flowtype
         private void CaptureGlassBackdrop()
         {
             ReleaseGlassBackdrop();
-            if (!IsHandleCreated) CreateHandle();
+            bool firstHandle = !IsHandleCreated;
+            if (firstHandle) CreateHandle();
+            PositionOverlay();
+            ClearLayeredWindow();
 
             RectangleF capsule = GetCapsuleBounds();
             const int pad = 10;
@@ -4660,11 +4669,8 @@ namespace Flowtype
             if (captureWidth < 2 || captureHeight < 2) return;
 
             bool restoreVisible = Visible;
-            if (restoreVisible)
-            {
-                Visible = false;
-                Application.DoEvents();
-            }
+            Hide();
+            Application.DoEvents();
 
             Bitmap raw = null;
             try
@@ -4673,21 +4679,59 @@ namespace Flowtype
                 using (Graphics captureGraphics = Graphics.FromImage(raw))
                     captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
 
+                if (BackdropIsUnusable(raw))
+                {
+                    pendingGlassRecapture = true;
+                    return;
+                }
+
                 using (Bitmap blurred = BlurBitmap(raw, 3))
                     glassBackdrop = DistortLiquidGlass(blurred);
                 glassBackdropOffset = new Point(
                     (int)Math.Floor(capsule.X) - pad,
                     (int)Math.Floor(capsule.Y) - pad);
+                if (firstHandle) pendingGlassRecapture = true;
             }
             catch
             {
                 ReleaseGlassBackdrop();
+                pendingGlassRecapture = true;
             }
             finally
             {
                 if (raw != null) raw.Dispose();
                 if (restoreVisible) Visible = true;
             }
+        }
+
+        private void ClearLayeredWindow()
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            using (Bitmap clear = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb))
+            {
+                using (Graphics graphics = Graphics.FromImage(clear))
+                    graphics.Clear(Color.Transparent);
+                Present(clear);
+            }
+        }
+
+        private static bool BackdropIsUnusable(Bitmap source)
+        {
+            if (source == null || source.Width < 2 || source.Height < 2) return true;
+            int dark = 0;
+            int total = 0;
+            for (int row = 0; row < 5; row++)
+            {
+                for (int column = 0; column < 5; column++)
+                {
+                    int x = Math.Max(0, Math.Min(source.Width - 1, (column * (source.Width - 1)) / 4));
+                    int y = Math.Max(0, Math.Min(source.Height - 1, (row * (source.Height - 1)) / 4));
+                    Color pixel = source.GetPixel(x, y);
+                    if (pixel.R + pixel.G + pixel.B < 48) dark++;
+                    total++;
+                }
+            }
+            return dark * 4 >= total * 3;
         }
 
         private static Bitmap BlurBitmap(Bitmap source, int downscale)
@@ -5064,9 +5108,9 @@ namespace Flowtype
         private void DrawLiquidGlassCapsule(Graphics graphics, RectangleF capsule, float cornerRadius)
         {
             RectangleF halo = capsule;
-            halo.Inflate(1.2f, 1.2f);
+            halo.Inflate(1.15f, 1.15f);
             using (GraphicsPath haloPath = RoundedRectangle(halo, cornerRadius + 0.4f))
-            using (SolidBrush haloBrush = new SolidBrush(Color.FromArgb(24, 0, 0, 0)))
+            using (SolidBrush haloBrush = new SolidBrush(Color.FromArgb(28, 0, 0, 0)))
                 graphics.FillPath(haloBrush, haloPath);
 
             using (GraphicsPath capsulePath = RoundedRectangle(capsule, cornerRadius))
@@ -5093,7 +5137,7 @@ namespace Flowtype
 
                 graphics.Restore(clipState);
 
-                using (Pen rim = new Pen(Color.FromArgb(165, 72, 76, 84), 1f))
+                using (Pen rim = new Pen(Color.FromArgb(150, 255, 255, 255), 1f))
                     graphics.DrawPath(rim, capsulePath);
             }
         }

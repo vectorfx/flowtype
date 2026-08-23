@@ -208,9 +208,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.55"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.57"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.54", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.56", FlowtypeVersion.CurrentLabel);
             AppSettings monoTheme = AppSettings.Defaults();
             monoTheme.OverlayTheme = "Mono";
             monoTheme.Repair();

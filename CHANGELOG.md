@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.56
+
+Voice capsule:
+- First Liquid glass hold no longer paints a black slab — the layered window is cleared before the desktop is captured, and a dead-black grab is thrown away and recaptured
+- Soft gray rim stays even on every side (1.3.55)
+
+---
+
+## 1.3.55
+
+Voice capsule:
+- Liquid glass keeps the soft gray edge — it is just even on every side now, not a darker stroke
+
+---
+
 ## 1.3.54
 
 Voice capsule:
