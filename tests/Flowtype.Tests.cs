@@ -208,9 +208,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.50"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.55"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.49", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.54", FlowtypeVersion.CurrentLabel);
             AppSettings monoTheme = AppSettings.Defaults();
             monoTheme.OverlayTheme = "Mono";
             monoTheme.Repair();
@@ -339,6 +339,83 @@ namespace Flowtype.Tests
             failures += AssertEqual("cursor still skips continuation lowercase",
                 "Is what I was using.",
                 ForegroundContext.PrepareInsertText("Is what I was using.", cursor));
+
+            CaretNeighborhood afterCommaSpace = CaretNeighborhood.FromSnippets("We paused, ", "");
+            CaretNeighborhood afterComma = CaretNeighborhood.FromSnippets("We paused,", "");
+            CaretNeighborhood afterPeriodSnippet = CaretNeighborhood.FromSnippets("We paused. ", "");
+            CaretNeighborhood midBetweenWords = CaretNeighborhood.FromSnippets("hello ", "world");
+            CaretNeighborhood emptyDoc = CaretNeighborhood.FromSnippets("", "");
+            CaretNeighborhood alreadySpaced = CaretNeighborhood.FromSnippets("hello ", "");
+            CaretNeighborhood midWord = CaretNeighborhood.FromSnippets("test", "ed");
+            CaretNeighborhood afterOpenQuote = CaretNeighborhood.FromSnippets("He said \"", "");
+
+            failures += AssertEqual("classify after comma space",
+                "ClauseContinue",
+                CaretFit.Classify(afterCommaSpace, false, false).ToString());
+            failures += AssertEqual("classify after period",
+                "SentenceStart",
+                CaretFit.Classify(afterPeriodSnippet, false, false).ToString());
+            failures += AssertEqual("classify mid sentence",
+                "MidSentence",
+                CaretFit.Classify(alreadySpaced, false, false).ToString());
+            failures += AssertEqual("classify empty doc",
+                "SentenceStart",
+                CaretFit.Classify(emptyDoc, false, false).ToString());
+            failures += AssertEqual("classify mid word",
+                "MidWord",
+                CaretFit.Classify(midWord, false, false).ToString());
+            failures += AssertEqual("classify after open quote",
+                "AfterOpen",
+                CaretFit.Classify(afterOpenQuote, false, false).ToString());
+            failures += AssertEqual("classify abbreviation not sentence",
+                "MidSentence",
+                CaretFit.Classify(CaretNeighborhood.FromSnippets("See e.g. ", ""), false, false).ToString());
+            failures += AssertEqual("after comma lowercase space",
+                " and then we shipped it",
+                CaretFit.Apply("And then we shipped it.", afterComma, false));
+            failures += AssertEqual("after comma space lowercase",
+                "and then we shipped it",
+                CaretFit.Apply("And then we shipped it.", afterCommaSpace, false));
+            failures += AssertEqual("after period capital space",
+                "Next words.",
+                CaretFit.Apply("Next words.", afterPeriodSnippet, false));
+            failures += AssertEqual("mid sentence caret lowercase space",
+                "quick fix ",
+                CaretFit.Apply("Quick fix.", midBetweenWords, false));
+            failures += AssertEqual("empty doc keeps capital",
+                "Hello there.",
+                CaretFit.Apply("Hello there.", emptyDoc, false));
+            failures += AssertEqual("already spaced left no double space",
+                "next words",
+                CaretFit.Apply("Next words.", alreadySpaced, false));
+            failures += AssertEqual("incoming glue punct no space",
+                ", and then we continued",
+                CaretFit.Apply(", and then we continued.", CaretNeighborhood.FromSnippets("first word", ""), false));
+            failures += AssertEqual("and then after comma",
+                "and then",
+                CaretFit.Apply("And then.", afterCommaSpace, false));
+            failures += AssertEqual("mid word no invented spaces",
+                "ing",
+                CaretFit.Apply("Ing.", midWord, false));
+            failures += AssertEqual("downcase whisper capital on continue",
+                "this continues the clause",
+                CaretFit.Apply("This continues the clause.", afterCommaSpace, false));
+            failures += AssertEqual("docs-like two takes join",
+                " for the signal",
+                CaretFit.Apply("For the signal.", CaretNeighborhood.FromSnippets("We paused, and wait", ""), false));
+            failures += AssertEqual("after em dash continues lowercase",
+                " and kept going",
+                CaretFit.Apply("And kept going.", CaretNeighborhood.FromSnippets("We paused —", ""), false));
+            failures += AssertEqual("classify after paragraph break",
+                "SentenceStart",
+                CaretFit.Classify(CaretNeighborhood.FromSnippets("ended\n  ", ""), false, false).ToString());
+            failures += AssertEqual("after newline keeps capital",
+                "The next topic.",
+                CaretFit.Apply("The next topic.", CaretNeighborhood.FromSnippets("ended\n  ", ""), false));
+            ForegroundContext.NoteSuccessfulInsert(docs, "okay so this one\n\n");
+            failures += AssertEqual("docs after new paragraph keeps capital",
+                " Next paragraph.",
+                ForegroundContext.PrepareInsertText("Next paragraph.", docs));
             return failures;
         }
 

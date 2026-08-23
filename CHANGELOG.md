@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.3.54
+
+Voice capsule:
+- Liquid glass rim is the same graphite line on every side — the top is no longer a white stroke that vanishes on Docs, and the shadow is even instead of sitting only under the pill
+
+---
+
+## 1.3.53
+
+Voice capsule:
+- Liquid glass now draws the real desktop behind the pill (aligned, blurred, slightly warped) instead of a grey wash — the page color shows through the frost
+- Single even 1px rim and a short contact shadow. No inner rectangle, no thicker side borders, no top hairline
+
+---
+
+## 1.3.52
+
+Voice capsule:
+- Waveform bars are back on the even 3px / 2px grid so the middle gap is gone. Live levels still follow the mic
+
+---
+
+## 1.3.51
+
+Voice capsule:
+- Liquid glass is the 1.3.47 frosted pill again (blur + light lensing + frost veil + inset shine). The React-filter port and the flat dark stadium are gone
+- Waveform follows the mic again — no frozen cosine rest floor
+
+---
+
+## 1.3.50
+
+Voice capsule:
+- Liquid glass on light pages is a thin dark stadium again: backdrop blur only, no scale-70 displacement, no milky white fill, no fat halo
+- Live mark and idle wavelength draw sharp on top of the glass, in graphite
+
+Context-aware join (Docs / Word / browsers / editors — not Cursor):
+- Join now classifies real left/right text: SentenceStart, ClauseContinue (after `,;:—`), MidSentence, MidWord, AfterOpen
+- Leading capital only at a true sentence start; Whisper/Clean capitals are downcased when the caret is continuing a clause or sentence
+- Space is taken from both sides: no `word,Next`, no double spaces, no extra space before incoming `,.;:!?`
+- After abbreviations like `e.g.` / `Dr.` the next take stays mid-sentence
+- When Win32 cannot read the caret (Google Docs), Flowtype tries a fail-closed Shift+Left copy of nearby text, then falls back to last-insert continuity
+- Cursor / VS Code still skip caret-fit (spacing-only)
+
+---
+
 ## 1.3.49
 
 Voice capsule:

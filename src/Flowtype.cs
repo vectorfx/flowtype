@@ -24,8 +24,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.49.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.49.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.54.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.54.0")]
 
 namespace Flowtype
 {
@@ -911,6 +911,9 @@ namespace Flowtype
         private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+        private const int ContextProbeChars = 16;
+        private const string CaretProbeSentinel = "\uE100FLOWTYPE_CARET\uE100";
         private const uint EM_GETSEL = 0x00B0;
         private const uint WM_GETTEXT = 0x000D;
         private const uint WM_GETTEXTLENGTH = 0x000E;
@@ -976,6 +979,8 @@ namespace Flowtype
                 return PrepareInsertTextLegacySpacing(text, context);
 
             CaretNeighborhood caret = TryGetCaretNeighborhood(context);
+            if (!caret.Available)
+                caret = TryProbeCaretBySelection(context);
             bool midContinuity = CanAssumeMidSentenceContinuity(context);
             IntPtr identity = InsertIdentity(context);
             bool afterPriorSentence = identity != IntPtr.Zero
@@ -1013,8 +1018,11 @@ namespace Flowtype
         public static void NoteSuccessfulInsert(ForegroundInfo context, string insertedText)
         {
             lastAppendTarget = InsertIdentity(context);
-            string trimmed = (insertedText ?? "").TrimEnd();
-            lastAppendEndedWithPunctuation = trimmed.Length > 0 && ".!?".IndexOf(trimmed[trimmed.Length - 1]) >= 0;
+            string inserted = insertedText ?? "";
+            bool endedWithBreak = inserted.Length > 0 && (inserted[inserted.Length - 1] == '\n' || inserted[inserted.Length - 1] == '\r');
+            string trimmed = inserted.TrimEnd();
+            lastAppendEndedWithPunctuation = endedWithBreak
+                || (trimmed.Length > 0 && ".!?…".IndexOf(trimmed[trimmed.Length - 1]) >= 0);
         }
 
         private static IntPtr InsertIdentity(ForegroundInfo context)
@@ -1082,16 +1090,105 @@ namespace Flowtype
 
             char immediateLeft = insertAt > 0 ? fieldText[insertAt - 1] : '\0';
             char immediateRight = insertAt < fieldText.Length ? fieldText[insertAt] : '\0';
-            char semanticLeft = '\0';
-            for (int index = insertAt - 1; index >= 0; index--)
+            char semanticLeft = CaretNeighborhood.ReadSemanticLeft(fieldText, insertAt);
+            int leftStart = Math.Max(0, insertAt - 48);
+            CaretNeighborhood value = CaretNeighborhood.Known(immediateLeft, immediateRight, hasSelection, semanticLeft);
+            value.LeftSnippet = fieldText.Substring(leftStart, insertAt - leftStart);
+            value.RightSnippet = insertAt < fieldText.Length
+                ? fieldText.Substring(insertAt, Math.Min(8, fieldText.Length - insertAt))
+                : "";
+            return value;
+        }
+
+        private static bool CanProbeSelection(ForegroundInfo context)
+        {
+            if (context == null || IsCursorFamily(context)) return false;
+            IntPtr hwnd = context.Handle;
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
+            IntPtr foreground = GetForegroundWindow();
+            if (foreground == hwnd) return true;
+            return context.FocusHandle != IntPtr.Zero && foreground == context.FocusHandle;
+        }
+
+        private static CaretNeighborhood TryProbeCaretBySelection(ForegroundInfo context)
+        {
+            if (!CanProbeSelection(context)) return CaretNeighborhood.Unavailable();
+
+            string previous = null;
+            bool hadPrevious = false;
+            try
             {
-                if (!Char.IsWhiteSpace(fieldText[index]))
+                if (Clipboard.ContainsText())
                 {
-                    semanticLeft = fieldText[index];
-                    break;
+                    previous = Clipboard.GetText();
+                    hadPrevious = true;
                 }
             }
-            return CaretNeighborhood.Known(immediateLeft, immediateRight, hasSelection, semanticLeft);
+            catch { }
+
+            try
+            {
+                Clipboard.SetText(CaretProbeSentinel);
+            }
+            catch
+            {
+                return CaretNeighborhood.Unavailable();
+            }
+
+            try
+            {
+                HoldKey(0x10, true, false);
+                for (int index = 0; index < ContextProbeChars; index++)
+                    PulseKey(0x25, true);
+                HoldKey(0x10, false, false);
+                HoldKey(0x11, true, false);
+                PulseKey(0x43, false);
+                HoldKey(0x11, false, false);
+                Thread.Sleep(45);
+
+                string copied = null;
+                try
+                {
+                    if (Clipboard.ContainsText()) copied = Clipboard.GetText();
+                }
+                catch { }
+
+                PulseKey(0x27, true);
+
+                if (String.IsNullOrEmpty(copied) || String.Equals(copied, CaretProbeSentinel, StringComparison.Ordinal))
+                    return CaretNeighborhood.Unavailable();
+                if (copied.IndexOf(CaretProbeSentinel, StringComparison.Ordinal) >= 0)
+                    return CaretNeighborhood.Unavailable();
+                return CaretNeighborhood.FromSnippets(copied, "", false);
+            }
+            catch
+            {
+                return CaretNeighborhood.Unavailable();
+            }
+            finally
+            {
+                HoldKey(0x10, false, false);
+                HoldKey(0x11, false, false);
+                try
+                {
+                    if (hadPrevious && previous != null) Clipboard.SetText(previous);
+                    else Clipboard.Clear();
+                }
+                catch { }
+            }
+        }
+
+        private static void HoldKey(byte vk, bool down, bool extended)
+        {
+            uint flags = down ? 0u : KEYEVENTF_KEYUP;
+            if (extended) flags |= KEYEVENTF_EXTENDEDKEY;
+            keybd_event(vk, 0, flags, UIntPtr.Zero);
+        }
+
+        private static void PulseKey(byte vk, bool extended)
+        {
+            HoldKey(vk, true, extended);
+            HoldKey(vk, false, extended);
         }
 
         private static bool TryGetCharBeforeCaret(ForegroundInfo context, out char previous)
@@ -2020,6 +2117,16 @@ namespace Flowtype
         }
     }
 
+    public enum JoinState
+    {
+        Unknown,
+        SentenceStart,
+        ClauseContinue,
+        MidSentence,
+        MidWord,
+        AfterOpen
+    }
+
     public struct CaretNeighborhood
     {
         public bool Available;
@@ -2027,6 +2134,8 @@ namespace Flowtype
         public char SemanticLeft;
         public char ImmediateRight;
         public bool HasSelection;
+        public string LeftSnippet;
+        public string RightSnippet;
 
         public bool AtStart
         {
@@ -2037,6 +2146,8 @@ namespace Flowtype
         {
             CaretNeighborhood value = new CaretNeighborhood();
             value.Available = false;
+            value.LeftSnippet = "";
+            value.RightSnippet = "";
             return value;
         }
 
@@ -2055,14 +2166,60 @@ namespace Flowtype
             value.ImmediateRight = immediateRight;
             value.HasSelection = hasSelection;
             value.SemanticLeft = semanticLeft;
+            value.LeftSnippet = InferLeftSnippet(immediateLeft, semanticLeft);
+            value.RightSnippet = immediateRight == '\0' ? "" : immediateRight.ToString();
             return value;
+        }
+
+        public static CaretNeighborhood FromSnippets(string leftSnippet, string rightSnippet)
+        {
+            return FromSnippets(leftSnippet, rightSnippet, false);
+        }
+
+        public static CaretNeighborhood FromSnippets(string leftSnippet, string rightSnippet, bool hasSelection)
+        {
+            leftSnippet = leftSnippet ?? "";
+            rightSnippet = rightSnippet ?? "";
+            char immediateLeft = leftSnippet.Length > 0 ? leftSnippet[leftSnippet.Length - 1] : '\0';
+            char immediateRight = rightSnippet.Length > 0 ? rightSnippet[0] : '\0';
+            char semanticLeft = ReadSemanticLeft(leftSnippet, leftSnippet.Length);
+            CaretNeighborhood value = Known(immediateLeft, immediateRight, hasSelection, semanticLeft);
+            value.LeftSnippet = leftSnippet;
+            value.RightSnippet = rightSnippet;
+            return value;
+        }
+
+        public static char ReadSemanticLeft(string text, int insertAt)
+        {
+            if (String.IsNullOrEmpty(text) || insertAt <= 0) return '\0';
+            if (insertAt > text.Length) insertAt = text.Length;
+            for (int index = insertAt - 1; index >= 0; index--)
+            {
+                char value = text[index];
+                if (value == '\n' || value == '\r') return '\n';
+                if (!Char.IsWhiteSpace(value)) return value;
+            }
+            return '\0';
+        }
+
+        private static string InferLeftSnippet(char immediateLeft, char semanticLeft)
+        {
+            if (semanticLeft != '\0' && immediateLeft != '\0' && Char.IsWhiteSpace(immediateLeft) && immediateLeft != semanticLeft)
+                return semanticLeft.ToString() + immediateLeft.ToString();
+            if (immediateLeft != '\0') return immediateLeft.ToString();
+            if (semanticLeft != '\0') return semanticLeft.ToString();
+            return "";
         }
     }
 
     public static class CaretFit
     {
         private static readonly Regex AbbreviationPeriod = new Regex(
-            @"\b(?:etc|vs|mr|mrs|ms|dr|prof|inc|ltd|jr|sr|st|approx)\.$",
+            @"\b(?:etc|vs|mr|mrs|ms|dr|prof|inc|ltd|jr|sr|st|approx|e\.g|i\.e)\.$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        private static readonly Regex TrailingAbbreviation = new Regex(
+            @"\b(?:etc|vs|mr|mrs|ms|dr|prof|inc|ltd|jr|sr|st|approx|e\.g|i\.e)\.\s*$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public static string Apply(string text, CaretNeighborhood caret, bool assumeMidContinuity)
@@ -2080,44 +2237,12 @@ namespace Flowtype
             if (String.IsNullOrEmpty(text)) return text ?? "";
 
             bool alreadyLeftPadded = text.StartsWith(" ", StringComparison.Ordinal) || text.StartsWith("\n", StringComparison.Ordinal);
-            bool mid;
-            bool sentenceStart;
             bool selection = caret.Available && caret.HasSelection;
-
-            if (!caret.Available)
-            {
-                if (assumeMidContinuity)
-                {
-                    mid = true;
-                    sentenceStart = false;
-                }
-                else if (assumeAfterPriorSentence)
-                {
-                    mid = false;
-                    sentenceStart = true;
-                    return alreadyLeftPadded ? text : EnsureLeadingSpace(text, true);
-                }
-                else
-                {
-                    // Browser editors (Google Docs) often hide the caret. Default to cleaned
-                    // sentence polish and join with a leading space — not mid-fragment stripping.
-                    if (!allowSoftFragmentWhenUnread) return text;
-                    return alreadyLeftPadded ? text : EnsureLeadingSpace(text, true);
-                }
-            }
-            else if (selection)
-            {
-                sentenceStart = caret.AtStart || IsSentenceBoundary(caret.SemanticLeft);
-                mid = !sentenceStart;
-            }
-            else
-            {
-                sentenceStart = caret.AtStart || IsSentenceBoundary(caret.SemanticLeft);
-                mid = !sentenceStart;
-            }
+            JoinState state = Classify(caret, assumeMidContinuity, assumeAfterPriorSentence);
+            bool continueJoin = IsContinue(state);
 
             string fitted = text;
-            if (mid)
+            if (continueJoin)
             {
                 fitted = LowercaseForMidSentence(fitted);
                 fitted = StripForcedTrailingPeriod(fitted);
@@ -2125,11 +2250,22 @@ namespace Flowtype
 
             if (selection) return fitted;
 
+            if (!caret.Available)
+            {
+                if (state == JoinState.MidSentence || state == JoinState.ClauseContinue)
+                    return fitted;
+                if (state == JoinState.SentenceStart)
+                    return alreadyLeftPadded ? fitted : EnsureLeadingSpace(fitted, true);
+                if (!allowSoftFragmentWhenUnread) return text;
+                return alreadyLeftPadded ? text : EnsureLeadingSpace(text, true);
+            }
+
             bool needLeading = false;
             bool needTrailing = false;
-            if (caret.Available)
+            if (state != JoinState.MidWord)
             {
                 if (!alreadyLeftPadded
+                    && !StartsWithGluePunct(fitted)
                     && caret.ImmediateLeft != '\0'
                     && !Char.IsWhiteSpace(caret.ImmediateLeft)
                     && !IsNoSpaceAfter(caret.ImmediateLeft))
@@ -2141,6 +2277,44 @@ namespace Flowtype
             if (needLeading) fitted = " " + fitted;
             if (needTrailing) fitted = fitted + " ";
             return fitted;
+        }
+
+        public static JoinState Classify(CaretNeighborhood caret, bool assumeMidContinuity, bool assumeAfterPriorSentence)
+        {
+            if (!caret.Available)
+            {
+                if (assumeMidContinuity) return JoinState.MidSentence;
+                if (assumeAfterPriorSentence) return JoinState.SentenceStart;
+                return JoinState.Unknown;
+            }
+
+            if (caret.AtStart) return JoinState.SentenceStart;
+
+            char left = caret.ImmediateLeft;
+            char right = caret.ImmediateRight;
+            char semantic = caret.SemanticLeft;
+
+            if (!caret.HasSelection && IsWordChar(left) && IsWordChar(right))
+                return JoinState.MidWord;
+            if (IsOpenGlue(left))
+                return JoinState.AfterOpen;
+            if (IsClausePunct(semantic))
+                return JoinState.ClauseContinue;
+            if (IsSentenceBoundary(semantic))
+            {
+                if (LooksLikeAbbreviation(caret.LeftSnippet))
+                    return JoinState.MidSentence;
+                return JoinState.SentenceStart;
+            }
+            return JoinState.MidSentence;
+        }
+
+        private static bool IsContinue(JoinState state)
+        {
+            return state == JoinState.ClauseContinue
+                || state == JoinState.MidSentence
+                || state == JoinState.MidWord
+                || state == JoinState.AfterOpen;
         }
 
         private static bool IsShortFragment(string text)
@@ -2191,11 +2365,45 @@ namespace Flowtype
             return value == '.' || value == '?' || value == '!' || value == '…' || value == '\n';
         }
 
+        private static bool IsClausePunct(char value)
+        {
+            return value == ',' || value == ';' || value == ':' || value == '—' || value == '–';
+        }
+
+        private static bool IsOpenGlue(char value)
+        {
+            return value == '(' || value == '[' || value == '{' || value == '"' || value == '\'' ||
+                   value == '“' || value == '‘';
+        }
+
+        private static bool IsWordChar(char value)
+        {
+            return Char.IsLetterOrDigit(value) || value == '\'';
+        }
+
+        private static bool LooksLikeAbbreviation(string snippet)
+        {
+            if (String.IsNullOrEmpty(snippet)) return false;
+            return TrailingAbbreviation.IsMatch(snippet);
+        }
+
+        private static bool StartsWithGluePunct(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return false;
+            int index = 0;
+            while (index < text.Length && Char.IsWhiteSpace(text[index])) index++;
+            if (index >= text.Length) return false;
+            char value = text[index];
+            return value == ',' || value == '.' || value == ';' || value == ':' || value == '!' ||
+                   value == '?' || value == ')' || value == ']' || value == '}' || value == '%' ||
+                   value == '”' || value == '’';
+        }
+
         private static bool IsNoSpaceAfter(char value)
         {
             return value == '(' || value == '[' || value == '{' || value == '"' || value == '\'' ||
                    value == '“' || value == '‘' || value == '/' || value == '\\' || value == '-' ||
-                   value == '—' || value == '@' || value == '#';
+                   value == '@' || value == '#';
         }
 
         private static string LowercaseForMidSentence(string text)
@@ -4444,7 +4652,7 @@ namespace Flowtype
             if (!IsHandleCreated) CreateHandle();
 
             RectangleF capsule = GetCapsuleBounds();
-            const int pad = 40;
+            const int pad = 10;
             int screenX = Left + (int)Math.Floor(capsule.X) - pad;
             int screenY = Top + (int)Math.Floor(capsule.Y) - pad;
             int captureWidth = (int)Math.Ceiling(capsule.Width) + pad * 2;
@@ -4465,7 +4673,8 @@ namespace Flowtype
                 using (Graphics captureGraphics = Graphics.FromImage(raw))
                     captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
 
-                glassBackdrop = ApplyContainerGlassFilter(raw);
+                using (Bitmap blurred = BlurBitmap(raw, 3))
+                    glassBackdrop = DistortLiquidGlass(blurred);
                 glassBackdropOffset = new Point(
                     (int)Math.Floor(capsule.X) - pad,
                     (int)Math.Floor(capsule.Y) - pad);
@@ -4502,152 +4711,25 @@ namespace Flowtype
             }
         }
 
-        // Ports LiquidButton's SVG filter:
-        // feTurbulence fractalNoise 0.05/1 octave → blur 2 → displace scale 70 → blur 4.
-        private static Bitmap ApplyContainerGlassFilter(Bitmap source)
+        private static Bitmap DistortLiquidGlass(Bitmap source)
         {
             int width = source.Width;
             int height = source.Height;
-            int count = width * height;
-            byte[] red = new byte[count];
-            byte[] blue = new byte[count];
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    int index = y * width + x;
-                    red[index] = (byte)(ValueNoise(x * 0.05f, y * 0.05f, 1) * 255f);
-                    blue[index] = (byte)(ValueNoise(x * 0.05f + 19.7f, y * 0.05f + 7.3f, 1) * 255f);
-                }
-            }
-            BoxBlur(red, width, height, 2);
-            BoxBlur(blue, width, height, 2);
-
             Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
-            BitmapData sourceData = source.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
-            BitmapData destData = dest.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
-            try
-            {
-                byte[] sourceBytes = new byte[sourceData.Stride * height];
-                byte[] destBytes = new byte[destData.Stride * height];
-                Marshal.Copy(sourceData.Scan0, sourceBytes, 0, sourceBytes.Length);
-                const float scale = 70f;
-                for (int y = 0; y < height; y++)
-                {
-                    for (int x = 0; x < width; x++)
-                    {
-                        int noiseIndex = y * width + x;
-                        int sampleX = x + (int)Math.Round(scale * (red[noiseIndex] / 255f - 0.5f));
-                        int sampleY = y + (int)Math.Round(scale * (blue[noiseIndex] / 255f - 0.5f));
-                        if (sampleX < 0) sampleX = 0;
-                        else if (sampleX >= width) sampleX = width - 1;
-                        if (sampleY < 0) sampleY = 0;
-                        else if (sampleY >= height) sampleY = height - 1;
-                        int src = sampleY * sourceData.Stride + sampleX * 4;
-                        int dst = y * destData.Stride + x * 4;
-                        destBytes[dst] = sourceBytes[src];
-                        destBytes[dst + 1] = sourceBytes[src + 1];
-                        destBytes[dst + 2] = sourceBytes[src + 2];
-                        destBytes[dst + 3] = sourceBytes[src + 3];
-                    }
-                }
-                Marshal.Copy(destBytes, 0, destData.Scan0, destBytes.Length);
-            }
-            finally
-            {
-                source.UnlockBits(sourceData);
-                dest.UnlockBits(destData);
-            }
-            BoxBlurBitmap(dest, 4);
-            return dest;
-        }
-
-        private static float ValueNoise(float x, float y, int seed)
-        {
-            int x0 = (int)Math.Floor(x);
-            int y0 = (int)Math.Floor(y);
-            float tx = x - x0;
-            float ty = y - y0;
-            tx = tx * tx * (3f - 2f * tx);
-            ty = ty * ty * (3f - 2f * ty);
-            float n00 = Hash01(x0, y0, seed);
-            float n10 = Hash01(x0 + 1, y0, seed);
-            float n01 = Hash01(x0, y0 + 1, seed);
-            float n11 = Hash01(x0 + 1, y0 + 1, seed);
-            return n00 + (n10 - n00) * tx + (n01 - n00) * ty + (n00 - n10 - n01 + n11) * tx * ty;
-        }
-
-        private static float Hash01(int x, int y, int seed)
-        {
-            int n = x * 374761393 + y * 668265263 + seed * 1274126177;
-            n = (n ^ (n >> 13)) * 1274126177;
-            n ^= n >> 16;
-            return (n & 0x7fffffff) / 2147483647f;
-        }
-
-        private static void BoxBlur(byte[] pixels, int width, int height, int radius)
-        {
-            if (radius < 1) return;
-            byte[] scratch = new byte[pixels.Length];
-            int span = radius * 2 + 1;
             for (int y = 0; y < height; y++)
             {
-                int sum = 0;
-                int row = y * width;
-                for (int i = -radius; i <= radius; i++)
-                    sum += pixels[row + ClampCoord(i, width)];
                 for (int x = 0; x < width; x++)
                 {
-                    scratch[row + x] = (byte)(sum / span);
-                    sum += pixels[row + ClampCoord(x + radius + 1, width)] - pixels[row + ClampCoord(x - radius, width)];
+                    float nx = x * 0.11f;
+                    float ny = y * 0.11f;
+                    int offsetX = (int)(Math.Sin(nx * 1.7f + ny * 0.6f) * 2.2f + Math.Sin(ny * 2.3f) * 1.2f);
+                    int offsetY = (int)(Math.Cos(ny * 1.5f + nx * 0.4f) * 2.2f + Math.Cos(nx * 2.1f) * 1.2f);
+                    int sampleX = Math.Max(0, Math.Min(width - 1, x + offsetX));
+                    int sampleY = Math.Max(0, Math.Min(height - 1, y + offsetY));
+                    dest.SetPixel(x, y, source.GetPixel(sampleX, sampleY));
                 }
             }
-            for (int x = 0; x < width; x++)
-            {
-                int sum = 0;
-                for (int i = -radius; i <= radius; i++)
-                    sum += scratch[ClampCoord(i, height) * width + x];
-                for (int y = 0; y < height; y++)
-                {
-                    pixels[y * width + x] = (byte)(sum / span);
-                    sum += scratch[ClampCoord(y + radius + 1, height) * width + x] - scratch[ClampCoord(y - radius, height) * width + x];
-                }
-            }
-        }
-
-        private static void BoxBlurBitmap(Bitmap bitmap, int radius)
-        {
-            int width = bitmap.Width;
-            int height = bitmap.Height;
-            BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadWrite, PixelFormat.Format32bppPArgb);
-            try
-            {
-                byte[] bytes = new byte[data.Stride * height];
-                Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
-                byte[] channel = new byte[width * height];
-                for (int band = 0; band < 3; band++)
-                {
-                    for (int y = 0; y < height; y++)
-                        for (int x = 0; x < width; x++)
-                            channel[y * width + x] = bytes[y * data.Stride + x * 4 + band];
-                    BoxBlur(channel, width, height, radius);
-                    for (int y = 0; y < height; y++)
-                        for (int x = 0; x < width; x++)
-                            bytes[y * data.Stride + x * 4 + band] = channel[y * width + x];
-                }
-                Marshal.Copy(bytes, 0, data.Scan0, bytes.Length);
-            }
-            finally
-            {
-                bitmap.UnlockBits(data);
-            }
-        }
-
-        private static int ClampCoord(int value, int max)
-        {
-            if (value < 0) return 0;
-            if (value >= max) return max - 1;
-            return value;
+            return dest;
         }
 
         public void SetLevel(float value)
@@ -4929,7 +5011,7 @@ namespace Flowtype
 
         private Color GetChromeInk()
         {
-            if (IsGlassTheme()) return Color.FromArgb(255, 244, 246, 250);
+            if (IsGlassTheme()) return Color.FromArgb(255, 36, 42, 52);
             if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(255, 24, 24, 27);
             if (String.Equals(theme, "Purple", StringComparison.OrdinalIgnoreCase))
@@ -4981,23 +5063,11 @@ namespace Flowtype
 
         private void DrawLiquidGlassCapsule(Graphics graphics, RectangleF capsule, float cornerRadius)
         {
-            // LiquidButton dark: 0 0 8px / 0 2px 6px / 0 0 12px
-            RectangleF glowA = capsule;
-            glowA.Inflate(4f, 4f);
-            using (GraphicsPath path = RoundedRectangle(glowA, cornerRadius + 2f))
-            using (SolidBrush brush = new SolidBrush(Color.FromArgb(8, 0, 0, 0)))
-                graphics.FillPath(brush, path);
-            RectangleF glowB = capsule;
-            glowB.Inflate(3f, 3f);
-            glowB.Y += 2f;
-            using (GraphicsPath path = RoundedRectangle(glowB, cornerRadius + 1.5f))
-            using (SolidBrush brush = new SolidBrush(Color.FromArgb(20, 0, 0, 0)))
-                graphics.FillPath(brush, path);
-            RectangleF glowC = capsule;
-            glowC.Inflate(6f, 6f);
-            using (GraphicsPath path = RoundedRectangle(glowC, cornerRadius + 3f))
-            using (SolidBrush brush = new SolidBrush(Color.FromArgb(38, 0, 0, 0)))
-                graphics.FillPath(brush, path);
+            RectangleF halo = capsule;
+            halo.Inflate(1.2f, 1.2f);
+            using (GraphicsPath haloPath = RoundedRectangle(halo, cornerRadius + 0.4f))
+            using (SolidBrush haloBrush = new SolidBrush(Color.FromArgb(24, 0, 0, 0)))
+                graphics.FillPath(haloBrush, haloPath);
 
             using (GraphicsPath capsulePath = RoundedRectangle(capsule, cornerRadius))
             {
@@ -5008,61 +5078,23 @@ namespace Flowtype
                     graphics.DrawImage(glassBackdrop, glassBackdropOffset.X, glassBackdropOffset.Y);
                 else
                 {
-                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(180, 12, 14, 18)))
+                    using (SolidBrush fallback = new SolidBrush(Color.FromArgb(200, 236, 240, 246)))
                         graphics.FillPath(fallback, capsulePath);
                 }
 
-                // inset 0 0 6px 6px white/12 and 0 0 2px 2px white/06
-                using (PathGradientBrush innerGlow = new PathGradientBrush(capsulePath))
-                {
-                    innerGlow.CenterColor = Color.FromArgb(0, 255, 255, 255);
-                    innerGlow.SurroundColors = new[] { Color.FromArgb(31, 255, 255, 255) };
-                    innerGlow.FocusScales = new PointF(0.72f, 0.62f);
-                    graphics.FillPath(innerGlow, capsulePath);
-                }
-                using (PathGradientBrush tightGlow = new PathGradientBrush(capsulePath))
-                {
-                    tightGlow.CenterColor = Color.FromArgb(0, 255, 255, 255);
-                    tightGlow.SurroundColors = new[] { Color.FromArgb(15, 255, 255, 255) };
-                    tightGlow.FocusScales = new PointF(0.9f, 0.86f);
-                    graphics.FillPath(tightGlow, capsulePath);
-                }
+                using (SolidBrush frost = new SolidBrush(Color.FromArgb(52, 255, 255, 255)))
+                    graphics.FillPath(frost, capsulePath);
 
-                // inset 3px 3px / -3px -3px highlights (the liquid rim)
-                RectangleF topLeft = new RectangleF(capsule.X - 1f, capsule.Y - 1f, capsule.Width * 0.55f, capsule.Height * 0.7f);
-                using (GraphicsPath spec = new GraphicsPath())
-                {
-                    spec.AddEllipse(topLeft);
-                    using (PathGradientBrush brush = new PathGradientBrush(spec))
-                    {
-                        brush.CenterColor = Color.FromArgb(23, 255, 255, 255);
-                        brush.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
-                        graphics.FillPath(brush, spec);
-                    }
-                }
-                RectangleF bottomRight = new RectangleF(
-                    capsule.Right - capsule.Width * 0.58f,
-                    capsule.Y + capsule.Height * 0.18f,
-                    capsule.Width * 0.62f,
-                    capsule.Height * 0.92f);
-                using (GraphicsPath spec = new GraphicsPath())
-                {
-                    spec.AddEllipse(bottomRight);
-                    using (PathGradientBrush brush = new PathGradientBrush(spec))
-                    {
-                        brush.CenterColor = Color.FromArgb(217, 255, 255, 255);
-                        brush.SurroundColors = new[] { Color.FromArgb(0, 255, 255, 255) };
-                        brush.FocusScales = new PointF(0.18f, 0.22f);
-                        graphics.FillPath(brush, spec);
-                    }
-                }
-                RectangleF near = capsule;
-                near.Inflate(-0.6f, -0.6f);
-                using (GraphicsPath nearPath = RoundedRectangle(near, cornerRadius - 0.6f))
-                using (Pen nearPen = new Pen(Color.FromArgb(153, 255, 255, 255), 1f))
-                    graphics.DrawPath(nearPen, nearPath);
+                RectangleF shine = new RectangleF(capsule.X + 1.5f, capsule.Y + 1f, capsule.Width - 3f, capsule.Height * 0.42f);
+                using (GraphicsPath shinePath = RoundedRectangle(shine, Math.Max(1f, cornerRadius - 1.2f)))
+                using (LinearGradientBrush gloss = new LinearGradientBrush(
+                    shine, Color.FromArgb(54, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), LinearGradientMode.Vertical))
+                    graphics.FillPath(gloss, shinePath);
 
                 graphics.Restore(clipState);
+
+                using (Pen rim = new Pen(Color.FromArgb(165, 72, 76, 84), 1f))
+                    graphics.DrawPath(rim, capsulePath);
             }
         }
 
@@ -5112,8 +5144,8 @@ namespace Flowtype
             int alpha = 210 + (int)(45 * sample);
             if (IsGlassTheme())
             {
-                int grey = 210 + (int)(40 * sample);
-                return Color.FromArgb(255, grey, grey, Math.Min(255, grey + 6));
+                int grey = 72 + (int)(48 * sample);
+                return Color.FromArgb(Math.Min(255, 220 + (int)(35 * sample)), grey, grey, Math.Min(255, grey + 10));
             }
             if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(255, 28 + (int)(12 * sample), 28 + (int)(12 * sample), 32);

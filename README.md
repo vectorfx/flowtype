@@ -111,7 +111,7 @@ Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds s
 | **Dark purple** | Matte purple |
 | **Light** | Clean white |
 | **Ember** | OLED black, copper-to-cream waveform |
-| **Liquid glass** | Distorted desktop through a liquid rim |
+| **Liquid glass** | Frosted pane — the desktop behind it tints the glass |
 
 **Settings → General → Live mark**
 
