@@ -4770,48 +4770,44 @@ namespace Flowtype
                 line = line.Substring(5).Trim();
             if (line.Length == 0 || String.Equals(line, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 return "";
-            Dictionary<string, object> value;
+            object parsed;
             try
             {
-                value = new JavaScriptSerializer().DeserializeObject(line) as Dictionary<string, object>;
+                parsed = new JavaScriptSerializer().DeserializeObject(line);
             }
             catch
             {
                 return "";
             }
+            IDictionary value = parsed as IDictionary;
             if (value == null) return "";
 
-            object response;
-            if (value.TryGetValue("response", out response) && response != null)
-                return Convert.ToString(response, CultureInfo.InvariantCulture);
+            if (value.Contains("response") && value["response"] != null)
+                return Convert.ToString(value["response"], CultureInfo.InvariantCulture) ?? "";
 
-            object message;
-            if (value.TryGetValue("message", out message))
+            if (value.Contains("message"))
             {
-                string content = ReadContent(message);
+                string content = ReadContent(value["message"]);
                 if (content.Length > 0) return content;
             }
 
-            object choices;
-            if (value.TryGetValue("choices", out choices))
+            if (value.Contains("choices"))
             {
-                IEnumerable list = choices as IEnumerable;
+                IEnumerable list = value["choices"] as IEnumerable;
                 if (list != null)
                 {
                     foreach (object choiceValue in list)
                     {
-                        Dictionary<string, object> choice = choiceValue as Dictionary<string, object>;
+                        IDictionary choice = choiceValue as IDictionary;
                         if (choice == null) continue;
-                        object delta;
-                        if (choice.TryGetValue("delta", out delta))
+                        if (choice.Contains("delta"))
                         {
-                            string content = ReadContent(delta);
+                            string content = ReadContent(choice["delta"]);
                             if (content.Length > 0) return content;
                         }
-                        object choiceMessage;
-                        if (choice.TryGetValue("message", out choiceMessage))
+                        if (choice.Contains("message"))
                         {
-                            string content = ReadContent(choiceMessage);
+                            string content = ReadContent(choice["message"]);
                             if (content.Length > 0) return content;
                         }
                     }
@@ -4822,11 +4818,9 @@ namespace Flowtype
 
         private static string ReadContent(object node)
         {
-            Dictionary<string, object> map = node as Dictionary<string, object>;
-            if (map == null) return "";
-            object content;
-            if (!map.TryGetValue("content", out content) || content == null) return "";
-            return Convert.ToString(content, CultureInfo.InvariantCulture) ?? "";
+            IDictionary map = node as IDictionary;
+            if (map == null || !map.Contains("content") || map["content"] == null) return "";
+            return Convert.ToString(map["content"], CultureInfo.InvariantCulture) ?? "";
         }
 
         private async Task<string> ResolveModelAsync(AppSettings settings)
