@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.69.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.69.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.70.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.70.0")]
 
 namespace Flowtype
 {
@@ -167,7 +167,8 @@ namespace Flowtype
                 OverlayMark = "Orb";
             if (SpokenBulletPhrase == null) SpokenBulletPhrase = "next point";
             if (SpokenNumberPhrase == null) SpokenNumberPhrase = "next number";
-            if (String.IsNullOrWhiteSpace(AgentEndpoint)) AgentEndpoint = "http://127.0.0.1:5599/ask";
+            if (String.IsNullOrWhiteSpace(AgentEndpoint) || !AgentBridge.IsLoopbackEndpoint(AgentEndpoint))
+                AgentEndpoint = "http://127.0.0.1:5599/ask";
             bool agentChordKnown = false;
             foreach (string name in Hotkeys.Names)
                 if (String.Equals(name, AgentHotkey, StringComparison.OrdinalIgnoreCase)) { agentChordKnown = true; break; }
@@ -440,6 +441,25 @@ namespace Flowtype
         // request carries the token and the daemon refuses anything without it.
         public static string TokenForStatus() { return Token(); }
 
+        public static bool IsLoopbackEndpoint(string endpoint)
+        {
+            if (String.IsNullOrWhiteSpace(endpoint)) return false;
+            try
+            {
+                Uri uri = new Uri(endpoint.Trim());
+                if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+                string host = uri.Host ?? "";
+                if (String.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)) return true;
+                IPAddress address;
+                if (!IPAddress.TryParse(host, out address)) return false;
+                return IPAddress.IsLoopback(address);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static string Token()
         {
             try
@@ -454,6 +474,11 @@ namespace Flowtype
 
         public static void Send(string transcript, string endpoint, ForegroundInfo seat, Action<Result> onDone, Action<string> onFailed)
         {
+            if (!IsLoopbackEndpoint(endpoint))
+            {
+                if (onFailed != null) onFailed("Agent endpoint must be on this PC (127.0.0.1 or localhost).");
+                return;
+            }
             Thread worker = new Thread(delegate()
             {
                 Stopwatch clock = Stopwatch.StartNew();
@@ -543,6 +568,7 @@ namespace Flowtype
 
         public static void Abort(string endpoint)
         {
+            if (!IsLoopbackEndpoint(endpoint)) return;
             string url = Sibling(endpoint, "/abort");
             if (url.Length == 0) return;
             Thread worker = new Thread(delegate()
@@ -567,6 +593,7 @@ namespace Flowtype
         // Deferred notices: things the agent was asked to watch for, arriving later.
         public static void FetchNotices(string endpoint, Action<List<string>> onNotices)
         {
+            if (!IsLoopbackEndpoint(endpoint)) return;
             string url = Sibling(endpoint, "/notices");
             if (url.Length == 0) return;
             Thread worker = new Thread(delegate()
@@ -3599,7 +3626,7 @@ namespace Flowtype
             text = Regex.Replace(text, @"\s+(?:equals sign|equal sign)\b", "=", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+open (?:parenthesis|paren)\s*", " (", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+close (?:parenthesis|paren)\b", ")", RegexOptions.IgnoreCase);
-            // Emails, URLs, filenames, and abbreviations ("kayleb.klopfer@gmail.com",
+            // Emails, URLs, filenames, and abbreviations ("user@example.com",
             // "github.com", "flowtype.cs", "e.g.") must not be split or re-capitalized by
             // the sentence-spacing passes below.
             List<string> protectedTokens = new List<string>();
@@ -4704,6 +4731,11 @@ namespace Flowtype
 
         public async Task<string> CleanupAsync(string raw, ForegroundInfo context, AppSettings settings)
         {
+            return await CleanupAsync(raw, context, settings, null);
+        }
+
+        public async Task<string> CleanupAsync(string raw, ForegroundInfo context, AppSettings settings, Action<string> onDelta)
+        {
             string model = await ResolveModelAsync(settings);
             if (String.IsNullOrWhiteSpace(model)) return TextProcessor.Clean(raw, settings, context);
 
@@ -4715,7 +4747,7 @@ namespace Flowtype
                 TextProcessor.SpokenListCleanupHint(settings) +
                 "never answer or comment on the dictation. Style: " + settings.Style + ".";
 
-            string text = await StreamChatAsync(settings, model, system, raw);
+            string text = await StreamChatAsync(settings, model, system, raw, onDelta);
             if (String.IsNullOrWhiteSpace(text))
                 throw new InvalidOperationException("Local model returned no text.");
             return text.Trim();
@@ -4727,7 +4759,7 @@ namespace Flowtype
             if (String.IsNullOrWhiteSpace(model))
                 throw new InvalidOperationException(
                     "No local streaming model found. Install Ollama from https://ollama.com then run:\r\n\r\nollama pull llama3.2:1b");
-            string reply = await StreamChatAsync(settings, model, "Reply with exactly OK.", "Say OK.");
+            string reply = await StreamChatAsync(settings, model, "Reply with exactly OK.", "Say OK.", null);
             if (String.IsNullOrWhiteSpace(reply))
                 throw new InvalidOperationException("The local model produced an empty reply.");
             return model;
@@ -4805,30 +4837,30 @@ namespace Flowtype
             }
         }
 
-        private async Task<string> StreamChatAsync(AppSettings settings, string model, string system, string user)
+        private async Task<string> StreamChatAsync(AppSettings settings, string model, string system, string user, Action<string> onDelta)
         {
             string root = BaseUrl(settings);
             Exception last = null;
             try
             {
-                return await StreamOllamaChatAsync(root, model, system, user);
+                return await StreamOllamaChatAsync(root, model, system, user, onDelta);
             }
             catch (Exception exception) { last = exception; }
             try
             {
-                return await StreamOllamaGenerateAsync(root, model, system + "\n\n" + user);
+                return await StreamOllamaGenerateAsync(root, model, system + "\n\n" + user, onDelta);
             }
             catch (Exception exception) { last = exception; }
             try
             {
-                return await StreamOpenAiChatAsync(root, model, system, user);
+                return await StreamOpenAiChatAsync(root, model, system, user, onDelta);
             }
             catch (Exception exception) { last = exception; }
             if (last != null) throw last;
             throw new InvalidOperationException("Local streaming model did not answer.");
         }
 
-        private async Task<string> StreamOllamaChatAsync(string root, string model, string system, string user)
+        private async Task<string> StreamOllamaChatAsync(string root, string model, string system, string user, Action<string> onDelta)
         {
             object[] messages = new object[]
             {
@@ -4839,19 +4871,19 @@ namespace Flowtype
             payload["model"] = model;
             payload["messages"] = messages;
             payload["stream"] = true;
-            return await PostStreamAsync(root + "/api/chat", payload);
+            return await PostStreamAsync(root + "/api/chat", payload, onDelta);
         }
 
-        private async Task<string> StreamOllamaGenerateAsync(string root, string model, string prompt)
+        private async Task<string> StreamOllamaGenerateAsync(string root, string model, string prompt, Action<string> onDelta)
         {
             Dictionary<string, object> payload = new Dictionary<string, object>();
             payload["model"] = model;
             payload["prompt"] = prompt;
             payload["stream"] = true;
-            return await PostStreamAsync(root + "/api/generate", payload);
+            return await PostStreamAsync(root + "/api/generate", payload, onDelta);
         }
 
-        private async Task<string> StreamOpenAiChatAsync(string root, string model, string system, string user)
+        private async Task<string> StreamOpenAiChatAsync(string root, string model, string system, string user, Action<string> onDelta)
         {
             object[] messages = new object[]
             {
@@ -4864,10 +4896,10 @@ namespace Flowtype
             payload["stream"] = true;
             payload["max_tokens"] = 3000;
             payload["temperature"] = 0.1;
-            return await PostStreamAsync(root.TrimEnd('/') + "/v1/chat/completions", payload);
+            return await PostStreamAsync(root.TrimEnd('/') + "/v1/chat/completions", payload, onDelta);
         }
 
-        private async Task<string> PostStreamAsync(string url, Dictionary<string, object> payload)
+        private async Task<string> PostStreamAsync(string url, Dictionary<string, object> payload, Action<string> onDelta)
         {
             using (HttpClient client = new HttpClient())
             using (StringContent content = new StringContent(serializer.Serialize(payload), Encoding.UTF8, "application/json"))
@@ -4893,7 +4925,9 @@ namespace Flowtype
                             while ((line = await reader.ReadLineAsync()) != null)
                             {
                                 string delta = ExtractStreamDelta(line);
-                                if (delta.Length > 0) output.Append(delta);
+                                if (delta.Length == 0) continue;
+                                output.Append(delta);
+                                if (onDelta != null) onDelta(output.ToString());
                             }
                         }
                         return output.ToString().Trim();
@@ -5768,6 +5802,9 @@ namespace Flowtype
         private int animationTick;
         private bool maxRaised;
         private bool processingMode;
+        private string processingPreview = "";
+        private const int CompactOverlayWidth = 120;
+        private const int StreamOverlayWidth = 304;
         private string theme = "Dark";
         private string mark = "Orb";
         private Bitmap glassBackdrop;
@@ -5878,6 +5915,8 @@ namespace Flowtype
             SetTheme(overlayTheme);
             SetMark(overlayMark);
             processingMode = false;
+            processingPreview = "";
+            Width = CompactOverlayWidth;
             level = 0;
             Array.Clear(bands, 0, bands.Length);
             animationTick = 0;
@@ -5897,6 +5936,8 @@ namespace Flowtype
         {
             overlaySession++;
             processingMode = true;
+            processingPreview = "";
+            Width = CompactOverlayWidth;
             elapsed.Reset();
             maxRaised = false;
             exiting = false;
@@ -5912,6 +5953,25 @@ namespace Flowtype
             else if (revealProgress >= 1f)
                 revealProgress = 1f;
             RenderLayered();
+        }
+
+        public void SetProcessingPreview(string text)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action<string>(SetProcessingPreview), text ?? ""); }
+                catch { }
+                return;
+            }
+            processingPreview = text ?? "";
+            int want = processingMode && processingPreview.Trim().Length > 0 ? StreamOverlayWidth : CompactOverlayWidth;
+            if (Width != want)
+            {
+                Width = want;
+                PositionOverlay();
+                if (IsGlassTheme() && Visible && !exiting) CaptureGlassBackdrop();
+            }
         }
 
         public void ShowResult(bool pasted) { HideNow(); }
@@ -5981,13 +6041,15 @@ namespace Flowtype
             ReleaseGlassBackdrop();
             exiting = false;
             processingMode = false;
+            processingPreview = "";
+            Width = CompactOverlayWidth;
             revealProgress = 1f;
             Hide();
         }
 
         private RectangleF GetCapsuleBounds()
         {
-            const float capsuleWidth = 104f;
+            float capsuleWidth = processingMode && processingPreview.Trim().Length > 0 ? 286f : 104f;
             const float capsuleHeight = 26f;
             float x = (Width - capsuleWidth) / 2f;
             float y = (Height - capsuleHeight) / 2f;
@@ -6414,6 +6476,11 @@ namespace Flowtype
         {
             float left = capsule.X + 29f;
             float right = capsule.Right - 8f;
+            if (processingMode && processingPreview.Trim().Length > 0)
+            {
+                DrawProcessingPreview(graphics, left, right, capsule);
+                return;
+            }
             float region = right - left;
             const int barPx = 3;
             const int gapPx = 2;
@@ -6435,6 +6502,26 @@ namespace Flowtype
                 using (GraphicsPath barPath = RoundedRectangle(bar, barPx / 2f))
                 using (LinearGradientBrush fill = new LinearGradientBrush(bar, peak, dim, LinearGradientMode.Vertical))
                     graphics.FillPath(fill, barPath);
+            }
+        }
+
+        private void DrawProcessingPreview(Graphics graphics, float left, float right, RectangleF capsule)
+        {
+            string text = processingPreview.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (text.Length == 0) return;
+            float maxWidth = Math.Max(8f, right - left);
+            float y = capsule.Y + 4.5f;
+            Color ink = GetChromeInk();
+            using (Font font = new Font("Segoe UI", 8.25f, FontStyle.Regular, GraphicsUnit.Point))
+            using (SolidBrush brush = new SolidBrush(Color.FromArgb(IsGlassTheme() ? (glassOnDark ? 220 : 180) : 200, ink)))
+            {
+                if (graphics.MeasureString(text, font).Width > maxWidth)
+                {
+                    while (text.Length > 1 && graphics.MeasureString("…" + text, font).Width > maxWidth)
+                        text = text.Substring(1);
+                    text = "…" + text;
+                }
+                graphics.DrawString(text, font, brush, left, y);
             }
         }
 
@@ -6984,7 +7071,7 @@ namespace Flowtype
 
             AddTextField(page, "Agent endpoint", agentEndpointBox, 24, 190, false);
             Label endpointHint = LabelAt(
-                "Any local runtime that accepts a JSON POST — the bundled daemon (Claude Code), OpenCode, Codex, n8n, or your own script. Flowtype only sends the words; it never runs anything itself.",
+                "Must be on this PC (127.0.0.1 or localhost). Any local runtime that accepts a JSON POST — the bundled daemon, OpenCode, Codex, n8n, or your own script. Flowtype only sends the words; it never runs anything itself.",
                 210, 226, 460, 44);
             endpointHint.ForeColor = UiTheme.TextMuted;
             endpointHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
@@ -7031,6 +7118,12 @@ namespace Flowtype
             if (endpoint.Length == 0)
             {
                 agentStatusLabel.Text = "Enter an endpoint first.";
+                return;
+            }
+            if (!AgentBridge.IsLoopbackEndpoint(endpoint))
+            {
+                agentStatusLabel.ForeColor = Color.FromArgb(176, 58, 46);
+                agentStatusLabel.Text = "Must be 127.0.0.1 or localhost.";
                 return;
             }
             button.Enabled = false;
@@ -7173,7 +7266,7 @@ namespace Flowtype
             Label polishTitle = LabelAt("Local streaming model", 24, 256, 400, 28);
             polishTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
             page.Controls.Add(polishTitle);
-            Label polishNote = LabelAt("Optional polish after Whisper. Works with Ollama, LM Studio, or llama.cpp on this PC. Tokens stream locally — nothing is uploaded. Leave the model blank and Flowtype will pick a small one if any are installed.", 24, 290, 640, 54);
+            Label polishNote = LabelAt("Optional polish after Whisper. Works with Ollama, LM Studio, or llama.cpp on this PC. Tokens stream on the capsule, then Flowtype pastes once into the field you were in — nothing is uploaded. Find local models turns this on for dictation. Leave the model blank and Flowtype will pick a small one if any are installed.", 24, 290, 640, 54);
             polishNote.ForeColor = Color.FromArgb(95, 100, 112);
             page.Controls.Add(polishNote);
             AddTextField(page, "Local URL", ollamaUrlBox, 24, 356, false);
@@ -7194,8 +7287,9 @@ namespace Flowtype
                     }
                     string pick = OllamaEngine.PickPreferredModel(names);
                     if (!String.IsNullOrWhiteSpace(pick)) ollamaModelBox.Text = pick;
+                    UseLocalStreamingModel(pick);
                     MessageBox.Show(this,
-                        "Found " + names.Count.ToString(CultureInfo.InvariantCulture) + " local model" + (names.Count == 1 ? "" : "s") + ".\r\n\r\nUsing: " + pick + "\r\n\r\n" + String.Join("\r\n", names.ToArray()),
+                        "Found " + names.Count.ToString(CultureInfo.InvariantCulture) + " local model" + (names.Count == 1 ? "" : "s") + ".\r\n\r\nUsing: " + pick + "\r\n\r\nDictation will polish through this model and type the result into the field you were in.\r\n\r\n" + String.Join("\r\n", names.ToArray()),
                         "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Local model", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -7209,7 +7303,8 @@ namespace Flowtype
                 try
                 {
                     string model = await new OllamaEngine().TestAsync(ReadValues());
-                    MessageBox.Show(this, "Local streaming model answered.\r\n\r\nModel: " + model,
+                    UseLocalStreamingModel(model);
+                    MessageBox.Show(this, "Local streaming model answered.\r\n\r\nModel: " + model + "\r\n\r\nDictation will now polish through it and type into the focused field.",
                         "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -7411,6 +7506,11 @@ namespace Flowtype
                 MessageBox.Show(this, "Groq mode needs a free API key from console.groq.com.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
+            if (!AgentBridge.IsLoopbackEndpoint(agentEndpointBox.Text.Trim()) && agentEndpointBox.Text.Trim().Length > 0)
+            {
+                MessageBox.Show(this, "The agent endpoint must be on this PC (127.0.0.1 or localhost). Flowtype will not send spoken asks off the machine.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
             if (value.Engine == "Local" && (!File.Exists(value.WhisperExePath) || !File.Exists(value.WhisperModelPath)))
             {
                 MessageBox.Show(this, "Install the local engine before saving Local mode.", "Flowtype", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -7469,6 +7569,24 @@ namespace Flowtype
                 chooseModelButton.Enabled = true;
                 localProgress.Visible = false;
             }
+        }
+
+        private void UseLocalStreamingModel(string model)
+        {
+            if (!String.IsNullOrWhiteSpace(model)) ollamaModelBox.Text = model.Trim();
+            cleanupBox.Checked = true;
+            if (cleanupProviderBox.Items.Count > 3) cleanupProviderBox.SelectedIndex = 3;
+            try
+            {
+                AppSettings value = ReadValues();
+                store.Save(value);
+                store.SaveApiKey(apiKeyBox.Text.Trim());
+                store.SaveOpenRouterKey(openRouterKeyBox.Text.Trim());
+                store.SaveGroqKey(groqKeyBox.Text.Trim());
+                Action<AppSettings, string, string> handler = SettingsSaved;
+                if (handler != null) handler(value, apiKeyBox.Text.Trim(), openRouterKeyBox.Text.Trim());
+            }
+            catch { }
         }
 
         private void ChooseWhisperClicked(object sender, EventArgs e)
@@ -9474,7 +9592,15 @@ namespace Flowtype
                     {
                         if (settings.CleanupProvider == "OpenAI") finalText = await new OpenAiEngine().CleanupAsync(raw, delivery, settings, apiKey);
                         else if (settings.CleanupProvider == "OpenRouter") finalText = await new OpenRouterEngine().CleanupAsync(raw, delivery, settings, openRouterKey);
-                        else if (settings.CleanupProvider == "Ollama") finalText = await new OllamaEngine().CleanupAsync(raw, delivery, settings);
+                        else if (settings.CleanupProvider == "Ollama")
+                        {
+                            Action<string> onDelta = delegate(string soFar)
+                            {
+                                try { overlay.SetProcessingPreview(soFar); }
+                                catch { }
+                            };
+                            finalText = await new OllamaEngine().CleanupAsync(raw, delivery, settings, onDelta);
+                        }
                         else finalText = TextProcessor.Clean(transcript, settings, delivery);
                     }
                     catch (Exception cleanupError)

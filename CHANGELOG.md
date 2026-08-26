@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.70
+
+Dictation through a local streaming model:
+- Find local models / Test stream turns on smart cleanup through that model, so dictation (not just the agent chord) polishes on this PC
+- Tokens stream live on the capsule while the model writes, then Flowtype pastes once into the field you were in — one undo, and terminals still get Ctrl+Shift+V
+
+Privacy and agent lock:
+- The agent endpoint must be loopback (127.0.0.1 or localhost). Settings, the client, and loaded configs refuse anything else
+- Example email in tests and changelog is now user@example.com
+
+---
+
 ## 1.3.69
 
 Terminal paste:
@@ -272,7 +284,7 @@ Focus loss / lost dictations:
 Text pipeline:
 - "period"/"comma"/"colon" as ordinary nouns ("a long period of time", "the Oxford comma") are no longer converted to punctuation
 - "no" only acts as a self-correction with punctuation on both sides ("the door, no answer" survives); bare "start over" as a verb phrase no longer wipes the sentence
-- Emails, URLs, and filenames (kayleb.klopfer@gmail.com, github.com, flowtype.cs) are no longer split/capitalized apart
+- Emails, URLs, and filenames (user@example.com, github.com, flowtype.cs) are no longer split/capitalized apart
 - Window-title words can no longer rewrite normal words ("tracing" stayed "Tracking" when a Tracking tab was open)
 
 Stability and speed:

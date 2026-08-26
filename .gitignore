@@ -77,4 +77,7 @@ agent-bridge/asks/
 agent-bridge/bridge.log
 agent-bridge/notices.jsonl
 agent-bridge/flight-recorder.jsonl
+agent-bridge/agent-replies.log
+agent-bridge/*.log
+agent-bridge/*.jsonl
 
