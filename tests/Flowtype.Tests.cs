@@ -191,8 +191,8 @@ namespace Flowtype.Tests
                 "Here is the real sentence.",
                 TextProcessor.Clean("blah blah let me start over here is the real sentence", AppSettings.Defaults()));
             failures += AssertEqual("email preserved",
-                "Send it to kayleb.klopfer@gmail.com.",
-                TextProcessor.Clean("send it to kayleb.klopfer@gmail.com", AppSettings.Defaults()));
+                "Send it to user@example.com.",
+                TextProcessor.Clean("send it to user@example.com", AppSettings.Defaults()));
             failures += AssertEqual("filename preserved",
                 "Open flowtype.cs.",
                 TextProcessor.Clean("open flowtype.cs", AppSettings.Defaults()));
@@ -251,6 +251,16 @@ namespace Flowtype.Tests
             failures += AssertEqual("ollama chat delta", "lo", OllamaEngine.ExtractStreamDelta("{\"message\":{\"role\":\"assistant\",\"content\":\"lo\"},\"done\":false}"));
             failures += AssertEqual("openai sse delta", "!", OllamaEngine.ExtractStreamDelta("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}"));
             failures += AssertEqual("openai done ignored", "", OllamaEngine.ExtractStreamDelta("data: [DONE]"));
+            failures += AssertTrue(AgentBridge.IsLoopbackEndpoint("http://127.0.0.1:5599/ask"));
+            failures += AssertTrue(AgentBridge.IsLoopbackEndpoint("http://localhost:5599/ask"));
+            failures += AssertTrue(AgentBridge.IsLoopbackEndpoint("http://[::1]:5599/ask"));
+            failures += AssertFalse(AgentBridge.IsLoopbackEndpoint("http://192.168.1.10:5599/ask"));
+            failures += AssertFalse(AgentBridge.IsLoopbackEndpoint("https://example.com/ask"));
+            failures += AssertFalse(AgentBridge.IsLoopbackEndpoint(""));
+            AppSettings remoteAgent = AppSettings.Defaults();
+            remoteAgent.AgentEndpoint = "http://10.0.0.8:5599/ask";
+            remoteAgent.Repair();
+            failures += AssertEqual("remote agent endpoint reset", "http://127.0.0.1:5599/ask", remoteAgent.AgentEndpoint);
             failures += AssertTimeout("short clip turbo floor", 60, AudioTranscriptionTimeouts.ForWavFile("", true).TotalSeconds);
             failures += AssertTimeout("short clip standard floor", 90, AudioTranscriptionTimeouts.ForWavFile("", false).TotalSeconds);
             failures += AssertTimeout("ten minute clip", 600, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
@@ -270,9 +280,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.70"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.71"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.69", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.70", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
