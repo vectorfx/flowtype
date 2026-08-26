@@ -1,5 +1,103 @@
 # Changelog
 
+## 1.3.69
+
+Terminal paste:
+- Windows Terminal, PowerShell, cmd, and other consoles no longer look like a successful insert when Ctrl+V did nothing
+- Those fields get Ctrl+Shift+V instead, and the take stays on your clipboard if it still cannot be confirmed — so a one-minute dictation is not wiped by restoring the previous copy
+- Cursor/VS Code's integrated terminal is detected when the focused pane is actually a terminal, so the same backup applies there without changing editor paste
+- The tray says Ctrl+Shift+V when that is the chord the field wants
+
+Local streaming model:
+- Optional polish can stream from a model on this PC (Ollama, LM Studio, or llama.cpp) — tokens stay local
+- Settings → Local: Find local models / Test stream. If the model name is blank, Flowtype picks a small installed one (llama3.2:1b, Qwen, Phi, …)
+- Cleanup engine label is **Ollama — local streaming model**
+
+---
+
+## 1.3.68
+
+Liquid glass:
+- On a dark page the live mark and waveform switch to light ink, so they stay visible against black terminals and dark editors
+- Light pages still use the original graphite marks
+
+---
+## 1.3.67
+
+Dictation start and end:
+- The last word is no longer cut off — Flowtype now waits for the microphone's in-flight buffers instead of dropping them when you release
+- Talking as you press the chord no longer eats the first word: the mic stays warm with a 400 ms preroll, and recording starts before the overlay comes up
+- Quiet consonants at the start and end of a take stay in the audio instead of being trimmed as silence
+
+---
+## 1.3.66
+
+Voice capsule:
+- Grid live mark is a circle now — same equalizer columns filling from the bottom with your voice, without the square silhouette
+
+Clipboard backup:
+- If a popup, Start menu, taskbar, desktop, or another app steals the field before insert, Flowtype keeps the take on your clipboard instead of pasting into the thief
+- If focus jumps away during the paste, the text stays copied too — click the field you want and press Ctrl+V
+
+---
+## 1.3.65
+
+Spoken lists:
+- Say **next point** during a take to start a new bullet, or **next number** for a numbered item — including a single command ("next point buy milk")
+- Text before the first command becomes the first item, so "buy milk next point get eggs" is two bullets
+- Settings → Personalization: turn the commands on or off, and change the phrases (comma-separate extras). "The next point…" stays ordinary words
+- Existing "bullet point" / "next bullet" phrasing still works while the feature is on
+
+---
+## 1.3.59 (agent mode)
+
+Agent HUD:
+- Agent takes get their own terminal-style heads-up panel in the corner — run id, endpoint, live level trace while you speak, a spinner and a running clock while the agent works, then the agent's own one-line answer ("Renamed 6 screenshots by capture date · done in 2.9s")
+- Nothing like the dictation capsule on purpose: different shape, different corner, monospace — you can always tell which key you are holding
+- The tray icon switches to the agent mark while an ask is in the air, and back when it lands
+- A failed ask says why and keeps the take on your clipboard
+
+Agent settings:
+- New Agent tab: enable/disable, pick the agent key, set the endpoint, and test the connection (it reports whether the session is warm)
+- Fixes a real bug: saving settings on the previous build silently turned agent mode off, because the form rebuilt settings without the agent fields
+
+Warm daemon:
+- `agent-bridge/flowtype_agentd.py` keeps one agent session hot — measured 2.9-3.5s per ask against 10-20s for the old cold-start script — and answers with what it actually did
+- Every ask, reply and failure is appended to `agent-bridge/flight-recorder.jsonl`
+- Action profiles (`--profile notes|commit|full`) bound what a spoken ask is allowed to do; `--cli` still spawns any other agent CLI per ask
+
+---
+
+## 1.3.59
+
+Agent chord (experimental, off by default):
+- Second hold-to-talk chord (default Win + Alt) that sends the finished take to one local agent endpoint (`AgentEndpoint` in settings.json, default `http://127.0.0.1:5599/ask`) instead of pasting — Flowtype never plans, routes, or executes; it is a dumb pipe to a runtime you already trust
+- Endpoint down → toast and the take stays on your clipboard; dictation is untouched either way
+- Toggle from the tray menu ("Agent chord — hold Win + Alt"); the agent chord auto-moves if it would collide with the dictation chord
+
+Seat lock:
+- A bare "press enter" take now proves the window you dictated into still has focus — refocus it or refuse — instead of pulsing Enter into whatever stole focus while Whisper was thinking
+- A swallowed duplicate delivery (debounce/generation match) no longer pulses a second Enter without pasting
+
+---
+
+## 1.3.58
+
+Clipboard:
+- Off still uses the clipboard to insert, but your previous copy is remembered at hotkey-down and put back on the UI thread after insert — a background timer was never firing, so spoken text stayed copied
+- Restore also matches clipboard text that only differs by line endings, so Chrome/Docs cannot block the put-back
+
+---
+
+## 1.3.57
+
+Clipboard:
+- Copy something, dictate, then Ctrl+V again — you get what you copied, not the dictation and not an empty clipboard
+- The user's clipboard is pinned when recording starts (before the Docs caret probe or Ctrl+V insert) and put back after insert
+- Restore no longer bails just because the paste bumped the clipboard sequence, and Cursor no longer clears the clipboard instead of giving yours back
+
+---
+
 ## 1.3.56
 
 Voice capsule:

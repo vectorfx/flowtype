@@ -64,3 +64,17 @@ __pycache__/
 *.pem
 *.pfx
 *credentials*
+
+# Node (website builds — never commit dependencies)
+node_modules/
+
+# Local website experiments (not part of the Windows app repo)
+website/
+website-v2/
+
+# Agent runtime scratch (transcripts, logs)
+agent-bridge/asks/
+agent-bridge/bridge.log
+agent-bridge/notices.jsonl
+agent-bridge/flight-recorder.jsonl
+

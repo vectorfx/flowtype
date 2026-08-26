@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using Flowtype;
 
 namespace Flowtype.Tests
@@ -84,6 +85,20 @@ namespace Flowtype.Tests
             byte[] trimmed = WaveRecorder.TrimSilence(padded, 16000, 100);
             double trimmedSeconds = trimmed.Length / 32000.0;
             failures += AssertTrue(trimmedSeconds > 0.40 && trimmedSeconds < 0.65);
+            byte[] quietEdges = MakePcmWithQuietEdges(400, 0.18, 12000, 0.40);
+            byte[] keptEdges = WaveRecorder.TrimSilence(quietEdges, 16000, 120);
+            double keptSeconds = keptEdges.Length / 32000.0;
+            failures += AssertTrue("quiet consonants at start and end stay in the take",
+                keptSeconds > 0.72 && keptSeconds < 0.95);
+            PcmRing ring = new PcmRing(3200);
+            ring.Write(MakePcmTone(1000, 0.20, 0, 0));
+            ring.Write(MakePcmTone(2000, 0.10, 0, 0));
+            byte[] snapshot = ring.Snapshot();
+            failures += AssertTrue("preroll ring keeps only the latest capacity", snapshot.Length == 3200);
+            failures += AssertTrue("preroll ring wrap keeps the newest samples",
+                SnapshotPeak(snapshot) == 2000);
+            ring.Clear();
+            failures += AssertTrue("preroll ring clear empties snapshot", ring.Snapshot().Length == 0);
             failures += AssertEqual("trailing thanks without period",
                 "So we need to finish the project by Friday and then send it.",
                 TextProcessor.Clean("So we need to finish the project by Friday and then send it Thank you", AppSettings.Defaults()));
@@ -122,6 +137,39 @@ namespace Flowtype.Tests
             failures += AssertContains("- ", TextProcessor.Clean("bullet point apples bullet point bananas bullet point cherries", AppSettings.Defaults()));
             failures += AssertContains("- Apples\n- Bananas",
                 TextProcessor.Clean("bullet point apples and bullet point bananas", AppSettings.Defaults()));
+            failures += AssertContains("- Buy milk\n- Get eggs\n- Call mom",
+                TextProcessor.Clean("buy milk next point get eggs next point call mom", AppSettings.Defaults()));
+            failures += AssertContains("- Buy milk",
+                TextProcessor.Clean("next point buy milk", AppSettings.Defaults()));
+            failures += AssertContains("1. Milk\n2. Bread",
+                TextProcessor.Clean("next number milk next number bread", AppSettings.Defaults()));
+            AppSettings customLists = AppSettings.Defaults();
+            customLists.SpokenBulletPhrase = "new item";
+            customLists.SpokenNumberPhrase = "new step";
+            failures += AssertContains("- Milk\n- Eggs",
+                TextProcessor.Clean("new item milk new item eggs", customLists));
+            failures += AssertContains("1. Mix\n2. Bake",
+                TextProcessor.Clean("new step mix new step bake", customLists));
+            failures += AssertEqual("custom phrase replaces next point",
+                "Next point milk next point eggs.",
+                TextProcessor.Clean("next point milk next point eggs", customLists));
+            AppSettings listsOff = AppSettings.Defaults();
+            listsOff.SpokenListsEnabled = false;
+            failures += AssertEqual("spoken lists can be turned off",
+                "Next point apples next point bananas.",
+                TextProcessor.Clean("next point apples next point bananas", listsOff));
+            failures += AssertEqual("the next point stays prose",
+                "The next point after lunch is the budget.",
+                TextProcessor.Clean("the next point after lunch is the budget", AppSettings.Defaults()));
+            AppSettings repairedLists = AppSettings.Defaults();
+            repairedLists.SpokenBulletPhrase = null;
+            repairedLists.SpokenNumberPhrase = null;
+            repairedLists.Repair();
+            failures += AssertEqual("bullet phrase defaulted", "next point", repairedLists.SpokenBulletPhrase);
+            failures += AssertEqual("number phrase defaulted", "next number", repairedLists.SpokenNumberPhrase);
+            failures += AssertContains("next point", WhisperEngine.BuildPrompt(AppSettings.Defaults(), null));
+            failures += AssertContains("- buy milk\n- get eggs",
+                TextProcessor.ApplyAlwaysEdits("buy milk next point get eggs", AppSettings.Defaults()));
             failures += AssertContains("2. Restart the server",
                 TextProcessor.Clean("first of all check the logs, second of all restart the server, finally email the team", AppSettings.Defaults()));
             failures += AssertEqual("period noun kept",
@@ -189,6 +237,20 @@ namespace Flowtype.Tests
             repaired.OpenRouterModel = "openrouter/free";
             repaired.Repair();
             failures += AssertEqual("openrouter free blocked", "BuiltIn", repaired.CleanupProvider);
+            failures += AssertEqual("prefer 1b local model",
+                "llama3.2:1b",
+                OllamaEngine.PickPreferredModel(new string[] { "mistral:latest", "llama3.2:1b", "llama3.1:8b" }));
+            failures += AssertEqual("prefer prefix when exact missing",
+                "qwen2.5:1.5b-instruct",
+                OllamaEngine.PickPreferredModel(new string[] { "qwen2.5:1.5b-instruct", "mistral:latest" }));
+            failures += AssertEqual("first model when none preferred",
+                "custom-finetune",
+                OllamaEngine.PickPreferredModel(new string[] { "custom-finetune" }));
+            failures += AssertEqual("empty local model list", "", OllamaEngine.PickPreferredModel(new string[0]));
+            failures += AssertEqual("ollama generate delta", "Hel", OllamaEngine.ExtractStreamDelta("{\"response\":\"Hel\",\"done\":false}"));
+            failures += AssertEqual("ollama chat delta", "lo", OllamaEngine.ExtractStreamDelta("{\"message\":{\"role\":\"assistant\",\"content\":\"lo\"},\"done\":false}"));
+            failures += AssertEqual("openai sse delta", "!", OllamaEngine.ExtractStreamDelta("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}"));
+            failures += AssertEqual("openai done ignored", "", OllamaEngine.ExtractStreamDelta("data: [DONE]"));
             failures += AssertTimeout("short clip turbo floor", 60, AudioTranscriptionTimeouts.ForWavFile("", true).TotalSeconds);
             failures += AssertTimeout("short clip standard floor", 90, AudioTranscriptionTimeouts.ForWavFile("", false).TotalSeconds);
             failures += AssertTimeout("ten minute clip", 600, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
@@ -208,13 +270,24 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.57"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.70"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.56", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.69", FlowtypeVersion.CurrentLabel);
+            failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
+            failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
+            failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
+            failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation\r\n", "hello from dictation"));
+            failures += AssertTrue(ForegroundContext.CanRestoreOver("my copied text", "spoken", "my copied text"));
+            failures += AssertFalse(ForegroundContext.CanRestoreOver("I copied this first", "hello from dictation"));
             AppSettings monoTheme = AppSettings.Defaults();
             monoTheme.OverlayTheme = "Mono";
             monoTheme.Repair();
             failures += AssertEqual("mono theme migrated", "Dark", monoTheme.OverlayTheme);
+            failures += AssertTrue("glass ink on dark backdrop is light", GlassChrome.Ink(true).R > 180);
+            failures += AssertTrue("glass ink on light backdrop is dark", GlassChrome.Ink(false).R < 80);
+            failures += AssertTrue("glass bars on dark backdrop are light", GlassChrome.Bar(true, 0.7f).R > 180);
+            failures += AssertTrue("vscode dark editor counts as dark glass", GlassChrome.BackdropReadsDark(90 * 25, 25));
+            failures += AssertFalse(GlassChrome.BackdropReadsDark(720 * 25, 25));
             AppSettings emberTheme = AppSettings.Defaults();
             emberTheme.OverlayTheme = "Ember";
             emberTheme.Repair();
@@ -231,6 +304,57 @@ namespace Flowtype.Tests
             badMark.OverlayMark = "Spinner";
             badMark.Repair();
             failures += AssertEqual("unknown mark becomes orb", "Orb", badMark.OverlayMark);
+            failures += AssertTrue(ForegroundContext.LooksUnpasteableProcess("Flowtype"));
+            failures += AssertTrue(ForegroundContext.LooksUnpasteableProcess("consent"));
+            failures += AssertTrue(ForegroundContext.LooksUnpasteableProcess("SearchHost"));
+            failures += AssertFalse(ForegroundContext.LooksUnpasteableProcess("notepad"));
+            failures += AssertFalse(ForegroundContext.LooksUnpasteableProcess("Cursor"));
+            failures += AssertTrue(ForegroundContext.LooksUnpasteableClass("Shell_TrayWnd"));
+            failures += AssertTrue(ForegroundContext.LooksUnpasteableClass("Progman"));
+            failures += AssertTrue(ForegroundContext.LooksUnpasteableClass("#32768"));
+            failures += AssertFalse(ForegroundContext.LooksUnpasteableClass("Chrome_WidgetWin_1"));
+            failures += AssertFalse(ForegroundContext.LooksUnpasteableClass("Edit"));
+            failures += AssertTrue(ForegroundContext.IsUnpasteableTarget(null));
+            failures += AssertTrue(ForegroundContext.IsUnpasteableTarget(new ForegroundInfo()));
+            failures += AssertTrue(ForegroundContext.LooksLikeShiftPasteProcess("WindowsTerminal"));
+            failures += AssertTrue(ForegroundContext.LooksLikeShiftPasteProcess("pwsh"));
+            failures += AssertTrue(ForegroundContext.LooksLikeShiftPasteProcess("cmd"));
+            failures += AssertTrue(ForegroundContext.LooksLikeShiftPasteClass("ConsoleWindowClass"));
+            failures += AssertTrue(ForegroundContext.LooksLikeShiftPasteClass("CASCADIA_HOSTING_WINDOW_CLASS"));
+            failures += AssertFalse(ForegroundContext.LooksLikeShiftPasteProcess("notepad"));
+            failures += AssertFalse(ForegroundContext.LooksLikeShiftPasteProcess("Cursor"));
+            failures += AssertFalse(ForegroundContext.LooksLikeShiftPasteProcess("powershell_ise"));
+            failures += AssertTrue(ForegroundContext.NameLooksLikeTerminalPane("Terminal 1"));
+            failures += AssertTrue(ForegroundContext.NameLooksLikeTerminalPane("powershell"));
+            failures += AssertTrue(ForegroundContext.NameLooksLikeTerminalPane("1: pwsh"));
+            failures += AssertFalse(ForegroundContext.NameLooksLikeTerminalPane("Flowtype.cs"));
+            failures += AssertFalse(ForegroundContext.NameLooksLikeTerminalPane("terminal.ts"));
+            ForegroundInfo terminalField = new ForegroundInfo();
+            terminalField.ProcessName = "WindowsTerminal";
+            terminalField.Handle = new IntPtr(5);
+            ForegroundInfo terminalAfter = new ForegroundInfo();
+            terminalAfter.ProcessName = "WindowsTerminal";
+            terminalAfter.Handle = new IntPtr(5);
+            failures += AssertTrue(ForegroundContext.LooksLikeShiftPasteTarget(terminalField));
+            failures += AssertTrue(ForegroundContext.ShouldKeepDictationOnClipboard(terminalField, terminalAfter));
+            ForegroundInfo notepadField = new ForegroundInfo();
+            notepadField.ProcessName = "notepad";
+            notepadField.Handle = new IntPtr(8);
+            ForegroundInfo notepadAfter = new ForegroundInfo();
+            notepadAfter.ProcessName = "notepad";
+            notepadAfter.Handle = new IntPtr(8);
+            failures += AssertFalse(ForegroundContext.LooksLikeShiftPasteTarget(notepadField));
+            failures += AssertFalse(ForegroundContext.ShouldKeepDictationOnClipboard(notepadField, notepadAfter));
+            ForegroundInfo trayAfter = new ForegroundInfo();
+            trayAfter.ProcessName = "explorer";
+            trayAfter.Handle = new IntPtr(9);
+            failures += AssertTrue(ForegroundContext.ShouldKeepDictationOnClipboard(notepadField, trayAfter));
+            ForegroundInfo cursorEditor = new ForegroundInfo();
+            cursorEditor.ProcessName = "Cursor";
+            cursorEditor.Title = "Flowtype.cs - flowtype - Cursor";
+            cursorEditor.Handle = new IntPtr(11);
+            failures += AssertFalse(ForegroundContext.LooksLikeShiftPasteTarget(cursorEditor));
+            failures += AssertFalse(ForegroundContext.ShouldKeepDictationOnClipboard(cursorEditor, cursorEditor));
             return failures;
         }
 
@@ -445,6 +569,29 @@ namespace Flowtype.Tests
             return pcm;
         }
 
+        private static byte[] MakePcmWithQuietEdges(int quietAmplitude, double quietSeconds, int loudAmplitude, double loudSeconds)
+        {
+            byte[] lead = MakePcmTone(quietAmplitude, quietSeconds, 0.05, 0);
+            byte[] mid = MakePcmTone(loudAmplitude, loudSeconds, 0, 0);
+            byte[] trail = MakePcmTone(quietAmplitude, quietSeconds, 0, 0.05);
+            byte[] pcm = new byte[lead.Length + mid.Length + trail.Length];
+            Buffer.BlockCopy(lead, 0, pcm, 0, lead.Length);
+            Buffer.BlockCopy(mid, 0, pcm, lead.Length, mid.Length);
+            Buffer.BlockCopy(trail, 0, pcm, lead.Length + mid.Length, trail.Length);
+            return pcm;
+        }
+
+        private static int SnapshotPeak(byte[] pcm)
+        {
+            int peak = 0;
+            for (int index = 0; index + 1 < pcm.Length; index += 2)
+            {
+                int sample = Math.Abs((short)(pcm[index] | (pcm[index + 1] << 8)));
+                if (sample > peak) peak = sample;
+            }
+            return peak;
+        }
+
         private static string FuzzySettingsTest()
         {
             AppSettings settings = AppSettings.Defaults();
@@ -493,8 +640,13 @@ namespace Flowtype.Tests
 
         private static int AssertTrue(bool value)
         {
-            if (value) { Console.WriteLine("PASS true"); return 0; }
-            Console.WriteLine("FAIL expected true");
+            return AssertTrue("true", value);
+        }
+
+        private static int AssertTrue(string name, bool value)
+        {
+            if (value) { Console.WriteLine("PASS " + name); return 0; }
+            Console.WriteLine("FAIL " + name);
             return 1;
         }
 

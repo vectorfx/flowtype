@@ -31,7 +31,9 @@ Flowtype is a tray-resident Windows app for push-to-talk dictation. Hold a hotke
 
 **Default stack:** local whisper.cpp (Instant model, ~60 MB), built-in rule cleanup, paste into the active control. No account, no telemetry, no cloud unless you enable it.
 
-**Optional:** Groq or OpenAI for transcription; OpenRouter, OpenAI, or Ollama for LLM cleanup. All cloud paths are off by default.
+**Optional:** Groq or OpenAI for transcription; OpenRouter, OpenAI, or a local streaming model (Ollama / LM Studio / llama.cpp) for LLM cleanup. All cloud paths are off by default.
+
+The experimental **agent chord** (voice → local CLI) lives on the [`agent`](https://github.com/vectorfx/flowtype/tree/agent) branch. Loopback only, token-gated, each user runs it on their own machine.
 
 Implementation notes:
 
@@ -120,9 +122,22 @@ Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds s
 | **Orb** *(default)* | Soft glowing sphere that blooms when you talk |
 | **Hex** | Seven-dot cluster |
 | **Iris** | Aperture that opens with your voice |
-| **Grid** | Square-18 equalizer dots |
+| **Grid** | Circular equalizer dots |
 
 Optional embedded audio cues on start and finish.
+
+---
+
+## Spoken lists
+
+**Settings → Personalization → Spoken lists**
+
+| Say | Result |
+|---|---|
+| **next point** *(default)* | New bullet |
+| **next number** *(default)* | New numbered item |
+
+Turn it off, or type a different phrase, in Settings. Extra phrases can be comma-separated.
 
 ---
 
@@ -150,17 +165,19 @@ Audio goes to Groq for transcription only unless you opt into cloud cleanup.
 |---|---|
 | Local + built-in cleanup **(default)** | ASR only |
 | Groq / OpenAI speech | Cloud transcription |
-| OpenRouter / OpenAI / Ollama cleanup | Optional polish — off by default |
+| OpenRouter / OpenAI / local streaming model | Optional polish — off by default |
 
 ---
 
 ## Settings
 
-**General** — hotkey · hands-free mode · speech engine · cleanup · dictionary · mic boost · mic test
+**General** — hotkey · hands-free mode · speech engine · cleanup · mic boost · mic test
+
+**Personalization** — spoken lists · dictionary · snippets
 
 **Cloud** — Groq · OpenAI · OpenRouter cleanup
 
-**Local** — whisper.cpp install · Ollama cleanup
+**Local** — whisper.cpp install · local streaming model (Ollama / LM Studio / llama.cpp)
 
 ---
 
