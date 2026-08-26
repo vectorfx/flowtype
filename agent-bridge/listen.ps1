@@ -63,20 +63,23 @@ try {
             $hasBrowserOrigin = $headerText -match '(?im)^Origin:' -or $headerText -match '(?im)^Referer:'
             $contentType = ''
             if ($headerText -match '(?im)^Content-Type:\s*(.+)$') { $contentType = $Matches[1].Trim() }
+            $hostHeader = ''
+            if ($headerText -match '(?im)^Host:\s*(.+)$') { $hostHeader = $Matches[1].Trim() }
+            $loopbackHost = $hostHeader -match '^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$'
 
             $expectedToken = ''
             $tokenPath = Join-Path $env:APPDATA 'Flowtype\agent-token'
             if (Test-Path -LiteralPath $tokenPath) {
                 $expectedToken = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
             }
-            if ($hasBrowserOrigin -or [string]::IsNullOrWhiteSpace($expectedToken) -or $token -ne $expectedToken -or $contentType -notmatch 'json') {
+            if ($hasBrowserOrigin -or -not $loopbackHost -or [string]::IsNullOrWhiteSpace($expectedToken) -or $token -ne $expectedToken -or $contentType -notmatch 'json') {
                 $deny = '{"status":"error","error":"refused"}'
                 $denyBytes = $utf8.GetBytes($deny)
                 $denyResponse = "HTTP/1.1 403 Forbidden`r`nContent-Type: application/json`r`nConnection: close`r`nContent-Length: $($denyBytes.Length)`r`n`r`n$deny"
                 $denyResponseBytes = $utf8.GetBytes($denyResponse)
                 $stream.Write($denyResponseBytes, 0, $denyResponseBytes.Length)
                 $stream.Flush()
-                Write-Log 'REFUSED ask (token / origin / content-type)'
+                Write-Log 'REFUSED ask (token / origin / host / content-type)'
                 continue
             }
 
