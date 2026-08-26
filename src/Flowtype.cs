@@ -4762,6 +4762,10 @@ namespace Flowtype
             return names[0] ?? "";
         }
 
+        private static readonly Regex StreamTextField = new Regex(
+            "\"(?:content|response)\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"",
+            RegexOptions.CultureInvariant);
+
         public static string ExtractStreamDelta(string jsonLine)
         {
             if (String.IsNullOrWhiteSpace(jsonLine)) return "";
@@ -4770,57 +4774,20 @@ namespace Flowtype
                 line = line.Substring(5).Trim();
             if (line.Length == 0 || String.Equals(line, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 return "";
-            object parsed;
-            try
-            {
-                parsed = new JavaScriptSerializer().DeserializeObject(line);
-            }
-            catch
-            {
-                return "";
-            }
-            IDictionary value = parsed as IDictionary;
-            if (value == null) return "";
-
-            if (value.Contains("response") && value["response"] != null)
-                return Convert.ToString(value["response"], CultureInfo.InvariantCulture) ?? "";
-
-            if (value.Contains("message"))
-            {
-                string content = ReadContent(value["message"]);
-                if (content.Length > 0) return content;
-            }
-
-            if (value.Contains("choices"))
-            {
-                IEnumerable list = value["choices"] as IEnumerable;
-                if (list != null)
-                {
-                    foreach (object choiceValue in list)
-                    {
-                        IDictionary choice = choiceValue as IDictionary;
-                        if (choice == null) continue;
-                        if (choice.Contains("delta"))
-                        {
-                            string content = ReadContent(choice["delta"]);
-                            if (content.Length > 0) return content;
-                        }
-                        if (choice.Contains("message"))
-                        {
-                            string content = ReadContent(choice["message"]);
-                            if (content.Length > 0) return content;
-                        }
-                    }
-                }
-            }
-            return "";
+            Match match = StreamTextField.Match(line);
+            if (!match.Success) return "";
+            return UnescapeJsonString(match.Groups[1].Value);
         }
 
-        private static string ReadContent(object node)
+        private static string UnescapeJsonString(string value)
         {
-            IDictionary map = node as IDictionary;
-            if (map == null || !map.Contains("content") || map["content"] == null) return "";
-            return Convert.ToString(map["content"], CultureInfo.InvariantCulture) ?? "";
+            if (String.IsNullOrEmpty(value) || value.IndexOf('\\') < 0) return value ?? "";
+            return value
+                .Replace("\\n", "\n")
+                .Replace("\\r", "\r")
+                .Replace("\\t", "\t")
+                .Replace("\\\"", "\"")
+                .Replace("\\\\", "\\");
         }
 
         private async Task<string> ResolveModelAsync(AppSettings settings)
