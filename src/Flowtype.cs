@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.70.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.70.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.71.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.71.0")]
 
 namespace Flowtype
 {
@@ -2894,20 +2894,30 @@ namespace Flowtype
                 if (!release.TryGetValue("assets", out assetsValue)) throw new InvalidOperationException("Release has no downloadable assets.");
                 IEnumerable assets = assetsValue as IEnumerable;
                 if (assets == null) throw new InvalidOperationException("Release has no downloadable assets.");
-                foreach (object assetValue in assets)
-                {
-                    Dictionary<string, object> asset = assetValue as Dictionary<string, object>;
-                    if (asset == null) continue;
-                    string name = Convert.ToString(asset.ContainsKey("name") ? asset["name"] : "", CultureInfo.InvariantCulture);
-                    if (!name.EndsWith("-Lite.zip", StringComparison.OrdinalIgnoreCase)) continue;
-                    info.DownloadUrl = Convert.ToString(asset.ContainsKey("browser_download_url") ? asset["browser_download_url"] : "", CultureInfo.InvariantCulture).Trim();
-                    break;
-                }
-                if (String.IsNullOrWhiteSpace(info.DownloadUrl)) throw new InvalidOperationException("Lite release ZIP not found on GitHub.");
+                info.DownloadUrl = PickReleaseZipUrl(assets);
+                if (String.IsNullOrWhiteSpace(info.DownloadUrl)) throw new InvalidOperationException("Release ZIP not found on GitHub.");
                 if (!info.DownloadUrl.StartsWith("https://github.com/vectorfx/flowtype/releases/download/", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Unexpected update download URL.");
                 return info;
             }
+        }
+
+        public static string PickReleaseZipUrl(IEnumerable assets)
+        {
+            string fullUrl = "";
+            string liteUrl = "";
+            if (assets == null) return "";
+            foreach (object assetValue in assets)
+            {
+                Dictionary<string, object> asset = assetValue as Dictionary<string, object>;
+                if (asset == null) continue;
+                string name = Convert.ToString(asset.ContainsKey("name") ? asset["name"] : "", CultureInfo.InvariantCulture);
+                string url = Convert.ToString(asset.ContainsKey("browser_download_url") ? asset["browser_download_url"] : "", CultureInfo.InvariantCulture).Trim();
+                if (String.IsNullOrWhiteSpace(url)) continue;
+                if (name.EndsWith("-Full.zip", StringComparison.OrdinalIgnoreCase)) fullUrl = url;
+                else if (name.EndsWith("-Lite.zip", StringComparison.OrdinalIgnoreCase)) liteUrl = url;
+            }
+            return fullUrl.Length > 0 ? fullUrl : liteUrl;
         }
 
         public async Task DownloadAndInstallAsync(ReleaseInfo release, Action<int, string> progress)
@@ -8583,6 +8593,7 @@ namespace Flowtype
         private readonly AppUpdater appUpdater = new AppUpdater();
         private bool updateCheckRunning;
         private bool updateInstallRunning;
+        private System.Windows.Forms.Timer updateRecheckTimer;
 
         public FlowtypeContext(EventWaitHandle activationEvent)
         {
@@ -8755,6 +8766,11 @@ namespace Flowtype
                 CheckForUpdates(true);
             };
             updateTimer.Start();
+            if (updateRecheckTimer != null) return;
+            updateRecheckTimer = new System.Windows.Forms.Timer();
+            updateRecheckTimer.Interval = 6 * 60 * 60 * 1000;
+            updateRecheckTimer.Tick += delegate { CheckForUpdates(true); };
+            updateRecheckTimer.Start();
         }
 
         private async void CheckForUpdates(bool silent)

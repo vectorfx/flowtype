@@ -33,7 +33,7 @@ Flowtype is a tray-resident Windows app for push-to-talk dictation. Hold a hotke
 
 **Optional:** Groq or OpenAI for transcription; OpenRouter, OpenAI, or a local streaming model (Ollama / LM Studio / llama.cpp) for LLM cleanup. All cloud paths are off by default.
 
-The experimental **agent chord** (voice → local CLI) lives on the [`agent`](https://github.com/vectorfx/flowtype/tree/agent) branch. Loopback only, token-gated, each user runs it on their own machine.
+The experimental **agent chord** (voice → a local CLI you already trust) ships in the app, off by default. The loopback daemon is in the zip (`agent-bridge/`). Each person runs it on **their** PC — it does not bind the LAN.
 
 Implementation notes:
 
@@ -52,7 +52,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline.
 | | |
 |---|---|
 | **Platform** | Windows 10 / 11 (x64) |
-| **Install** | User folder · no admin · ~15 MB Lite / ~60 MB offline |
+| **Install** | User folder · no admin · Full zip includes the offline speech model |
 | **Capture** | Global push-to-talk · any focused field |
 | **Overlay** | Animated click-through capsule · no focus steal |
 | **Speech** | Local whisper.cpp · Groq / OpenAI optional |
@@ -69,7 +69,7 @@ Open PowerShell and run:
 irm https://raw.githubusercontent.com/vectorfx/flowtype/main/install.ps1 | iex
 ```
 
-Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds shortcuts, and starts the app.
+Downloads the latest Full release (app + offline Instant model + agent bridge), installs to `%LOCALAPPDATA%\Flowtype`, adds shortcuts, and starts the app.
 
 ---
 
@@ -79,12 +79,18 @@ Downloads the latest Lite release, installs to `%LOCALAPPDATA%\Flowtype`, adds s
 
 **Manual:**
 
-1. **Download** the latest **Lite** or **Full** ZIP from [Releases](https://github.com/vectorfx/flowtype/releases).
-   - **Lite** (~15 MB) — downloads the speech model on first local use
-   - **Full** (~58 MB) — Instant model bundled, offline immediately
+1. **Download** the latest ZIP from [Releases](https://github.com/vectorfx/flowtype/releases).
+   - **Full** (~60 MB) — Instant speech model bundled, offline immediately. This is the one you want.
+   - **Lite** (~15 MB) — same app, model downloaded later if you use local Whisper. Kept so older installs can auto-update.
 2. **Extract** to a normal folder (e.g. `Flowtype\`, not directly in `Downloads`).
 3. Run **`Install Flowtype.bat`**.
 4. Hold **`Win + Ctrl`**, speak, release.
+
+Optional agent chord: Settings → Agent to enable, then in a terminal:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Flowtype\agent-bridge\start-agent.ps1"
+```
 
 > **First run:** Local mode needs no API key. For Groq, paste a free key under Settings → Cloud engines.
 
@@ -212,6 +218,7 @@ Output: `Flowtype.exe` in the repo root. Audio cues and fonts are embedded at bu
 ```
 flowtype/
 ├── src/Flowtype.cs          # Single-file app
+├── agent-bridge/            # Optional loopback daemon for the agent chord
 ├── install.ps1              # One-line installer script
 ├── assets/                  # Icon, fonts, audio cues
 ├── tools/                   # Build, package, font fetch

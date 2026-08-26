@@ -261,6 +261,26 @@ namespace Flowtype.Tests
             remoteAgent.AgentEndpoint = "http://10.0.0.8:5599/ask";
             remoteAgent.Repair();
             failures += AssertEqual("remote agent endpoint reset", "http://127.0.0.1:5599/ask", remoteAgent.AgentEndpoint);
+            List<object> bothZips = new List<object>();
+            bothZips.Add(new Dictionary<string, object> {
+                { "name", "Flowtype-Windows-v1.3.71-Lite.zip" },
+                { "browser_download_url", "https://github.com/vectorfx/flowtype/releases/download/v1.3.71/Flowtype-Windows-v1.3.71-Lite.zip" }
+            });
+            bothZips.Add(new Dictionary<string, object> {
+                { "name", "Flowtype-Windows-v1.3.71-Full.zip" },
+                { "browser_download_url", "https://github.com/vectorfx/flowtype/releases/download/v1.3.71/Flowtype-Windows-v1.3.71-Full.zip" }
+            });
+            failures += AssertEqual("prefer full zip",
+                "https://github.com/vectorfx/flowtype/releases/download/v1.3.71/Flowtype-Windows-v1.3.71-Full.zip",
+                AppUpdater.PickReleaseZipUrl(bothZips));
+            List<object> liteOnly = new List<object>();
+            liteOnly.Add(new Dictionary<string, object> {
+                { "name", "Flowtype-Windows-v1.3.70-Lite.zip" },
+                { "browser_download_url", "https://github.com/vectorfx/flowtype/releases/download/v1.3.70/Flowtype-Windows-v1.3.70-Lite.zip" }
+            });
+            failures += AssertEqual("lite zip fallback",
+                "https://github.com/vectorfx/flowtype/releases/download/v1.3.70/Flowtype-Windows-v1.3.70-Lite.zip",
+                AppUpdater.PickReleaseZipUrl(liteOnly));
             failures += AssertTimeout("short clip turbo floor", 60, AudioTranscriptionTimeouts.ForWavFile("", true).TotalSeconds);
             failures += AssertTimeout("short clip standard floor", 90, AudioTranscriptionTimeouts.ForWavFile("", false).TotalSeconds);
             failures += AssertTimeout("ten minute clip", 600, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
@@ -280,9 +300,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.71"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.72"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.70", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.71", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));

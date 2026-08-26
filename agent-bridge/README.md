@@ -24,7 +24,7 @@ Transcript mode is untouched: Win+Ctrl still pastes into the focused field.
 
 ## Setup (one time, on that user's machine)
 
-1. Build/run Flowtype 1.3.70+.
+1. Build/run Flowtype 1.3.71+.
 2. **Settings → Agent**: enable, leave the endpoint as `http://127.0.0.1:5599/ask`, Test connection.
 3. Start the daemon (loopback + token, default profile is **notes** = files only):
 

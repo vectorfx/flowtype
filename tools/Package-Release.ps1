@@ -9,6 +9,9 @@ $dist = Join-Path $root 'dist'
 
 & (Join-Path $root 'tools\Fetch-Fonts.ps1')
 & (Join-Path $root 'tools\Build-Flowtype.ps1')
+if ($Variant -eq 'Full') {
+    & (Join-Path $root 'tools\Fetch-WhisperModel.ps1')
+}
 
 $exePath = Join-Path $root 'Flowtype.exe'
 $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exePath).FileVersion
@@ -32,12 +35,26 @@ Get-ChildItem -LiteralPath $root -Force | Where-Object {
 
 if ($Variant -eq 'Full') {
     $modelSource = Join-Path $root 'tools\whisper\models\ggml-base.en-q5_1.bin'
-    if (-not (Test-Path -LiteralPath $modelSource)) {
-        throw 'Full package requires tools\whisper\models\ggml-base.en-q5_1.bin on the build machine.'
+    $modelDest = Join-Path $staging 'tools\whisper\models\ggml-base.en-q5_1.bin'
+    if (-not (Test-Path -LiteralPath $modelSource) -or (Get-Item -LiteralPath $modelSource).Length -lt 50000000) {
+        throw 'Full package requires tools\whisper\models\ggml-base.en-q5_1.bin.'
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $modelDest) | Out-Null
+    if (-not (Test-Path -LiteralPath $modelDest) -or (Get-Item -LiteralPath $modelDest).Length -lt 50000000) {
+        Copy-Item -LiteralPath $modelSource -Destination $modelDest -Force
     }
 } else {
     $modelPath = Join-Path $staging 'tools\whisper\models\ggml-base.en-q5_1.bin'
     if (Test-Path -LiteralPath $modelPath) { Remove-Item -LiteralPath $modelPath -Force }
+}
+
+$bridge = Join-Path $staging 'agent-bridge'
+if (Test-Path -LiteralPath $bridge) {
+    Get-ChildItem -LiteralPath $bridge -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -match '\.(jsonl|log)$' -or $_.Directory.Name -eq 'asks' } |
+        Remove-Item -Force
+    $asks = Join-Path $bridge 'asks'
+    if (Test-Path -LiteralPath $asks) { Remove-Item -LiteralPath $asks -Recurse -Force }
 }
 
 Copy-Item -LiteralPath $exePath -Destination $staging -Force

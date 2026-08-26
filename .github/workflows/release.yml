@@ -26,6 +26,10 @@ jobs:
         shell: pwsh
         run: ./tests/Run-Tests.ps1
 
+      - name: Package Full installer
+        shell: pwsh
+        run: ./tools/Package-Release.ps1 -Variant Full
+
       - name: Package Lite installer
         shell: pwsh
         run: ./tools/Package-Release.ps1 -Variant Lite

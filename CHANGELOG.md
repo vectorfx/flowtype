@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.71
+
+Full release is the default:
+- GitHub now publishes the Full zip (offline Instant Whisper model + agent-bridge) and still publishes Lite so 1.3.70 can auto-update
+- Auto-update and the one-line installer prefer Full
+- Checks GitHub again every 6 hours while Flowtype is running, not only at launch
+
+Agent on GitHub:
+- `agent-bridge/` ships in the public zip. Enable the chord in Settings → Agent, then run `agent-bridge\start-agent.ps1` on that machine
+
+---
+
 ## 1.3.70
 
 Dictation through a local streaming model:

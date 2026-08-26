@@ -13,10 +13,10 @@ This is a private repository for trusted collaborators only.
 ## Package
 
 ```powershell
-# Full offline installer (requires local Instant model file)
+# Full installer (offline Instant model + agent-bridge). Downloads the model if needed.
 ./tools/Package-Release.ps1 -Variant Full
 
-# Lite installer (model downloaded on first setup)
+# Lite installer (same app, model downloaded on first local Whisper setup)
 ./tools/Package-Release.ps1 -Variant Lite
 ```
 

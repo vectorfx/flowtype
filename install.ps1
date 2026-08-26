@@ -10,8 +10,11 @@ try {
     $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/vectorfx/flowtype/releases/latest' -Headers @{
         'User-Agent' = 'Flowtype-Installer'
     }
-    $asset = $release.assets | Where-Object { $_.name -match '-Lite\.zip$' } | Select-Object -First 1
-    if (-not $asset) { throw 'Lite release ZIP not found on GitHub.' }
+    $asset = $release.assets | Where-Object { $_.name -match '-Full\.zip$' } | Select-Object -First 1
+    if (-not $asset) {
+        $asset = $release.assets | Where-Object { $_.name -match '-Lite\.zip$' } | Select-Object -First 1
+    }
+    if (-not $asset) { throw 'Release ZIP not found on GitHub.' }
 
     $tempRoot = Join-Path $env:TEMP ("Flowtype-install-" + [Guid]::NewGuid().ToString('N'))
     $zipPath = Join-Path $tempRoot 'flowtype.zip'
