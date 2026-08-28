@@ -24,24 +24,20 @@ Transcript mode is untouched: Win+Ctrl still pastes into the focused field.
 
 ## Setup (one time, on that user's machine)
 
-1. Build/run Flowtype 1.3.71+.
-2. **Settings → Agent**: enable, leave the endpoint as `http://127.0.0.1:5599/ask`, Test connection.
-3. Start the daemon (loopback + token, default profile is **notes** = files only):
+1. Build/run Flowtype 1.3.77+.
+2. **Settings → Agent**: click **Connect OpenCode** or **Connect Claude**. Flowtype starts a hidden listener and keeps it alive. You can close Settings. **Stop** shuts it down.
+
+   OpenCode uses `opencode run --auto`. If Settings → Local has a model name, it is passed as `ollama/<that model>`.
+   Claude uses the warm Claude Agent SDK (your Claude Code login). Connect Claude will not steal an already-running OpenCode listener — it replaces it.
+
+   Or start it yourself:
 
    ```powershell
-   pip install claude-agent-sdk        # once, for the warm Claude session
+   powershell -ExecutionPolicy Bypass -File .\start-agent.ps1 -Cli opencode -Model ollama/qwen2.5-coder:14b
    powershell -ExecutionPolicy Bypass -File .\start-agent.ps1
    ```
 
-   Or attach the CLI they already use:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\start-agent.ps1 -Cli claude
-   powershell -ExecutionPolicy Bypass -File .\start-agent.ps1 -Cli codex
-   powershell -ExecutionPolicy Bypass -File .\start-agent.ps1 -Cli opencode -Profile commit
-   ```
-
-4. Sanity check without the mic:
+3. Sanity check without the mic:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\test-send.ps1
@@ -65,7 +61,7 @@ file; browsers cannot. Origin/Referer requests are refused. The daemon listens o
 
 ## The flight recorder
 
-Every ask, reply, and failure is appended to `flight-recorder.jsonl` on that machine:
+Every ask, reply, and failure is appended to `%APPDATA%\Flowtype\flight-recorder.jsonl` on that machine:
 
 ```json
 {"event":"ask","text":"open my downloads folder","profile":"notes-only","ts":"..."}

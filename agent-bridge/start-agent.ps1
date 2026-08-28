@@ -4,6 +4,7 @@ param(
     [ValidateSet('notes', 'commit', 'full')]
     [string]$Profile = 'notes',
     [string]$Cli = '',
+    [string]$Model = '',
     [int]$Port = 5599,
     [string]$WorkingDirectory = $HOME
 )
@@ -32,6 +33,10 @@ $daemonArgs = @(
 if (-not [string]::IsNullOrWhiteSpace($Cli)) {
     $daemonArgs += @('--cli', $Cli)
     Write-Host "CLI: $Cli"
+}
+if (-not [string]::IsNullOrWhiteSpace($Model)) {
+    $daemonArgs += @('--model', $Model)
+    Write-Host "Model: $Model"
 }
 
 & $python.Source @daemonArgs

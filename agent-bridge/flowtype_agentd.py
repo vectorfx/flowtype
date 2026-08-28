@@ -18,6 +18,7 @@ import asyncio
 import binascii
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -26,7 +27,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOG_PATH = os.path.join(HERE, "flight-recorder.jsonl")
+APP_DIR = os.path.join(os.environ.get("APPDATA", HERE), "Flowtype")
+LOG_PATH = os.path.join(APP_DIR, "flight-recorder.jsonl")
 
 # Action profiles bound the blast radius of a spoken ask. The active profile is
 # reported on /status so the HUD can show which one is live.
@@ -138,11 +140,11 @@ CANNED = [
       "where is my voice", "is my voice uploaded"),
      "Your speech is transcribed by whichever engine you picked in Settings — local Whisper "
      "stays on this machine; OpenAI or Groq send the clip to that provider. The finished text "
-     "then goes to this agent, running locally on this PC, which uses your own Claude account."),
+     "then goes to this agent, running locally on this PC, using the runtime you connected."),
     (("can my work see", "can my employer see", "does my boss see", "is this monitored"),
-     "Nothing here reports to anyone. Every ask and reply is written to two local files on this "
-     "machine — agent-replies.log and flight-recorder.jsonl. Anyone with access to this PC can "
-     "read them; nothing is sent anywhere else."),
+     "Nothing here reports to anyone. Every ask and reply is written to two local files in "
+     "this Windows user profile — agent-replies.log and flight-recorder.jsonl under AppData. "
+     "Anyone with access to this PC can read them; nothing is sent anywhere else."),
     (("can you see my screen", "do you see my screen", "are you watching my screen"),
      "Only if you ask me to. I know the title of the window you were in when you spoke, and I "
      "can take a screenshot and look at it when a task needs it — but I don't watch continuously."),
@@ -169,6 +171,7 @@ def stamp():
 def log_line(record):
     record["ts"] = stamp()
     try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
@@ -211,7 +214,7 @@ def probe_environment():
         "$o=(Get-CimInstance Win32_OperatingSystem).Caption;"
         "Add-Type -AssemblyName System.Windows.Forms;"
         "$s=[System.Windows.Forms.Screen]::AllScreens.Count;"
-        "[pscustomobject]@{os=$o;browser=$b;screens=$s;user=$env:USERNAME;home=$env:USERPROFILE;"
+        "[pscustomobject]@{os=$o;browser=$b;screens=$s;home=$env:USERPROFILE;"
         "ps=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress"
     )
     try:
@@ -220,9 +223,15 @@ def probe_environment():
         facts = json.loads((out.stdout or "").strip())
     except Exception:
         return ""
+    return format_environment(facts)
+
+
+def format_environment(facts):
+    """Facts the model needs. No username — that is private and unused."""
+    facts = facts or {}
     lines = [
         "THIS MACHINE (measured at startup — do not go rediscovering it):",
-        "  OS: " + str(facts.get("os", "Windows")) + " · user " + str(facts.get("user", "")),
+        "  OS: " + str(facts.get("os", "Windows")),
         "  Shell: Windows PowerShell " + str(facts.get("ps", "5.1")) + ". Bash is NOT available. "
         "Use PowerShell syntax — Start-Process, Get-ChildItem, $env:VAR. No /tmp, no ~, no &&.",
         "  Home: " + str(facts.get("home", "")) + " (Desktop, Downloads, Documents live under it)",
@@ -309,6 +318,44 @@ def shape_reply(reply):
     if len(text) > 800:
         text = text[:797].rstrip() + "…"
     return (text or "done"), question, False, focus
+
+
+EMPTY_CLI_REPLY = "The agent started but did not answer. Try again."
+
+
+def is_cli_noise(line):
+    lower = (line or "").strip().lower()
+    if not lower:
+        return False
+    if lower.startswith("[claude-mem]"):
+        return True
+    if "opencode plugin" in lower or "plugin loading" in lower:
+        return True
+    return False
+
+
+def extract_cli_reply(text):
+    """Keep the agent's answer. Drop OpenCode/Claude CLI plugin banners.
+
+    Cold spawn used to take stdout's last line, so a banner after a real
+    answer stole the HUD — and a banner-only spawn looked like Claude.
+    """
+    if not (text or "").strip():
+        return EMPTY_CLI_REPLY
+    kept = [line for line in text.splitlines() if not is_cli_noise(line)]
+    out = "\n".join(kept).strip()
+    return out if out else EMPTY_CLI_REPLY
+
+
+def runtime_label(cli):
+    if not cli:
+        return "Claude"
+    base = os.path.basename(cli).lower()
+    if base.startswith("opencode"):
+        return "OpenCode"
+    if base.startswith("claude"):
+        return "Claude"
+    return cli
 
 
 class WarmSession(object):
@@ -398,15 +445,29 @@ class WarmSession(object):
             pass
 
 
+class BootingExecutor(object):
+    """Placeholder so /status works the moment the port opens, before the session is warm."""
+
+    ready = False
+    turns = 0
+
+    def ask(self, text):
+        raise RuntimeError("agent is still warming up")
+
+    def abort(self):
+        return False
+
+
 class ColdSpawner(object):
     """Fallback executor: one CLI process per ask. Slow, but needs no SDK."""
 
     ready = True
     turns = 0
 
-    def __init__(self, cli, cwd):
-        self.cli = cli
+    def __init__(self, cli, cwd, model=None):
+        self.cli = resolve_cli(cli)
         self.cwd = cwd
+        self.model = (model or "").strip()
         self.lock = threading.Lock()
 
     def start(self):
@@ -415,18 +476,20 @@ class ColdSpawner(object):
     def ask(self, text):
         with self.lock:
             self.turns += 1
+            cmd = cli_command(self.cli, text, self.model)
             completed = subprocess.run(
-                [self.cli, "-p", text],
+                cmd,
                 cwd=self.cwd,
                 capture_output=True,
                 text=True,
                 timeout=600,
-                shell=(os.name == "nt"),
             )
             out = (completed.stdout or "").strip()
             if not out:
                 out = (completed.stderr or "").strip()
-            return out.splitlines()[-1] if out else "(no reply)"
+            if completed.returncode and not out:
+                return "agent CLI failed (" + str(completed.returncode) + ")"
+            return extract_cli_reply(out)
 
     def abort(self):
         return False
@@ -435,9 +498,33 @@ class ColdSpawner(object):
         pass
 
 
+def resolve_cli(name):
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name == "nt":
+        for extra in (name + ".cmd", name + ".exe", name + ".bat"):
+            found = shutil.which(extra)
+            if found:
+                return found
+    return name
+
+
+def cli_command(cli, text, model=None):
+    base = os.path.basename(cli).lower()
+    if base.startswith("opencode"):
+        cmd = [cli, "run", "--auto"]
+        if model:
+            cmd.extend(["-m", model])
+        cmd.append(text)
+        return cmd
+    return [cli, "-p", text]
+
+
 class Handler(BaseHTTPRequestHandler):
     executor = None
     profile_label = "?"
+    runtime_name = ""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -462,6 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "warm": bool(getattr(Handler.executor, "ready", False)),
                 "profile": Handler.profile_label,
+                "runtime": Handler.runtime_name,
                 "turns": getattr(Handler.executor, "turns", 0),
             })
         elif self.path.startswith("/notices"):
@@ -496,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"status": "error", "error": reason})
             return
         if self.path.startswith("/abort"):
-            stopped = Handler.executor.abort()
+            stopped = bool(Handler.executor and Handler.executor.abort())
             say("ABORT requested — " + ("interrupted" if stopped else "nothing in flight"))
             log_line({"event": "abort", "stopped": stopped})
             self._send(200, {"status": "ok", "stopped": stopped})
@@ -542,6 +630,10 @@ class Handler(BaseHTTPRequestHandler):
                              "question": False, "paste": False, "focus": ""})
             return
 
+        if Handler.executor is None or not getattr(Handler.executor, "ready", False):
+            self._send(503, {"status": "warming", "error": "agent is still warming up"})
+            return
+
         try:
             reply = Handler.executor.ask(prompt)
             ms = int((time.time() - started) * 1000)
@@ -568,11 +660,26 @@ def main():
     parser.add_argument("--cwd", default=os.path.expanduser("~"))
     parser.add_argument("--cli", default=None,
                         help="skip the warm SDK session and spawn this CLI per ask (claude, codex, opencode, …)")
+    parser.add_argument("--model", default=None,
+                        help="optional provider/model for --cli opencode, e.g. ollama/qwen2.5-coder:14b")
     args = parser.parse_args()
 
     global ENVIRONMENT
+    spec = PROFILES[args.profile]
+    Handler.executor = BootingExecutor()
+    Handler.profile_label = spec["label"]
+    Handler.runtime_name = runtime_label(args.cli)
     if issue_token():
         say("token issued -> " + TOKEN_PATH)
+
+    # Bind the port before warming. Settings → Test connection should succeed as soon as
+    # this line prints, not after a 10–30s Claude session boot.
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    listener = threading.Thread(target=server.serve_forever, name="agent-http")
+    listener.daemon = True
+    listener.start()
+    say("listening on http://127.0.0.1:" + str(args.port) + "/ask")
+
     say("reading the machine ...")
     facts = probe_environment()
     if facts:
@@ -581,10 +688,9 @@ def main():
     else:
         say("environment probe failed - the agent will have to discover the machine itself")
 
-    spec = PROFILES[args.profile]
     if args.cli:
-        executor = ColdSpawner(args.cli, args.cwd)
-        mode = "cold spawn: " + args.cli
+        executor = ColdSpawner(args.cli, args.cwd, args.model)
+        mode = "cold spawn: " + args.cli + ((" / " + args.model) if args.model else "")
     else:
         try:
             executor = WarmSession(args.profile, args.cwd)
@@ -597,16 +703,13 @@ def main():
             mode = "cold spawn: claude (fallback)"
 
     Handler.executor = executor
-    Handler.profile_label = spec["label"]
-
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    say("listening on http://127.0.0.1:" + str(args.port) + "/ask")
     say("mode: " + mode + "  profile: " + spec["label"] + "  cwd: " + args.cwd)
     say("flight recorder: " + LOG_PATH)
     say("hold the agent chord in Flowtype (default Win+Alt) and speak. Ctrl+C to stop.")
     log_line({"event": "daemon-start", "mode": mode, "profile": spec["label"], "port": args.port})
     try:
-        server.serve_forever()
+        while listener.is_alive():
+            listener.join(0.5)
     except KeyboardInterrupt:
         say("stopping")
     finally:

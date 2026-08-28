@@ -51,12 +51,34 @@ namespace Flowtype.Tests
             failures += AssertEqual("dictionary exact eppi",
                 "The epa ruling came through.",
                 TextProcessor.Clean("the eppi ruling came through", epaDictionary));
-            failures += AssertEqual("dictionary whisper variant eppy",
-                "The epa ruling came through.",
+            failures += AssertEqual("dictionary does not guess spoken variants",
+                "The eppy ruling came through.",
                 TextProcessor.Clean("the eppy ruling came through", epaDictionary));
             failures += AssertEqual("dictionary still applies without cleanup path",
                 "the epa ruling came through",
+                TextProcessor.ApplyDictionaryReplacements("the eppi ruling came through", epaDictionary));
+            failures += AssertEqual("dictionary replacement is exact only",
+                "the eppy ruling came through",
                 TextProcessor.ApplyDictionaryReplacements("the eppy ruling came through", epaDictionary));
+            failures += AssertEqual("dictionary target does not rewrite neighbors",
+                "The eta reading came through.",
+                TextProcessor.Clean("the eta reading came through", epaDictionary));
+            AppSettings bareTerm = AppSettings.Defaults();
+            bareTerm.Dictionary.Add("Settings");
+            failures += AssertEqual("bare dictionary does not fuzzy-pull",
+                "Open setsings.",
+                TextProcessor.Clean("open setsings", bareTerm, null));
+            AppSettings primed = AppSettings.Defaults();
+            primed.Dictionary.Add("Supercalifragilistic => Flowtype");
+            primed.Dictionary.Add("Antidisestablishmentarianism");
+            string whisperPrompt = WhisperEngine.BuildPrompt(primed, null);
+            failures += AssertContains("next point", whisperPrompt);
+            failures += AssertFalse("whisper prompt ignores dictionary from-word",
+                whisperPrompt.IndexOf("Supercalifragilistic", StringComparison.OrdinalIgnoreCase) >= 0);
+            failures += AssertFalse("whisper prompt ignores dictionary to-word",
+                whisperPrompt.IndexOf("Flowtype", StringComparison.OrdinalIgnoreCase) >= 0);
+            failures += AssertFalse("whisper prompt ignores bare dictionary terms",
+                whisperPrompt.IndexOf("Antidisestablishmentarianism", StringComparison.OrdinalIgnoreCase) >= 0);
             failures += AssertTrue(TextProcessor.IsUndoLastCommand("scratch that"));
             failures += AssertTrue(TextProcessor.IsUndoLastCommand("Undo that."));
             failures += AssertFalse(TextProcessor.IsUndoLastCommand("I said scratch that yesterday"));
@@ -167,6 +189,11 @@ namespace Flowtype.Tests
             repairedLists.Repair();
             failures += AssertEqual("bullet phrase defaulted", "next point", repairedLists.SpokenBulletPhrase);
             failures += AssertEqual("number phrase defaulted", "next number", repairedLists.SpokenNumberPhrase);
+            repairedLists.SpokenBulletPhrase = "";
+            repairedLists.SpokenNumberPhrase = "   ";
+            repairedLists.Repair();
+            failures += AssertEqual("empty bullet phrase defaulted", "next point", repairedLists.SpokenBulletPhrase);
+            failures += AssertEqual("blank number phrase defaulted", "next number", repairedLists.SpokenNumberPhrase);
             failures += AssertContains("next point", WhisperEngine.BuildPrompt(AppSettings.Defaults(), null));
             failures += AssertContains("- buy milk\n- get eggs",
                 TextProcessor.ApplyAlwaysEdits("buy milk next point get eggs", AppSettings.Defaults()));
@@ -257,10 +284,48 @@ namespace Flowtype.Tests
             failures += AssertFalse(AgentBridge.IsLoopbackEndpoint("http://192.168.1.10:5599/ask"));
             failures += AssertFalse(AgentBridge.IsLoopbackEndpoint("https://example.com/ask"));
             failures += AssertFalse(AgentBridge.IsLoopbackEndpoint(""));
+            failures += AssertEqual("default agent runtime", "OpenCode", AppSettings.Defaults().AgentRuntime);
+            failures += AssertContains("Connect OpenCode", AgentBridge.DescribeProbe(System.Net.WebExceptionStatus.ConnectFailure, 0, false));
+            failures += AssertContains("-Cli opencode", AgentLaunch.StartArguments(@"C:\flowtype\start-agent.ps1", "OpenCode", ""));
+            failures += AssertContains("-Model \"ollama/qwen\"", AgentLaunch.StartArguments(@"C:\flowtype\start-agent.ps1", "OpenCode", "ollama/qwen"));
+            failures += AssertFalse("claude launch uses warm SDK, not a CLI spawn",
+                AgentLaunch.StartArguments(@"C:\flowtype\start-agent.ps1", "Claude", "ignored").IndexOf("-Cli", StringComparison.OrdinalIgnoreCase) >= 0);
+            failures += AssertFalse("claude cannot reuse an OpenCode listener", AgentLaunch.CanReuse("Claude", "OpenCode"));
+            failures += AssertFalse("unknown listener cannot be reused", AgentLaunch.CanReuse("Claude", ""));
+            failures += AssertTrue(AgentLaunch.CanReuse("OpenCode", "OpenCode"));
+            failures += AssertContains("--cli opencode", AgentLaunch.DaemonProcessArgs(@"C:\d.py", "OpenCode", "ollama/qwen", @"C:\home", 5599));
+            failures += AssertFalse("claude daemon args skip --cli",
+                AgentLaunch.DaemonProcessArgs(@"C:\d.py", "Claude", "ignored", @"C:\home", 5599).IndexOf("--cli", StringComparison.OrdinalIgnoreCase) >= 0);
+            AgentBridge.ProbeResult coldOk = new AgentBridge.ProbeResult();
+            coldOk.Ok = true;
+            coldOk.Warm = false;
+            failures += AssertFalse("claude is not ready until warm", AgentLaunch.ReadyForRuntime("Claude", coldOk));
+            failures += AssertTrue(AgentLaunch.ReadyForRuntime("OpenCode", coldOk));
+            failures += AssertEqual("cli banner dropped from OpenCode reply",
+                "Opened Downloads.",
+                AgentReply.CleanCliOutput("[claude-mem] OpenCode plugin loading (project: opencode)\nOpened Downloads."));
+            failures += AssertEqual("cli banner only is not a reply",
+                "The agent started but did not answer. Try again.",
+                AgentReply.CleanCliOutput("[claude-mem] OpenCode plugin loading (project: opencode)"));
+            failures += AssertEqual("normal agent reply kept",
+                "Opened Gmail inbox in your default browser.",
+                AgentReply.CleanCliOutput("Opened Gmail inbox in your default browser."));
+            failures += AssertEqual("multiline agent reply kept",
+                "Latest: Google, 21 Jul.\nNothing needs action.",
+                AgentReply.CleanCliOutput("Latest: Google, 21 Jul.\nNothing needs action."));
+            failures += AssertContains("token", AgentBridge.DescribeProbe(System.Net.WebExceptionStatus.ProtocolError, 403, false));
+            failures += AssertContains("warming", AgentBridge.DescribeProbe(System.Net.WebExceptionStatus.ProtocolError, 503, false));
+            failures += AssertContains("warm", AgentBridge.DescribeProbe(System.Net.WebExceptionStatus.Success, 200, true));
+            failures += AssertContains("OpenCode", AgentBridge.DescribeProbe(System.Net.WebExceptionStatus.Success, 200, true, "OpenCode"));
+            failures += AssertContains("Claude", AgentBridge.DescribeProbe(System.Net.WebExceptionStatus.Success, 200, true, "Claude"));
             AppSettings remoteAgent = AppSettings.Defaults();
             remoteAgent.AgentEndpoint = "http://10.0.0.8:5599/ask";
             remoteAgent.Repair();
             failures += AssertEqual("remote agent endpoint reset", "http://127.0.0.1:5599/ask", remoteAgent.AgentEndpoint);
+            AppSettings junkRuntime = AppSettings.Defaults();
+            junkRuntime.AgentRuntime = "GPT";
+            junkRuntime.Repair();
+            failures += AssertEqual("junk agent runtime becomes OpenCode", "OpenCode", junkRuntime.AgentRuntime);
             List<object> bothZips = new List<object>();
             bothZips.Add(new Dictionary<string, object> {
                 { "name", "Flowtype-Windows-v1.3.71-Lite.zip" },
@@ -300,9 +365,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.72"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.80"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.71", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.79", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
@@ -334,6 +399,20 @@ namespace Flowtype.Tests
             badMark.OverlayMark = "Spinner";
             badMark.Repair();
             failures += AssertEqual("unknown mark becomes orb", "Orb", badMark.OverlayMark);
+            failures += AssertEqual("default appearance", "Dark", AppSettings.Defaults().AppAppearance);
+            AppSettings junkAppearance = AppSettings.Defaults();
+            junkAppearance.AppAppearance = "Midnight";
+            junkAppearance.Repair();
+            failures += AssertEqual("junk appearance becomes dark", "Dark", junkAppearance.AppAppearance);
+            AppSettings lightAppearance = AppSettings.Defaults();
+            lightAppearance.AppAppearance = "Light";
+            lightAppearance.Repair();
+            failures += AssertEqual("light appearance kept", "Light", lightAppearance.AppAppearance);
+            failures += AssertTrue(UiTheme.ResolveDark("Dark"));
+            failures += AssertFalse(UiTheme.ResolveDark("Light"));
+            UiTheme.Apply("Dark");
+            failures += AssertTrue(UiTheme.Card != UiTheme.Window);
+            failures += AssertTrue(UiTheme.Surface != UiTheme.Window);
             failures += AssertTrue(ForegroundContext.LooksUnpasteableProcess("Flowtype"));
             failures += AssertTrue(ForegroundContext.LooksUnpasteableProcess("consent"));
             failures += AssertTrue(ForegroundContext.LooksUnpasteableProcess("SearchHost"));
@@ -682,8 +761,13 @@ namespace Flowtype.Tests
 
         private static int AssertFalse(bool value)
         {
-            if (!value) { Console.WriteLine("PASS false"); return 0; }
-            Console.WriteLine("FAIL expected false");
+            return AssertFalse("false", value);
+        }
+
+        private static int AssertFalse(string name, bool value)
+        {
+            if (!value) { Console.WriteLine("PASS " + name); return 0; }
+            Console.WriteLine("FAIL " + name);
             return 1;
         }
     }

@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.3.79
+
+Agent replies and connect, for anyone's machine:
+- OpenCode plugin banners (`[claude-mem] plugin loading`) are stripped so the HUD shows the real answer, not a fake Claude line
+- Connect names the runtime (OpenCode vs Claude) on the status line and on the HUD (`::opencode` / `::claude`)
+- You install OpenCode or Claude Code once. You do not launch those apps first — Connect starts a hidden listener inside Flowtype
+- The agent no longer puts the Windows username into the prompt it sends to the model. Flight recorder lives in `%APPDATA%\Flowtype`, not next to the shipped script
+
+---
+
+## 1.3.78
+
+Agent connect is owned by Flowtype, not a throwaway console:
+- Connect OpenCode / Connect Claude starts a hidden daemon as a child of Flowtype.exe. Closing Settings does not kill it. Stop does.
+- Connect Claude no longer treats an OpenCode listener as success. Switching runtimes kills the other one first.
+- Claude is not reported ready until the session is warm. Missing `claude`, `opencode`, or Python is named in the status line.
+- PATH search includes npm shims and `~/.local/bin`, which GUI apps often miss.
+
+---
+
+## 1.3.77
+
+Dictionary is exact replacement only:
+- `heard => written` changes that word and nothing else. Nearby words are not pulled toward it, Whisper is not primed with it, and cloud cleanup is not told to prefer it
+
+Agent tab:
+- Connect OpenCode and Connect Claude — one click starts the listener, arms the key, and waits until it answers
+- If a listener is already up, Connect just arms the key
+
+---
+
+## 1.3.76
+
+Personalization:
+- Empty spoken-list phrases fall back to “next point” / “next number” instead of saving blank
+- Saving Settings keeps the last dictionary and snippets if those boxes come through empty (so a chrome glitch cannot wipe them)
+- The previous `settings.json` is kept as `settings.json.bak` on each save
+
+---
+
+## 1.3.75
+
+Dark appearance now paints its own scrollbars (page and dictionary/snippet wells) instead of the stock white Windows bars. Light mode is unchanged. Settings no longer grows a stray horizontal bar.
+
+---
+
+## 1.3.74
+
+Agent setup in Settings:
+- Numbered steps, Start agent / Stop agent, and Test connection that names the real failure (nothing listening, bad token, still warming)
+- Runtime picker: OpenCode (local / free models), Claude Code, or a custom loopback listener
+- OpenCode starts `opencode run --auto` through the bundled daemon, using the Local-tab model as `ollama/…` when one is set
+
+Personalization:
+- Spoken lists, dictionary, and voice snippets stay on that page and scroll into view
+
+---
+
+## 1.3.73
+
+Settings chrome:
+- Combos, checks, text fields, and buttons are drawn by Flowtype — rounded wells, cream ticks, no stock Win32 frames
+- Controls sit in grouped cards with labels above fields instead of a two-column 1998 form
+- Primary action is labeled Save and close
+
+---
+
+## 1.3.72
+
+Settings and History chrome:
+- Dark appearance is the default, with Light and Match Windows in the header
+- Left nav replaces the old tab strip, cream accent on the selected page, dark title bar on Windows
+- History and dictionary-fix follow the same palette
+
+---
+
 ## 1.3.71
 
 Full release is the default:

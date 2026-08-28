@@ -86,11 +86,7 @@ Downloads the latest Full release (app + offline Instant model + agent bridge), 
 3. Run **`Install Flowtype.bat`**.
 4. Hold **`Win + Ctrl`**, speak, release.
 
-Optional agent chord: Settings → Agent to enable, then in a terminal:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Flowtype\agent-bridge\start-agent.ps1"
-```
+Optional agent chord: Settings → Agent → **Connect OpenCode** or **Connect Claude**. You do not launch those apps first. Hold the agent key (default **Win + Alt**), speak, release.
 
 > **First run:** Local mode needs no API key. For Groq, paste a free key under Settings → Cloud engines.
 

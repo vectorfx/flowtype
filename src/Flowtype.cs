@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.71.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.71.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.79.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.79.0")]
 
 namespace Flowtype
 {
@@ -66,9 +66,11 @@ namespace Flowtype
         public string LastUpdateCheckUtc;
         public string OverlayTheme;
         public string OverlayMark;
+        public string AppAppearance;
         public bool AgentModeEnabled;
         public string AgentHotkey;
         public string AgentEndpoint;
+        public string AgentRuntime;
         public bool SpokenListsEnabled;
         public string SpokenBulletPhrase;
         public string SpokenNumberPhrase;
@@ -112,9 +114,11 @@ namespace Flowtype
             value.LastUpdateCheckUtc = "";
             value.OverlayTheme = "Dark";
             value.OverlayMark = "Orb";
+            value.AppAppearance = "Dark";
             value.AgentModeEnabled = false;
             value.AgentHotkey = "Win + Alt";
             value.AgentEndpoint = "http://127.0.0.1:5599/ask";
+            value.AgentRuntime = "OpenCode";
             value.SpokenListsEnabled = true;
             value.SpokenBulletPhrase = "next point";
             value.SpokenNumberPhrase = "next number";
@@ -159,16 +163,26 @@ namespace Flowtype
                 !String.Equals(OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayTheme, "Ember", StringComparison.OrdinalIgnoreCase))
                 OverlayTheme = "Dark";
-            if (String.IsNullOrWhiteSpace(OverlayMark)) OverlayMark = "Orb";
-            if (!String.Equals(OverlayMark, "Orb", StringComparison.OrdinalIgnoreCase) &&
+            if (String.IsNullOrWhiteSpace(OverlayMark) ||
+                (!String.Equals(OverlayMark, "Orb", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayMark, "Hex", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayMark, "Iris", StringComparison.OrdinalIgnoreCase) &&
-                !String.Equals(OverlayMark, "Grid", StringComparison.OrdinalIgnoreCase))
+                !String.Equals(OverlayMark, "Grid", StringComparison.OrdinalIgnoreCase)))
                 OverlayMark = "Orb";
-            if (SpokenBulletPhrase == null) SpokenBulletPhrase = "next point";
-            if (SpokenNumberPhrase == null) SpokenNumberPhrase = "next number";
+            if (String.IsNullOrWhiteSpace(AppAppearance) ||
+                (!String.Equals(AppAppearance, "Dark", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(AppAppearance, "Light", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(AppAppearance, "System", StringComparison.OrdinalIgnoreCase)))
+                AppAppearance = "Dark";
+            if (String.IsNullOrWhiteSpace(SpokenBulletPhrase)) SpokenBulletPhrase = "next point";
+            if (String.IsNullOrWhiteSpace(SpokenNumberPhrase)) SpokenNumberPhrase = "next number";
             if (String.IsNullOrWhiteSpace(AgentEndpoint) || !AgentBridge.IsLoopbackEndpoint(AgentEndpoint))
                 AgentEndpoint = "http://127.0.0.1:5599/ask";
+            if (String.IsNullOrWhiteSpace(AgentRuntime) ||
+                (!String.Equals(AgentRuntime, "OpenCode", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(AgentRuntime, "Claude", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(AgentRuntime, "Custom", StringComparison.OrdinalIgnoreCase)))
+                AgentRuntime = "OpenCode";
             bool agentChordKnown = false;
             foreach (string name in Hotkeys.Names)
                 if (String.Equals(name, AgentHotkey, StringComparison.OrdinalIgnoreCase)) { agentChordKnown = true; break; }
@@ -183,15 +197,1256 @@ namespace Flowtype
 
     public static class UiTheme
     {
-        public static readonly Color Window = Color.FromArgb(244, 244, 245);
-        public static readonly Color Surface = Color.White;
-        public static readonly Color Header = Color.FromArgb(250, 250, 250);
-        public static readonly Color Border = Color.FromArgb(212, 212, 216);
-        public static readonly Color BorderSoft = Color.FromArgb(228, 228, 231);
-        public static readonly Color Text = Color.FromArgb(24, 24, 27);
-        public static readonly Color TextMuted = Color.FromArgb(113, 113, 122);
-        public static readonly Color Accent = Color.FromArgb(39, 39, 42);
-        public static readonly Color AccentHover = Color.FromArgb(63, 63, 70);
+        public static bool Dark;
+        public static Color Window;
+        public static Color Surface;
+        public static Color Card;
+        public static Color Header;
+        public static Color Border;
+        public static Color BorderSoft;
+        public static Color Text;
+        public static Color TextMuted;
+        public static Color Accent;
+        public static Color AccentHover;
+        public static Color AccentInk;
+        public static Color NavFill;
+        public static Color Ok;
+        public static Color Danger;
+
+        private const int DwmUseImmersiveDarkMode = 20;
+        private const int DwmUseImmersiveDarkModeBefore20H1 = 19;
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetWindowTheme(IntPtr hwnd, string pszSubAppName, string pszSubIdList);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string className, string windowTitle);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadLibrary(string lpFileName);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
+        private static extern IntPtr GetProcAddress(IntPtr hModule, IntPtr procName);
+
+        private delegate bool AllowDarkModeForWindowFn(IntPtr hWnd, bool allow);
+        private delegate int SetPreferredAppModeFn(int mode);
+        private delegate void VoidOrdinalFn();
+        private static bool darkScrollReady;
+        private static AllowDarkModeForWindowFn allowDarkModeForWindow;
+        private static SetPreferredAppModeFn setPreferredAppMode;
+        private static VoidOrdinalFn flushMenuThemes;
+        private static VoidOrdinalFn refreshImmersiveColorPolicyState;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true, EntryPoint = "GetProcAddress")]
+        private static extern IntPtr GetProcAddressByName(IntPtr hModule, string procName);
+
+        public static void StripTheme(IntPtr hwnd)
+        {
+            if (hwnd != IntPtr.Zero) SetWindowTheme(hwnd, "", "");
+        }
+
+        public static void ApplyScroll(Control control)
+        {
+            if (control == null || !control.IsHandleCreated) return;
+            ThemeScrollHandle(control.Handle);
+        }
+
+        private static void EnsureDarkScrollApi()
+        {
+            if (darkScrollReady) return;
+            darkScrollReady = true;
+            try
+            {
+                IntPtr ux = GetModuleHandle("uxtheme.dll");
+                if (ux == IntPtr.Zero) ux = LoadLibrary("uxtheme.dll");
+                if (ux == IntPtr.Zero) return;
+                IntPtr allow = GetProcAddress(ux, (IntPtr)133);
+                if (allow == IntPtr.Zero) allow = GetProcAddressByName(ux, "#133");
+                if (allow != IntPtr.Zero)
+                    allowDarkModeForWindow = (AllowDarkModeForWindowFn)Marshal.GetDelegateForFunctionPointer(allow, typeof(AllowDarkModeForWindowFn));
+                IntPtr preferred = GetProcAddress(ux, (IntPtr)135);
+                if (preferred == IntPtr.Zero) preferred = GetProcAddressByName(ux, "#135");
+                if (preferred != IntPtr.Zero)
+                    setPreferredAppMode = (SetPreferredAppModeFn)Marshal.GetDelegateForFunctionPointer(preferred, typeof(SetPreferredAppModeFn));
+                IntPtr flush = GetProcAddress(ux, (IntPtr)136);
+                if (flush == IntPtr.Zero) flush = GetProcAddressByName(ux, "#136");
+                if (flush != IntPtr.Zero)
+                    flushMenuThemes = (VoidOrdinalFn)Marshal.GetDelegateForFunctionPointer(flush, typeof(VoidOrdinalFn));
+                IntPtr refresh = GetProcAddress(ux, (IntPtr)104);
+                if (refresh == IntPtr.Zero) refresh = GetProcAddressByName(ux, "#104");
+                if (refresh != IntPtr.Zero)
+                    refreshImmersiveColorPolicyState = (VoidOrdinalFn)Marshal.GetDelegateForFunctionPointer(refresh, typeof(VoidOrdinalFn));
+            }
+            catch { }
+        }
+
+        private static void ApplyAppMode()
+        {
+            EnsureDarkScrollApi();
+            try
+            {
+                if (setPreferredAppMode != null) setPreferredAppMode(1);
+            }
+            catch { }
+        }
+
+        private static void ThemeScrollHandle(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            EnsureDarkScrollApi();
+            try
+            {
+                if (allowDarkModeForWindow != null) allowDarkModeForWindow(hwnd, Dark);
+                string theme = Dark ? "DarkMode_Explorer" : "Explorer";
+                SetWindowTheme(hwnd, theme, null);
+                IntPtr bar = IntPtr.Zero;
+                while (true)
+                {
+                    bar = FindWindowEx(hwnd, bar, "ScrollBar", null);
+                    if (bar == IntPtr.Zero) break;
+                    if (allowDarkModeForWindow != null) allowDarkModeForWindow(bar, Dark);
+                    SetWindowTheme(bar, theme, null);
+                }
+                SendMessage(hwnd, 0x031A, IntPtr.Zero, IntPtr.Zero);
+            }
+            catch { }
+        }
+
+        static UiTheme()
+        {
+            Apply("Dark");
+        }
+
+        public static void Apply(string appearance)
+        {
+            Dark = ResolveDark(appearance);
+            if (Dark)
+            {
+                Window = Color.FromArgb(10, 10, 12);
+                Card = Color.FromArgb(18, 18, 21);
+                Surface = Color.FromArgb(28, 28, 32);
+                Header = Color.FromArgb(8, 8, 10);
+                Border = Color.FromArgb(52, 52, 58);
+                BorderSoft = Color.FromArgb(36, 36, 40);
+                Text = Color.FromArgb(238, 238, 243);
+                TextMuted = Color.FromArgb(148, 148, 156);
+                Accent = Color.FromArgb(232, 220, 196);
+                AccentHover = Color.FromArgb(244, 234, 214);
+                AccentInk = Color.FromArgb(18, 18, 20);
+                NavFill = Color.FromArgb(28, 28, 32);
+                Ok = Color.FromArgb(110, 186, 140);
+                Danger = Color.FromArgb(214, 96, 88);
+            }
+            else
+            {
+                Window = Color.FromArgb(242, 242, 244);
+                Card = Color.White;
+                Surface = Color.FromArgb(250, 250, 251);
+                Header = Color.FromArgb(252, 252, 253);
+                Border = Color.FromArgb(214, 214, 218);
+                BorderSoft = Color.FromArgb(232, 232, 236);
+                Text = Color.FromArgb(24, 24, 27);
+                TextMuted = Color.FromArgb(113, 113, 122);
+                Accent = Color.FromArgb(24, 24, 27);
+                AccentHover = Color.FromArgb(63, 63, 70);
+                AccentInk = Color.White;
+                NavFill = Color.FromArgb(244, 244, 246);
+                Ok = Color.FromArgb(25, 128, 91);
+                Danger = Color.FromArgb(176, 58, 46);
+            }
+            ApplyAppMode();
+        }
+
+        public static bool ResolveDark(string appearance)
+        {
+            if (String.Equals(appearance, "Light", StringComparison.OrdinalIgnoreCase)) return false;
+            if (String.Equals(appearance, "System", StringComparison.OrdinalIgnoreCase)) return !WindowsAppsUseLightTheme();
+            return true;
+        }
+
+        public static void Mute(Control control)
+        {
+            Tone(control, "muted");
+        }
+
+        public static void Tone(Control control, string tone)
+        {
+            if (control == null) return;
+            if (String.Equals(tone, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                control.Tag = "ok";
+                control.ForeColor = Ok;
+                return;
+            }
+            if (String.Equals(tone, "danger", StringComparison.OrdinalIgnoreCase))
+            {
+                control.Tag = "danger";
+                control.ForeColor = Danger;
+                return;
+            }
+            control.Tag = "muted";
+            control.ForeColor = TextMuted;
+        }
+
+        public static void ThemeForm(Form form)
+        {
+            if (form == null) return;
+            form.BackColor = Window;
+            form.ForeColor = Text;
+            Paint(form);
+            if (form.IsHandleCreated) ApplyTitleBar(form);
+            else
+            {
+                form.HandleCreated -= ThemeFormHandleCreated;
+                form.HandleCreated += ThemeFormHandleCreated;
+            }
+        }
+
+        private static void ThemeFormHandleCreated(object sender, EventArgs e)
+        {
+            Form form = sender as Form;
+            if (form != null) ApplyTitleBar(form);
+        }
+
+        public static void ApplyTitleBar(Form form)
+        {
+            if (form == null || !form.IsHandleCreated) return;
+            int useDark = Dark ? 1 : 0;
+            DwmSetWindowAttribute(form.Handle, DwmUseImmersiveDarkMode, ref useDark, 4);
+            DwmSetWindowAttribute(form.Handle, DwmUseImmersiveDarkModeBefore20H1, ref useDark, 4);
+        }
+
+        public static Color Behind(Control control)
+        {
+            Control walk = control == null ? null : control.Parent;
+            while (walk != null)
+            {
+                string tag = walk.Tag as string;
+                if (tag == "card") return Card;
+                if (tag == "field") return Surface;
+                if (tag == "nav" || tag == "chrome") return Header;
+                walk = walk.Parent;
+            }
+            if (control != null && control.Parent != null) return control.Parent.BackColor;
+            return Window;
+        }
+
+        public static void Paint(Control root)
+        {
+            if (root == null) return;
+            PaintOne(root);
+            foreach (Control child in root.Controls) Paint(child);
+        }
+
+        private static void PaintOne(Control control)
+        {
+            if (control is Form || control is Panel || control is SplitContainer)
+            {
+                string tag = control.Tag as string;
+                if (tag == "nav" || tag == "chrome")
+                    control.BackColor = Header;
+                else if (tag == "field")
+                    control.BackColor = Behind(control);
+                else
+                    control.BackColor = Window;
+                control.ForeColor = Text;
+                if (tag == "field")
+                {
+                    FieldHost well = control as FieldHost;
+                    if (well != null) well.SyncScrollChrome();
+                }
+                SettingsPage settingsPage = control as SettingsPage;
+                if (settingsPage != null) settingsPage.SyncChrome();
+                else
+                {
+                    Panel scrollPage = control as Panel;
+                    if (scrollPage != null && scrollPage.AutoScroll && scrollPage.IsHandleCreated)
+                        ApplyScroll(scrollPage);
+                }
+            }
+            PictureBox picture = control as PictureBox;
+            if (picture != null)
+            {
+                picture.BackColor = Color.Transparent;
+                return;
+            }
+            Label label = control as Label;
+            if (label != null)
+            {
+                label.BackColor = Color.Transparent;
+                string tone = label.Tag as string;
+                if (tone == "muted") label.ForeColor = TextMuted;
+                else if (tone == "ok") label.ForeColor = Ok;
+                else if (tone == "danger") label.ForeColor = Danger;
+                else label.ForeColor = Text;
+                return;
+            }
+            CheckBox check = control as CheckBox;
+            if (check != null)
+            {
+                if (check is ThemedCheckBox)
+                {
+                    check.BackColor = Color.Transparent;
+                    check.ForeColor = Text;
+                    check.Invalidate();
+                    return;
+                }
+                check.BackColor = Window;
+                check.ForeColor = Text;
+                check.FlatStyle = FlatStyle.Standard;
+                return;
+            }
+            TextBox box = control as TextBox;
+            if (box != null)
+            {
+                box.BackColor = Surface;
+                box.ForeColor = Text;
+                box.BorderStyle = BorderStyle.None;
+                if (!(box.Parent is FieldHost)) TextEdge.Attach(box);
+                if (box.Multiline && box.IsHandleCreated && !(box.Parent is FieldHost && Dark))
+                    ApplyScroll(box);
+                return;
+            }
+            ComboBox combo = control as ComboBox;
+            if (combo != null)
+            {
+                ThemedComboBox themed = combo as ThemedComboBox;
+                if (themed != null)
+                {
+                    themed.BackColor = Surface;
+                    themed.ForeColor = Text;
+                    themed.Invalidate();
+                    return;
+                }
+                StyleCombo(combo);
+                return;
+            }
+            ThemedButton themedButton = control as ThemedButton;
+            if (themedButton != null)
+            {
+                themedButton.Invalidate();
+                return;
+            }
+            Button button = control as Button;
+            if (button != null)
+            {
+                bool primary = button.Tag as string == "primary";
+                bool nav = button.Tag as string == "nav-item" || button.Tag as string == "nav-item-on";
+                button.FlatStyle = FlatStyle.Flat;
+                button.Cursor = Cursors.Hand;
+                if (nav)
+                {
+                    bool on = button.Tag as string == "nav-item-on";
+                    button.BackColor = on ? NavFill : Header;
+                    button.ForeColor = on ? Text : TextMuted;
+                    button.FlatAppearance.BorderSize = 0;
+                    button.FlatAppearance.MouseOverBackColor = NavFill;
+                    return;
+                }
+                button.BackColor = primary ? Accent : Surface;
+                button.ForeColor = primary ? AccentInk : Text;
+                button.FlatAppearance.BorderColor = primary ? Accent : Border;
+                button.FlatAppearance.BorderSize = 1;
+                button.FlatAppearance.MouseOverBackColor = primary ? AccentHover : BorderSoft;
+                return;
+            }
+            ListView list = control as ListView;
+            if (list != null)
+            {
+                list.BackColor = Surface;
+                list.ForeColor = Text;
+                list.BorderStyle = BorderStyle.FixedSingle;
+                if (list.IsHandleCreated) ApplyScroll(list);
+                return;
+            }
+            TrackBar bar = control as TrackBar;
+            if (bar != null)
+            {
+                bar.BackColor = Window;
+                return;
+            }
+            ProgressBar progress = control as ProgressBar;
+            if (progress != null)
+            {
+                if (progress.IsHandleCreated)
+                    UiTheme.StripTheme(progress.Handle);
+                progress.BackColor = Surface;
+                progress.ForeColor = Accent;
+                return;
+            }
+            ToolStrip strip = control as ToolStrip;
+            if (strip != null)
+            {
+                strip.BackColor = Header;
+                strip.ForeColor = Text;
+                strip.Renderer = new ToolStripProfessionalRenderer(new ChromeColorTable());
+            }
+        }
+
+        public static void StyleCombo(ComboBox box)
+        {
+            if (box == null) return;
+            if (box is ThemedComboBox)
+            {
+                box.BackColor = Surface;
+                box.ForeColor = Text;
+                return;
+            }
+            box.BackColor = Surface;
+            box.ForeColor = Text;
+            box.FlatStyle = FlatStyle.Flat;
+            box.DrawMode = DrawMode.OwnerDrawFixed;
+            box.ItemHeight = 22;
+            box.IntegralHeight = false;
+            box.DrawItem -= DrawComboItem;
+            box.DrawItem += DrawComboItem;
+        }
+
+        public static GraphicsPath RoundRect(Rectangle bounds, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            Rectangle box = new Rectangle(bounds.X, bounds.Y, Math.Max(1, bounds.Width), Math.Max(1, bounds.Height));
+            int cap = Math.Min(box.Width, box.Height) / 2;
+            int r = Math.Max(1, Math.Min(radius, cap));
+            int d = r * 2;
+            if (d >= box.Width || d >= box.Height)
+            {
+                path.AddRectangle(box);
+                return path;
+            }
+            path.AddArc(box.X, box.Y, d, d, 180, 90);
+            path.AddArc(box.Right - d, box.Y, d, d, 270, 90);
+            path.AddArc(box.Right - d, box.Bottom - d, d, d, 0, 90);
+            path.AddArc(box.X, box.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        public static void FillRound(Graphics g, Rectangle bounds, Color color, int radius)
+        {
+            using (GraphicsPath path = RoundRect(bounds, radius))
+            using (SolidBrush brush = new SolidBrush(color))
+                g.FillPath(brush, path);
+        }
+
+        public static void StrokeRound(Graphics g, Rectangle bounds, Color color, int radius)
+        {
+            using (GraphicsPath path = RoundRect(bounds, radius))
+            using (Pen pen = new Pen(color, 1f))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.DrawPath(pen, path);
+            }
+        }
+
+        public static void DrawChevron(Graphics g, int x, int y, Color color)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (Pen pen = new Pen(color, 1.5f))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                g.DrawLines(pen, new Point[] { new Point(x - 4, y - 1), new Point(x, y + 3), new Point(x + 4, y - 1) });
+            }
+        }
+
+        public static void DrawWell(Graphics g, Rectangle bounds, bool emphasize, bool enabled)
+        {
+            FillRound(g, bounds, enabled ? Surface : BorderSoft, 10);
+            StrokeRound(g, bounds, emphasize ? Accent : Border, 10);
+        }
+
+        public static void Soften(Control control)
+        {
+            if (control == null) return;
+            try
+            {
+                typeof(Control).GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .SetValue(control, true, null);
+            }
+            catch { }
+        }
+
+        private static void DrawComboItem(object sender, DrawItemEventArgs e)
+        {
+            ComboBox box = sender as ComboBox;
+            if (box == null || e.Index < 0) return;
+            bool edit = (e.State & DrawItemState.ComboBoxEdit) != 0;
+            bool selected = !edit && (e.State & DrawItemState.Selected) != 0;
+            Color fill = selected ? Accent : Surface;
+            Color ink = selected ? AccentInk : Text;
+            using (SolidBrush brush = new SolidBrush(fill))
+                e.Graphics.FillRectangle(brush, e.Bounds);
+            string text = Convert.ToString(box.Items[e.Index]);
+            Rectangle bounds = new Rectangle(e.Bounds.X + 8, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, text, box.Font, bounds, ink,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+
+        private static bool WindowsAppsUseLightTheme()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    if (key == null) return true;
+                    object value = key.GetValue("AppsUseLightTheme");
+            if (value != null && value.GetType() == typeof(int)) return Convert.ToInt32(value) != 0;
+                }
+            }
+            catch { }
+            return true;
+        }
+
+        private sealed class ChromeColorTable : ProfessionalColorTable
+        {
+            public override Color ToolStripGradientBegin { get { return Header; } }
+            public override Color ToolStripGradientMiddle { get { return Header; } }
+            public override Color ToolStripGradientEnd { get { return Header; } }
+            public override Color ImageMarginGradientBegin { get { return Header; } }
+            public override Color ImageMarginGradientMiddle { get { return Header; } }
+            public override Color ImageMarginGradientEnd { get { return Header; } }
+            public override Color MenuBorder { get { return Border; } }
+            public override Color SeparatorDark { get { return Border; } }
+            public override Color ButtonSelectedHighlight { get { return NavFill; } }
+            public override Color ButtonSelectedGradientBegin { get { return NavFill; } }
+            public override Color ButtonSelectedGradientMiddle { get { return NavFill; } }
+            public override Color ButtonSelectedGradientEnd { get { return NavFill; } }
+            public override Color ButtonPressedGradientBegin { get { return BorderSoft; } }
+            public override Color ButtonPressedGradientMiddle { get { return BorderSoft; } }
+            public override Color ButtonPressedGradientEnd { get { return BorderSoft; } }
+            public override Color GripDark { get { return Border; } }
+            public override Color GripLight { get { return BorderSoft; } }
+            public override Color OverflowButtonGradientBegin { get { return Header; } }
+            public override Color OverflowButtonGradientMiddle { get { return Header; } }
+            public override Color OverflowButtonGradientEnd { get { return Header; } }
+            public override Color SeparatorLight { get { return BorderSoft; } }
+        }
+
+        private sealed class TextEdge : NativeWindow
+        {
+            private static readonly Dictionary<IntPtr, TextEdge> Edges = new Dictionary<IntPtr, TextEdge>();
+            private readonly Control host;
+
+            [DllImport("user32.dll")]
+            private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+            private TextEdge(Control host)
+            {
+                this.host = host;
+            }
+
+            public static void Attach(Control control)
+            {
+                if (control == null) return;
+                if (!control.IsHandleCreated)
+                {
+                    control.HandleCreated -= AttachOnHandle;
+                    control.HandleCreated += AttachOnHandle;
+                    return;
+                }
+                if (Edges.ContainsKey(control.Handle)) return;
+                IntPtr hwnd = control.Handle;
+                TextEdge edge = new TextEdge(control);
+                edge.AssignHandle(hwnd);
+                Edges[hwnd] = edge;
+                SendMessage(hwnd, 0x00D3, (IntPtr)3, (IntPtr)((12 << 16) | 12));
+                control.Disposed += delegate
+                {
+                    TextEdge live;
+                    if (Edges.TryGetValue(hwnd, out live))
+                    {
+                        Edges.Remove(hwnd);
+                        live.ReleaseHandle();
+                    }
+                };
+            }
+
+            private static void AttachOnHandle(object sender, EventArgs e)
+            {
+                Control control = sender as Control;
+                if (control != null) Attach(control);
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                base.WndProc(ref m);
+                if (m.Msg != 0x000F && m.Msg != 0x0085) return;
+                if (host == null || !host.IsHandleCreated) return;
+                try
+                {
+                    using (Graphics g = Graphics.FromHwnd(host.Handle))
+                    {
+                        g.SmoothingMode = SmoothingMode.AntiAlias;
+                        Rectangle box = new Rectangle(0, 0, Math.Max(1, host.Width - 1), Math.Max(1, host.Height - 1));
+                        StrokeRound(g, box, host.Focused ? Accent : Border, 7);
+                    }
+                }
+                catch { }
+            }
+        }
+    }
+
+    public sealed class FieldHost : Panel
+    {
+        private readonly Control inner;
+        private readonly ThemedVScrollBar vbar = new ThemedVScrollBar();
+        private readonly ScrollWatch watch = new ScrollWatch();
+        private bool syncing;
+        private bool laying;
+
+        public FieldHost(Control inner)
+        {
+            this.inner = inner;
+            Tag = "field";
+            TabStop = false;
+            UiTheme.Soften(this);
+            Padding = new Padding(12, 8, 12, 8);
+            TextBox box = inner as TextBox;
+            if (box != null) box.BorderStyle = BorderStyle.None;
+            inner.GotFocus += delegate { Invalidate(); };
+            inner.LostFocus += delegate { Invalidate(); };
+            inner.MouseWheel += delegate { QueueSync(); };
+            inner.TextChanged += delegate { QueueSync(); };
+            inner.KeyUp += delegate { QueueSync(); };
+            inner.Resize += delegate { QueueSync(); };
+            inner.HandleCreated += delegate
+            {
+                watch.Bind(inner);
+                QueueSync();
+            };
+            inner.HandleDestroyed += delegate { watch.Release(); };
+            if (inner.IsHandleCreated) watch.Bind(inner);
+            vbar.Tag = "vscroll";
+            vbar.Visible = false;
+            vbar.ScrollValueChanged += delegate { ApplyBarToText(); };
+            Controls.Add(inner);
+            Controls.Add(vbar);
+            watch.Changed += delegate { QueueSync(); };
+            Resize += delegate { LayoutInner(); QueueSync(); };
+            HandleCreated += delegate { SyncScrollChrome(); };
+            LayoutInner();
+        }
+
+        public void SyncScrollChrome()
+        {
+            if (IsDisposed) return;
+            TextBox box = inner as TextBox;
+            if (box == null || !box.Multiline)
+            {
+                vbar.Visible = false;
+                LayoutInner();
+                return;
+            }
+            if (UiTheme.Dark)
+            {
+                box.ScrollBars = ScrollBars.None;
+                LayoutInner();
+                SyncBarFromText();
+            }
+            else
+            {
+                vbar.Visible = false;
+                box.ScrollBars = ScrollBars.Vertical;
+                LayoutInner();
+                if (box.IsHandleCreated) UiTheme.ApplyScroll(box);
+            }
+        }
+
+        private void QueueSync()
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            try { BeginInvoke(new Action(SyncScrollChrome)); }
+            catch { }
+        }
+
+        private void LayoutInner()
+        {
+            if (laying || inner == null) return;
+            laying = true;
+            try
+            {
+                int barW = vbar != null && vbar.Visible ? 10 : 0;
+                inner.SetBounds(Padding.Left, Padding.Top,
+                    Math.Max(8, Width - Padding.Horizontal - barW),
+                    Math.Max(8, Height - Padding.Vertical));
+                if (vbar != null && vbar.Visible)
+                    vbar.SetBounds(Width - Padding.Right - 8, Padding.Top, 8, Height - Padding.Vertical);
+            }
+            finally { laying = false; }
+        }
+
+        private void SyncBarFromText()
+        {
+            TextBox box = inner as TextBox;
+            if (box == null || !box.Multiline || !UiTheme.Dark || !box.IsHandleCreated)
+            {
+                vbar.Visible = false;
+                return;
+            }
+            int lineHeight = Math.Max(1, box.Font.Height);
+            int viewLines = Math.Max(1, box.ClientSize.Height / lineHeight);
+            int lineCount = Math.Max(1, (int)Native.SendMessage(box.Handle, Native.EmGetLineCount, IntPtr.Zero, IntPtr.Zero));
+            int first = (int)Native.SendMessage(box.Handle, Native.EmGetFirstVisibleLine, IntPtr.Zero, IntPtr.Zero);
+            bool need = lineCount > viewLines;
+            vbar.Visible = need;
+            if (need)
+            {
+                syncing = true;
+                try { vbar.SetRange(0, lineCount - 1, viewLines, first); }
+                finally { syncing = false; }
+            }
+            LayoutInner();
+        }
+
+        private void ApplyBarToText()
+        {
+            if (syncing) return;
+            TextBox box = inner as TextBox;
+            if (box == null || !box.IsHandleCreated) return;
+            int first = (int)Native.SendMessage(box.Handle, Native.EmGetFirstVisibleLine, IntPtr.Zero, IntPtr.Zero);
+            int delta = vbar.Value - first;
+            if (delta != 0) Native.SendMessage(box.Handle, Native.EmLineScroll, IntPtr.Zero, (IntPtr)delta);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(UiTheme.Behind(this));
+            Rectangle box = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+            UiTheme.DrawWell(g, box, inner != null && inner.Focused, Enabled);
+        }
+
+        private sealed class ScrollWatch : NativeWindow
+        {
+            public event EventHandler Changed;
+
+            public void Bind(Control control)
+            {
+                if (control == null) return;
+                Release();
+                if (control.IsHandleCreated) AssignHandle(control.Handle);
+            }
+
+            public void Release()
+            {
+                if (Handle != IntPtr.Zero) ReleaseHandle();
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                base.WndProc(ref m);
+                if (m.Msg == 0x0115 || m.Msg == 0x020A || m.Msg == 0x0100 || m.Msg == 0x0101)
+                {
+                    EventHandler handler = Changed;
+                    if (handler != null) handler(this, EventArgs.Empty);
+                }
+            }
+        }
+
+        private static class Native
+        {
+            public const int EmGetLineCount = 0x00BA;
+            public const int EmGetFirstVisibleLine = 0x00CE;
+            public const int EmLineScroll = 0x00B6;
+
+            [DllImport("user32.dll")]
+            public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        }
+    }
+
+    public sealed class ThemedVScrollBar : Control
+    {
+        private int minimum;
+        private int maximum = 1;
+        private int largeChange = 1;
+        private int value;
+        private bool dragging;
+        private bool hover;
+        private int dragOffset;
+
+        public event EventHandler ScrollValueChanged;
+
+        public ThemedVScrollBar()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            TabStop = false;
+            Width = 8;
+        }
+
+        public int Value
+        {
+            get { return value; }
+            set { SetValue(value, true); }
+        }
+
+        public void SetRange(int min, int max, int large, int current)
+        {
+            minimum = min;
+            maximum = Math.Max(min + 1, max);
+            largeChange = Math.Max(1, large);
+            SetValue(current, false);
+            Invalidate();
+        }
+
+        private int UsableMax
+        {
+            get { return Math.Max(minimum, maximum - largeChange + 1); }
+        }
+
+        private void SetValue(int next, bool notify)
+        {
+            int clamped = Math.Max(minimum, Math.Min(UsableMax, next));
+            if (clamped == value) { if (notify) Invalidate(); return; }
+            value = clamped;
+            Invalidate();
+            if (notify)
+            {
+                EventHandler handler = ScrollValueChanged;
+                if (handler != null) handler(this, EventArgs.Empty);
+            }
+        }
+
+        private Rectangle ThumbRect()
+        {
+            int track = Math.Max(1, Height - 4);
+            int range = Math.Max(largeChange, maximum - minimum + 1);
+            int thumbH = Math.Max(24, (int)(track * (largeChange / (double)range)));
+            thumbH = Math.Min(track, thumbH);
+            int travel = Math.Max(0, track - thumbH);
+            int usable = Math.Max(1, UsableMax - minimum);
+            int y = 2 + (int)Math.Round(travel * ((value - minimum) / (double)usable));
+            return new Rectangle(1, y, Math.Max(6, Width - 2), thumbH);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color fill = Parent is FieldHost ? UiTheme.Surface : UiTheme.Window;
+            g.Clear(fill);
+            Color thumb = dragging ? UiTheme.TextMuted : hover ? Color.FromArgb(UiTheme.Dark ? 120 : 150, UiTheme.TextMuted) : UiTheme.Border;
+            UiTheme.FillRound(g, ThumbRect(), thumb, 4);
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            hover = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            if (!dragging) hover = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            Rectangle thumb = ThumbRect();
+            if (thumb.Contains(e.Location))
+            {
+                dragging = true;
+                dragOffset = e.Y - thumb.Y;
+                Capture = true;
+            }
+            else
+            {
+                SetValue(e.Y < thumb.Y ? value - largeChange : value + largeChange, true);
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            if (dragging)
+            {
+                int track = Math.Max(1, Height - 4);
+                int thumbH = ThumbRect().Height;
+                int travel = Math.Max(1, track - thumbH);
+                int y = e.Y - dragOffset - 2;
+                int usable = Math.Max(1, UsableMax - minimum);
+                SetValue(minimum + (int)Math.Round(y * usable / (double)travel), true);
+            }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            dragging = false;
+            Capture = false;
+            hover = ClientRectangle.Contains(PointToClient(Control.MousePosition));
+            Invalidate();
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            int step = Math.Max(1, largeChange / 8);
+            SetValue(value - Math.Sign(e.Delta) * step, true);
+            base.OnMouseWheel(e);
+        }
+    }
+
+    public sealed class SettingsContent : Panel
+    {
+        private const int WsHScroll = 0x00100000;
+        private const int WsVScroll = 0x00200000;
+
+        public SettingsContent()
+        {
+            AutoScroll = true;
+            Padding = new Padding(8, 8, 8, 20);
+            UiTheme.Soften(this);
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.Style &= ~WsHScroll;
+                if (UiTheme.Dark) cp.Style &= ~WsVScroll;
+                return cp;
+            }
+        }
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            Point target = base.ScrollToControl(activeControl);
+            return new Point(0, target.Y);
+        }
+
+        public void RebuildHandle()
+        {
+            RecreateHandle();
+        }
+
+        protected override void OnLayout(LayoutEventArgs levent)
+        {
+            base.OnLayout(levent);
+            HorizontalScroll.Enabled = false;
+            HorizontalScroll.Visible = false;
+            if (AutoScrollPosition.X != 0) AutoScrollPosition = new Point(0, -AutoScrollPosition.Y);
+        }
+    }
+
+    public sealed class SettingsPage : Panel
+    {
+        public readonly SettingsContent Host;
+        private readonly ThemedVScrollBar vbar = new ThemedVScrollBar();
+        private bool syncing;
+        private bool lastDark;
+        private bool recreateQueued;
+
+        public SettingsPage()
+        {
+            Host = new SettingsContent();
+            Host.Dock = DockStyle.Fill;
+            Host.Scroll += delegate { SyncChrome(); };
+            Host.MouseWheel += delegate { QueueSync(); };
+            vbar.Tag = "vscroll";
+            vbar.Visible = false;
+            vbar.ScrollValueChanged += delegate { ApplyBarToPage(); };
+            lastDark = UiTheme.Dark;
+            Controls.Add(Host);
+            Controls.Add(vbar);
+        }
+
+        public void SyncChrome()
+        {
+            if (syncing || IsDisposed) return;
+            syncing = true;
+            try
+            {
+                if (lastDark != UiTheme.Dark)
+                {
+                    lastDark = UiTheme.Dark;
+                    QueueRecreate();
+                }
+                if (!Host.IsHandleCreated) return;
+                Host.HorizontalScroll.Enabled = false;
+                Host.HorizontalScroll.Visible = false;
+                int view = Math.Max(1, Host.ClientSize.Height);
+                int doc = Math.Max(view, Host.DisplayRectangle.Height);
+                int pos = Math.Max(0, -Host.AutoScrollPosition.Y);
+                bool need = UiTheme.Dark && doc > view + 2;
+                vbar.Visible = need;
+                if (need)
+                {
+                    vbar.SetBounds(Math.Max(0, Width - 12), 0, 10, Height);
+                    vbar.BringToFront();
+                    vbar.SetRange(0, doc - 1, view, pos);
+                }
+                else if (!UiTheme.Dark) UiTheme.ApplyScroll(Host);
+            }
+            finally { syncing = false; }
+        }
+
+        private void QueueSync()
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                try { BeginInvoke(new Action(SyncChrome)); }
+                catch { }
+            }
+        }
+
+        private void QueueRecreate()
+        {
+            if (recreateQueued || !Host.IsHandleCreated || Host.IsDisposed) return;
+            recreateQueued = true;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    recreateQueued = false;
+                    if (Host.IsDisposed) return;
+                    try { Host.RebuildHandle(); }
+                    catch { }
+                    SyncChrome();
+                }));
+            }
+            catch { recreateQueued = false; }
+        }
+
+        private void ApplyBarToPage()
+        {
+            if (syncing || !Host.IsHandleCreated) return;
+            Host.AutoScrollPosition = new Point(0, vbar.Value);
+        }
+    }
+
+    public sealed class ThemedComboBox : ComboBox
+    {
+        private bool hover;
+
+        public ThemedComboBox()
+        {
+            DrawMode = DrawMode.OwnerDrawFixed;
+            DropDownStyle = ComboBoxStyle.DropDownList;
+            FlatStyle = FlatStyle.Flat;
+            IntegralHeight = false;
+            ItemHeight = 28;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            UiTheme.StripTheme(Handle);
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            hover = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            hover = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnGotFocus(EventArgs e)
+        {
+            Invalidate();
+            base.OnGotFocus(e);
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            Invalidate();
+            base.OnLostFocus(e);
+        }
+
+        protected override void OnSelectedIndexChanged(EventArgs e)
+        {
+            base.OnSelectedIndexChanged(e);
+            Invalidate();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0014)
+            {
+                m.Result = (IntPtr)1;
+                return;
+            }
+            if (m.Msg == 0x0085)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
+            if (m.Msg == 0x000F) PaintChrome();
+        }
+
+        private void PaintChrome()
+        {
+            try
+            {
+                using (Graphics g = Graphics.FromHwnd(Handle))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.Clear(UiTheme.Behind(this));
+                    Rectangle box = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+                    Color fill = hover ? UiTheme.BorderSoft : UiTheme.Surface;
+                    UiTheme.FillRound(g, box, Enabled ? fill : UiTheme.BorderSoft, 10);
+                    UiTheme.StrokeRound(g, box, Focused || hover ? UiTheme.Accent : UiTheme.Border, 10);
+                    string text = SelectedIndex >= 0 ? Convert.ToString(Items[SelectedIndex]) : Text;
+                    Rectangle textBox = new Rectangle(12, 0, Math.Max(8, Width - 36), Height);
+                    TextRenderer.DrawText(g, text ?? "", Font, textBox, Enabled ? UiTheme.Text : UiTheme.TextMuted,
+                        TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                    UiTheme.DrawChevron(g, Width - 16, Height / 2, UiTheme.TextMuted);
+                }
+            }
+            catch { }
+        }
+
+        protected override void OnDrawItem(DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+            bool edit = (e.State & DrawItemState.ComboBoxEdit) != 0;
+            bool selected = !edit && (e.State & DrawItemState.Selected) != 0;
+            Color fill = edit ? UiTheme.Surface : (selected ? UiTheme.Accent : UiTheme.Surface);
+            Color ink = selected ? UiTheme.AccentInk : UiTheme.Text;
+            using (SolidBrush brush = new SolidBrush(fill))
+                e.Graphics.FillRectangle(brush, e.Bounds);
+            if (edit) return;
+            string text = Convert.ToString(Items[e.Index]);
+            Rectangle bounds = new Rectangle(e.Bounds.X + 10, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 14), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, text, Font, bounds, ink,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+    }
+
+    public sealed class ThemedCheckBox : CheckBox
+    {
+        public ThemedCheckBox()
+        {
+            AutoSize = false;
+            Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+        }
+
+        protected override void OnCheckedChanged(EventArgs e)
+        {
+            Invalidate();
+            base.OnCheckedChanged(e);
+        }
+
+        protected override void OnGotFocus(EventArgs e)
+        {
+            Invalidate();
+            base.OnGotFocus(e);
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            Invalidate();
+            base.OnLostFocus(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(UiTheme.Behind(this));
+            int size = 18;
+            int y = Math.Max(0, (Height - size) / 2);
+            Rectangle mark = new Rectangle(1, y, size, size);
+            UiTheme.FillRound(g, mark, Checked ? UiTheme.Accent : UiTheme.Surface, 5);
+            UiTheme.StrokeRound(g, mark, Focused || Checked ? UiTheme.Accent : UiTheme.Border, 5);
+            if (Checked)
+            {
+                using (Pen tick = new Pen(UiTheme.AccentInk, 1.8f))
+                {
+                    tick.StartCap = LineCap.Round;
+                    tick.EndCap = LineCap.Round;
+                    g.DrawLines(tick, new Point[]
+                    {
+                        new Point(mark.X + 4, mark.Y + 9),
+                        new Point(mark.X + 7, mark.Y + 12),
+                        new Point(mark.X + 13, mark.Y + 5)
+                    });
+                }
+            }
+            Rectangle textBox = new Rectangle(size + 12, 0, Math.Max(8, Width - size - 14), Height);
+            TextRenderer.DrawText(g, Text, Font, textBox, Enabled ? UiTheme.Text : UiTheme.TextMuted,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+        }
+    }
+
+    public sealed class ThemedButton : Button
+    {
+        private bool hover;
+        private bool press;
+
+        public ThemedButton()
+        {
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; press = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { press = true; Invalidate(); base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { press = false; Invalidate(); base.OnMouseUp(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(UiTheme.Behind(this));
+            bool primary = Tag as string == "primary";
+            bool navOn = Tag as string == "nav-item-on";
+            bool nav = navOn || Tag as string == "nav-item";
+            Rectangle box = nav
+                ? new Rectangle(10, 4, Math.Max(1, Width - 21), Math.Max(1, Height - 9))
+                : new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+            Color fill = primary ? (hover ? UiTheme.AccentHover : UiTheme.Accent)
+                : navOn ? UiTheme.NavFill
+                : (hover ? UiTheme.BorderSoft : (nav ? Color.Transparent : UiTheme.Surface));
+            if (press && !primary) fill = UiTheme.Border;
+            if (!(nav && !navOn && !hover && fill == Color.Transparent))
+                UiTheme.FillRound(g, box, fill == Color.Transparent ? UiTheme.Behind(this) : fill, nav ? 10 : 10);
+            if (!nav && !primary)
+                UiTheme.StrokeRound(g, box, UiTheme.Border, 10);
+            if (navOn)
+            {
+                using (SolidBrush cream = new SolidBrush(UiTheme.Accent))
+                    g.FillRectangle(cream, box.X + 4, box.Y + 9, 3, Math.Max(4, box.Height - 18));
+            }
+            Color ink = primary ? UiTheme.AccentInk : (nav && !navOn ? UiTheme.TextMuted : UiTheme.Text);
+            TextFormatFlags flags = nav
+                ? TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding
+                : TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+            Rectangle textBox = nav
+                ? new Rectangle(box.X + 18, box.Y, box.Width - 22, box.Height)
+                : box;
+            TextRenderer.DrawText(g, Text, Font, textBox, ink, flags);
+        }
     }
 
     public static class AppFonts
@@ -417,6 +1672,328 @@ namespace Flowtype
         }
     }
 
+    public static class AgentLaunch
+    {
+        public static bool CanReuse(string requested, string live)
+        {
+            if (String.IsNullOrWhiteSpace(requested) || String.IsNullOrWhiteSpace(live)) return false;
+            return String.Equals(requested, live, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool ReadyForRuntime(string runtime, AgentBridge.ProbeResult probe)
+        {
+            if (probe == null || !probe.Ok) return false;
+            if (String.Equals(runtime, "Claude", StringComparison.OrdinalIgnoreCase)) return probe.Warm;
+            return true;
+        }
+
+        public static int PortFromEndpoint(string endpoint)
+        {
+            try
+            {
+                Uri uri = new Uri((endpoint ?? "").Trim());
+                if (uri.Port > 0) return uri.Port;
+            }
+            catch { }
+            return 5599;
+        }
+
+        public static string StartArguments(string scriptPath, string runtime, string model)
+        {
+            StringBuilder args = new StringBuilder();
+            args.Append("-NoProfile -ExecutionPolicy Bypass -File \"").Append(scriptPath ?? "").Append("\"");
+            if (String.Equals(runtime, "OpenCode", StringComparison.OrdinalIgnoreCase))
+            {
+                args.Append(" -Cli opencode");
+                if (!String.IsNullOrWhiteSpace(model))
+                    args.Append(" -Model \"").Append(model).Append("\"");
+            }
+            return args.ToString();
+        }
+
+        public static string DaemonProcessArgs(string daemonPy, string runtime, string model, string cwd, int port)
+        {
+            StringBuilder args = new StringBuilder();
+            args.Append('"').Append(daemonPy ?? "").Append('"');
+            args.Append(" --port ").Append(port > 0 ? port : 5599);
+            args.Append(" --profile notes");
+            if (!String.IsNullOrWhiteSpace(cwd))
+                args.Append(" --cwd \"").Append(cwd).Append('"');
+            if (String.Equals(runtime, "OpenCode", StringComparison.OrdinalIgnoreCase))
+            {
+                args.Append(" --cli opencode");
+                if (!String.IsNullOrWhiteSpace(model))
+                    args.Append(" --model \"").Append(model).Append('"');
+            }
+            return args.ToString();
+        }
+    }
+
+    public static class AgentPaths
+    {
+        public static string Find(string name)
+        {
+            if (String.IsNullOrWhiteSpace(name)) return "";
+            string extList = Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT";
+            if (extList.IndexOf(".CMD", StringComparison.OrdinalIgnoreCase) < 0) extList += ";.CMD;.BAT;.EXE";
+            string[] exts = extList.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string folder in SearchFolders())
+            {
+                if (String.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) continue;
+                string direct = Path.Combine(folder, name);
+                if (File.Exists(direct)) return direct;
+                foreach (string ext in exts)
+                {
+                    string candidate = Path.Combine(folder, name + ext);
+                    if (File.Exists(candidate)) return candidate;
+                }
+            }
+            return "";
+        }
+
+        public static string PathPrefix()
+        {
+            return String.Join(";", SearchFolders().ToArray());
+        }
+
+        private static IEnumerable<string> SearchFolders()
+        {
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string folder in SplitPath(Environment.GetEnvironmentVariable("PATH")))
+                if (seen.Add(folder)) yield return folder;
+            foreach (string folder in SplitPath(UserPath()))
+                if (seen.Add(folder)) yield return folder;
+            foreach (string folder in SplitPath(MachinePath()))
+                if (seen.Add(folder)) yield return folder;
+            string roamingNpm = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm");
+            if (seen.Add(roamingNpm)) yield return roamingNpm;
+            string localBin = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin");
+            if (seen.Add(localBin)) yield return localBin;
+            string localPrograms = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs");
+            if (Directory.Exists(localPrograms))
+            {
+                foreach (string pythonDir in Directory.GetDirectories(localPrograms, "Python*"))
+                    if (seen.Add(pythonDir)) yield return pythonDir;
+            }
+        }
+
+        private static IEnumerable<string> SplitPath(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) yield break;
+            foreach (string part in value.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string folder = Environment.ExpandEnvironmentVariables(part.Trim().Trim('"'));
+                if (folder.Length > 0) yield return folder;
+            }
+        }
+
+        private static string UserPath()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Environment"))
+                {
+                    if (key == null) return "";
+                    return Convert.ToString(key.GetValue("PATH", "", RegistryValueOptions.DoNotExpandEnvironmentNames) ?? "");
+                }
+            }
+            catch { return ""; }
+        }
+
+        private static string MachinePath()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"))
+                {
+                    if (key == null) return "";
+                    return Convert.ToString(key.GetValue("PATH", "", RegistryValueOptions.DoNotExpandEnvironmentNames) ?? "");
+                }
+            }
+            catch { return ""; }
+        }
+    }
+
+    public sealed class AgentSession
+    {
+        private readonly object gate = new object();
+        private Process process;
+        private string liveRuntime = "";
+        private readonly StringBuilder output = new StringBuilder();
+
+        public string LiveRuntime
+        {
+            get { lock (gate) return liveRuntime ?? ""; }
+        }
+
+        public bool IsRunning
+        {
+            get
+            {
+                lock (gate)
+                {
+                    try { return process != null && !process.HasExited; }
+                    catch { return false; }
+                }
+            }
+        }
+
+        public string Start(string runtime, string endpoint, string model, string appDirectory)
+        {
+            if (String.Equals(runtime, "Custom", StringComparison.OrdinalIgnoreCase))
+                return "Custom runtime: start your own listener, then Test.";
+            string daemonPy = Path.Combine(appDirectory ?? "", "agent-bridge", "flowtype_agentd.py");
+            if (!File.Exists(daemonPy))
+                return "agent-bridge is missing. Reinstall the Full Flowtype zip.";
+            string python = AgentPaths.Find("python");
+            if (python.Length == 0) python = AgentPaths.Find("py");
+            if (python.Length == 0)
+                return "Python is not on PATH. Install Python 3, then Connect again.";
+            if (String.Equals(runtime, "OpenCode", StringComparison.OrdinalIgnoreCase) &&
+                AgentPaths.Find("opencode").Length == 0)
+                return "OpenCode is not on PATH. Install it, then Connect again. https://opencode.ai";
+            if (String.Equals(runtime, "Claude", StringComparison.OrdinalIgnoreCase) &&
+                AgentPaths.Find("claude").Length == 0)
+                return "Claude Code is not on PATH. Install it, log in once (`claude`), then Connect again.";
+
+            int port = AgentLaunch.PortFromEndpoint(endpoint);
+            if (AgentLaunch.CanReuse(runtime, LiveRuntime) && IsRunning)
+            {
+                AgentBridge.ProbeResult existing = AgentBridge.Probe(endpoint);
+                if (AgentLaunch.ReadyForRuntime(runtime, existing))
+                    return NamedConnect(runtime, existing.Message);
+            }
+
+            Stop();
+            KillLoopbackPort(port);
+            lock (gate) output.Length = 0;
+
+            ProcessStartInfo info = new ProcessStartInfo();
+            info.FileName = python;
+            info.Arguments = AgentLaunch.DaemonProcessArgs(daemonPy, runtime, model, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), port);
+            info.WorkingDirectory = Path.GetDirectoryName(daemonPy);
+            info.UseShellExecute = false;
+            info.CreateNoWindow = true;
+            info.RedirectStandardOutput = true;
+            info.RedirectStandardError = true;
+            try { info.EnvironmentVariables["PATH"] = AgentPaths.PathPrefix(); } catch { }
+
+            Process started;
+            try { started = Process.Start(info); }
+            catch (Exception exception) { return exception.Message; }
+            if (started == null) return "Could not start the agent process.";
+            started.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+            {
+                if (e.Data == null) return;
+                lock (gate) output.AppendLine(e.Data);
+                AgentTrace.Log("daemon: " + e.Data);
+            };
+            started.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+            {
+                if (e.Data == null) return;
+                lock (gate) output.AppendLine(e.Data);
+                AgentTrace.Log("daemon-err: " + e.Data);
+            };
+            started.BeginOutputReadLine();
+            started.BeginErrorReadLine();
+            lock (gate)
+            {
+                process = started;
+                liveRuntime = runtime;
+            }
+            AgentTrace.Log("daemon start runtime=" + runtime + " pid=" + started.Id);
+
+            int waits = String.Equals(runtime, "Claude", StringComparison.OrdinalIgnoreCase) ? 60 : 20;
+            AgentBridge.ProbeResult last = new AgentBridge.ProbeResult();
+            last.Message = "Starting…";
+            for (int attempt = 0; attempt < waits; attempt++)
+            {
+                Thread.Sleep(500);
+                if (!IsRunning)
+                    return TailOutput("Agent process exited before it started listening.");
+                last = AgentBridge.Probe(endpoint);
+                if (AgentLaunch.ReadyForRuntime(runtime, last))
+                    return NamedConnect(runtime, last.Message);
+            }
+            if (last.Ok)
+                return last.Message;
+            return TailOutput(last.Message);
+        }
+
+        public void Stop()
+        {
+            Process dying = null;
+            lock (gate)
+            {
+                dying = process;
+                process = null;
+                liveRuntime = "";
+            }
+            if (dying == null) return;
+            try
+            {
+                if (!dying.HasExited)
+                {
+                    dying.Kill();
+                    dying.WaitForExit(3000);
+                }
+            }
+            catch { }
+            try { dying.Dispose(); } catch { }
+            AgentTrace.Log("daemon stop");
+        }
+
+        private static string NamedConnect(string runtime, string message)
+        {
+            string text = (message ?? "").Trim();
+            if (text.Length == 0) return runtime + " connected.";
+            if (text.IndexOf(runtime, StringComparison.OrdinalIgnoreCase) >= 0) return text;
+            return runtime + ". " + text;
+        }
+
+        private string TailOutput(string fallback)
+        {
+            string text;
+            lock (gate) text = output.ToString();
+            string last = "";
+            foreach (string line in (text ?? "").Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                last = line.Trim();
+            if (last.Length == 0) return fallback;
+            return fallback + " " + last;
+        }
+
+        private static void KillLoopbackPort(int port)
+        {
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo();
+                info.FileName = "netstat";
+                info.Arguments = "-ano -p tcp";
+                info.UseShellExecute = false;
+                info.CreateNoWindow = true;
+                info.RedirectStandardOutput = true;
+                using (Process netstat = Process.Start(info))
+                {
+                    string body = netstat.StandardOutput.ReadToEnd();
+                    netstat.WaitForExit(4000);
+                    string needle = ":" + port.ToString(CultureInfo.InvariantCulture);
+                    foreach (string line in (body ?? "").Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (line.IndexOf("LISTENING", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        if (line.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        string[] parts = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length == 0) continue;
+                        int pid;
+                        if (!int.TryParse(parts[parts.Length - 1], out pid) || pid <= 0) continue;
+                        if (pid == Process.GetCurrentProcess().Id) continue;
+                        try { Process.GetProcessById(pid).Kill(); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+    }
+
     // Agent chord transport: the finished transcript is handed to ONE local runtime as a
     // plain POST. Flowtype never plans, never routes, never executes — if nothing is
     // listening the send fails closed and dictation is untouched.
@@ -544,13 +2121,13 @@ namespace Flowtype
                 {
                     object reply;
                     if (parsed.TryGetValue("reply", out reply) && reply != null && Convert.ToString(reply).Trim().Length > 0)
-                        return Convert.ToString(reply).Trim();
+                        return AgentReply.CleanCliOutput(Convert.ToString(reply));
                     object status;
                     if (parsed.TryGetValue("status", out status)) return Convert.ToString(status);
                 }
             }
             catch { }
-            return raw.Trim();
+            return AgentReply.CleanCliOutput(raw);
         }
 
         // Sibling routes off the configured /ask endpoint, so one setting still
@@ -687,6 +2264,117 @@ namespace Flowtype
                 catch { }
             }
             return exception.Message;
+        }
+
+        public static string DescribeProbe(WebExceptionStatus status, int httpCode, bool warm)
+        {
+            return DescribeProbe(status, httpCode, warm, "");
+        }
+
+        public static string DescribeProbe(WebExceptionStatus status, int httpCode, bool warm, string runtime)
+        {
+            if (status == WebExceptionStatus.ConnectFailure || status == WebExceptionStatus.NameResolutionFailure)
+                return "Nothing is listening on that port. Click Connect OpenCode or Connect Claude.";
+            if (httpCode == 403)
+                return "Something is there but it refused Flowtype's token. Stop the old agent window and Connect again.";
+            if (httpCode == 503)
+                return "Listening, still warming. Test again in a few seconds.";
+            if (httpCode >= 200 && httpCode < 300)
+            {
+                string who = String.IsNullOrWhiteSpace(runtime) ? "Connected" : runtime.Trim() + " connected";
+                return warm ? who + " — session is warm." : who + ". Still warming — Test again shortly.";
+            }
+            if (status == WebExceptionStatus.Timeout)
+                return "The port answered too slowly. If you just connected, wait and Test again.";
+            return "Nothing is listening on that port. Click Connect OpenCode or Connect Claude.";
+        }
+
+        public sealed class ProbeResult
+        {
+            public bool Ok;
+            public bool Warm;
+            public string Message;
+        }
+
+        public static ProbeResult Probe(string endpoint)
+        {
+            ProbeResult result = new ProbeResult();
+            if (String.IsNullOrWhiteSpace(endpoint))
+            {
+                result.Message = "Enter an endpoint first.";
+                return result;
+            }
+            if (!IsLoopbackEndpoint(endpoint))
+            {
+                result.Message = "Must be 127.0.0.1 or localhost.";
+                return result;
+            }
+            string statusUrl = Sibling(endpoint, "/status");
+            if (statusUrl.Length == 0) statusUrl = endpoint;
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(statusUrl);
+                request.Method = "GET";
+                request.Timeout = 4000;
+                request.ReadWriteTimeout = 4000;
+                request.Proxy = null;
+                request.KeepAlive = false;
+                string token = Token();
+                if (token.Length > 0) request.Headers["X-Flowtype-Token"] = token;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                {
+                    string body = reader.ReadToEnd();
+                    bool warm = body.IndexOf("\"warm\":true", StringComparison.OrdinalIgnoreCase) >= 0;
+                    result.Ok = true;
+                    result.Warm = warm;
+                    result.Message = DescribeProbe(WebExceptionStatus.Success, (int)response.StatusCode, warm, ExtractText(body, "runtime"));
+                    return result;
+                }
+            }
+            catch (WebException web)
+            {
+                int code = 0;
+                HttpWebResponse resp = web.Response as HttpWebResponse;
+                if (resp != null) code = (int)resp.StatusCode;
+                result.Message = DescribeProbe(web.Status, code, false);
+                return result;
+            }
+            catch (Exception exception)
+            {
+                result.Message = exception.Message;
+                return result;
+            }
+        }
+    }
+
+    // OpenCode (and other CLIs) print plugin banners to stdout. The HUD must show the
+    // answer, not "[claude-mem] OpenCode plugin loading".
+    public static class AgentReply
+    {
+        public const string EmptyAfterNoise = "The agent started but did not answer. Try again.";
+
+        public static string CleanCliOutput(string raw)
+        {
+            if (String.IsNullOrWhiteSpace(raw)) return EmptyAfterNoise;
+            List<string> kept = new List<string>();
+            foreach (string line in raw.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n'))
+            {
+                if (IsCliNoise(line)) continue;
+                kept.Add(line);
+            }
+            string text = String.Join("\n", kept.ToArray()).Trim();
+            return text.Length == 0 ? EmptyAfterNoise : text;
+        }
+
+        private static bool IsCliNoise(string line)
+        {
+            string lower = (line ?? "").Trim().ToLowerInvariant();
+            if (lower.Length == 0) return false;
+            if (lower.StartsWith("[claude-mem]")) return true;
+            if (lower.IndexOf("opencode plugin", StringComparison.Ordinal) >= 0) return true;
+            if (lower.IndexOf("plugin loading", StringComparison.Ordinal) >= 0) return true;
+            return false;
         }
     }
 
@@ -1012,8 +2700,12 @@ namespace Flowtype
             string json = serializer.Serialize(settings);
             string temporary = SettingsPath + ".new";
             File.WriteAllText(temporary, json, new UTF8Encoding(false));
-            if (File.Exists(SettingsPath)) File.Delete(SettingsPath);
-            File.Move(temporary, SettingsPath);
+            if (File.Exists(SettingsPath))
+            {
+                string backup = SettingsPath + ".bak";
+                File.Replace(temporary, SettingsPath, backup);
+            }
+            else File.Move(temporary, SettingsPath);
             ApplyAutostart(settings.StartWithWindows);
         }
 
@@ -3531,45 +5223,19 @@ namespace Flowtype
         public static string ApplyDictionaryReplacements(string text, AppSettings settings)
         {
             if (String.IsNullOrWhiteSpace(text) || settings == null || settings.Dictionary == null) return text ?? "";
-            List<string> froms = new List<string>();
-            List<string> tos = new List<string>();
             foreach (string entry in settings.Dictionary)
             {
                 string from;
                 string to;
                 if (!TryParseDictionaryEntry(entry, out from, out to) || from.Length < 2) continue;
-                froms.Add(from);
-                tos.Add(to);
                 text = Regex.Replace(text, @"\b" + Regex.Escape(from) + @"\b", delegate { return to; }, RegexOptions.IgnoreCase);
             }
-            if (froms.Count == 0) return text;
-            return Regex.Replace(text, @"\b[A-Za-z][A-Za-z'-]{1,}\b", delegate(Match match)
-            {
-                string word = match.Value;
-                for (int index = 0; index < froms.Count; index++)
-                {
-                    if (String.Equals(word, tos[index], StringComparison.OrdinalIgnoreCase)) return word;
-                    if (String.Equals(word, froms[index], StringComparison.OrdinalIgnoreCase)) return tos[index];
-                    if (IsSpokenVariant(word, froms[index])) return tos[index];
-                }
-                return word;
-            });
+            return text;
         }
 
         public static string ApplyAlwaysEdits(string text, AppSettings settings)
         {
             return FormatSpokenLists(ApplyDictionaryReplacements(ApplySnippets(text, settings), settings), settings);
-        }
-
-        private static bool IsSpokenVariant(string heard, string spoken)
-        {
-            if (String.IsNullOrEmpty(heard) || String.IsNullOrEmpty(spoken) || spoken.Length < 3) return false;
-            if (Math.Abs(heard.Length - spoken.Length) > 2) return false;
-            if (Char.ToLowerInvariant(heard[0]) != Char.ToLowerInvariant(spoken[0])) return false;
-            if (String.Equals(heard, spoken, StringComparison.OrdinalIgnoreCase)) return false;
-            int distance = LevenshteinDistance(heard, spoken);
-            int maxDistance = spoken.Length <= 4 ? 1 : 2;
-            return distance > 0 && distance <= maxDistance;
         }
 
         public static string Clean(string input, AppSettings settings, ForegroundInfo context)
@@ -4161,14 +5827,6 @@ namespace Flowtype
             };
             if (settings != null)
             {
-                foreach (string entry in settings.Dictionary)
-                {
-                    string from;
-                    string to;
-                    if (TryParseDictionaryEntry(entry, out from, out to))
-                        add(to, 2);
-                    else add(entry, 4);
-                }
                 foreach (KeyValuePair<string, string> snippet in settings.Snippets)
                 {
                     add(snippet.Key, 4);
@@ -4653,11 +6311,6 @@ namespace Flowtype
                 form.Add(audio, "file", Path.GetFileName(wavePath));
                 form.Add(new StringContent(settings.TranscriptionModel), "model");
                 form.Add(new StringContent("json"), "response_format");
-                if (settings.Dictionary.Count > 0)
-                {
-                    string prompt = "Preferred spellings and terms: " + String.Join(", ", settings.Dictionary.Take(80).ToArray());
-                    form.Add(new StringContent(prompt), "prompt");
-                }
                 HttpResponseMessage response = await client.PostAsync(url, form);
                 string body = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
@@ -4678,7 +6331,7 @@ namespace Flowtype
                 TextProcessor.SpokenListCleanupHint(settings) +
                 "When the speaker counts steps aloud (first, second, then, finally), keep that exact spoken order as one numbered list. Never emit a list item that is only a connector word such as 'And', 'And then', or 'Then' — fold connectors into the next item's content or drop them. If the speaker dictates a lone letter, output just that letter. " +
                 "Use natural em dashes for genuine asides or sharp pivots, but do not overuse them. Match the target app: short conversational text in chat, polished prose in documents/email, and exact tokens in developer tools. " +
-                "Expand configured snippets and use preferred spellings. Do not invent information. Do not answer the dictated text. " +
+                "Expand configured snippets. Do not invent information. Do not answer the dictated text. " +
                 "For code, commands, URLs, identifiers, or quoted wording, preserve exact tokens. Style: " + settings.Style + ".";
 
             StringBuilder input = new StringBuilder();
@@ -4690,7 +6343,6 @@ namespace Flowtype
                 input.AppendLine("TARGET APPLICATION: " + context.AppLabel);
                 if (!String.IsNullOrWhiteSpace(context.Title)) input.AppendLine("WINDOW TITLE: " + context.Title);
             }
-            if (settings.Dictionary.Count > 0) input.AppendLine("PREFERRED TERMS: " + String.Join("; ", settings.Dictionary.Take(100).ToArray()));
             if (settings.Snippets.Count > 0)
             {
                 input.AppendLine("SNIPPETS:");
@@ -5068,7 +6720,6 @@ namespace Flowtype
                 user.AppendLine("Target app: " + context.AppLabel);
                 if (!String.IsNullOrWhiteSpace(context.Title)) user.AppendLine("Window: " + context.Title);
             }
-            if (settings.Dictionary.Count > 0) user.AppendLine("Preferred terms: " + String.Join("; ", settings.Dictionary.Take(100).ToArray()));
             if (settings.Snippets.Count > 0)
             {
                 user.AppendLine("Voice snippets:");
@@ -5496,36 +7147,15 @@ namespace Flowtype
         public static string BuildPrompt(AppSettings settings, ForegroundInfo context)
         {
             List<string> terms = new List<string>();
-            foreach (string entry in settings.Dictionary.Take(80))
-            {
-                string from;
-                string to;
-                if (TextProcessor.TryParseDictionaryEntry(entry, out from, out to))
-                {
-                    if (from.Length >= 2) terms.Add(from);
-                    if (to.Length >= 2) terms.Add(to);
-                    continue;
-                }
-                string value = (entry ?? "").Trim();
-                if (!ShouldPrimeWhisperTerm(value)) continue;
-                terms.Add(value);
-            }
             foreach (string phrase in TextProcessor.SpokenCommandPhrases(settings))
                 if (!String.IsNullOrWhiteSpace(phrase)) terms.Add(phrase);
             StringBuilder prompt = new StringBuilder();
             if (terms.Count > 0) prompt.Append(String.Join(", ", terms.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()) + ".");
             // Window title is passed to LLM cleanup only — including "Target window:" here
             // makes Whisper echo it into the transcript on longer clips.
+            // Dictionary terms are exact replacements after transcription. Putting them in
+            // this prompt makes Whisper over-produce them. Do not add them here.
             return prompt.ToString().Replace("\"", "'").Trim();
-        }
-
-        private static bool ShouldPrimeWhisperTerm(string term)
-        {
-            if (String.IsNullOrWhiteSpace(term)) return false;
-            term = term.Trim();
-            if (term.Contains(" ")) return true;
-            if (term.Any(ch => !Char.IsLetter(ch))) return true;
-            return term.Length >= 10;
         }
 
         private static int FindFreePort()
@@ -6723,17 +8353,17 @@ namespace Flowtype
     {
         private readonly ConfigStore store;
         private readonly string appDirectory;
-        private readonly ComboBox engineBox = new ComboBox();
-        private readonly ComboBox hotkeyBox = new ComboBox();
-        private readonly CheckBox handsFreeBox = new CheckBox();
-        private readonly ComboBox styleBox = new ComboBox();
-        private readonly ComboBox cleanupProviderBox = new ComboBox();
-        private readonly CheckBox cleanupBox = new CheckBox();
-        private readonly CheckBox contextBox = new CheckBox();
-        private readonly CheckBox pasteBox = new CheckBox();
-        private readonly CheckBox historyBox = new CheckBox();
-        private readonly CheckBox recoveryBox = new CheckBox();
-        private readonly CheckBox startupBox = new CheckBox();
+        private readonly ThemedComboBox engineBox = new ThemedComboBox();
+        private readonly ThemedComboBox hotkeyBox = new ThemedComboBox();
+        private readonly ThemedCheckBox handsFreeBox = new ThemedCheckBox();
+        private readonly ThemedComboBox styleBox = new ThemedComboBox();
+        private readonly ThemedComboBox cleanupProviderBox = new ThemedComboBox();
+        private readonly ThemedCheckBox cleanupBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox contextBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox pasteBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox historyBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox recoveryBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox startupBox = new ThemedCheckBox();
         private readonly TextBox apiKeyBox = new TextBox();
         private readonly TextBox apiUrlBox = new TextBox();
         private readonly TextBox transcriptionModelBox = new TextBox();
@@ -6749,29 +8379,44 @@ namespace Flowtype
         private readonly Label micGainLabel = new Label();
         private readonly ProgressBar micLevelBar = new ProgressBar();
         private readonly Label micTestStatus = new Label();
-        private readonly Button micTestButton = new Button();
+        private readonly ThemedButton micTestButton = new ThemedButton();
         private readonly Label latencyLabel = new Label();
-        private readonly CheckBox turboBox = new CheckBox();
-        private readonly CheckBox suppressNonSpeechBox = new CheckBox();
-        private readonly CheckBox completionSoundBox = new CheckBox();
-        private readonly CheckBox insertNotifyBox = new CheckBox();
-        private readonly CheckBox autoUpdateBox = new CheckBox();
-        private readonly ComboBox overlayThemeBox = new ComboBox();
-        private readonly ComboBox overlayMarkBox = new ComboBox();
+        private readonly ThemedCheckBox turboBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox suppressNonSpeechBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox completionSoundBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox insertNotifyBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox autoUpdateBox = new ThemedCheckBox();
+        private readonly ThemedComboBox overlayThemeBox = new ThemedComboBox();
+        private readonly ThemedComboBox overlayMarkBox = new ThemedComboBox();
+        private readonly ThemedComboBox appearanceBox = new ThemedComboBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
-        private readonly CheckBox spokenListsBox = new CheckBox();
+        private readonly ThemedCheckBox spokenListsBox = new ThemedCheckBox();
         private readonly TextBox spokenBulletBox = new TextBox();
         private readonly TextBox spokenNumberBox = new TextBox();
-        private readonly CheckBox agentEnabledBox = new CheckBox();
-        private readonly ComboBox agentHotkeyBox = new ComboBox();
+        private readonly ThemedCheckBox agentEnabledBox = new ThemedCheckBox();
+        private readonly ThemedComboBox agentHotkeyBox = new ThemedComboBox();
+        private readonly ThemedComboBox agentRuntimeBox = new ThemedComboBox();
         private readonly TextBox agentEndpointBox = new TextBox();
         private readonly Label agentStatusLabel = new Label();
+        private readonly AgentSession agentSession;
+        private readonly ThemedButton connectOpenCodeButton = new ThemedButton();
+        private readonly ThemedButton connectClaudeButton = new ThemedButton();
+        private readonly ThemedButton stopAgentButton = new ThemedButton();
+        private List<string> loadedDictionary = new List<string>();
+        private Dictionary<string, string> loadedSnippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private string loadedBulletPhrase = "next point";
+        private string loadedNumberPhrase = "next number";
         private readonly Label localStatus = new Label();
+        private Panel headerBar;
+        private Panel footerBar;
+        private Panel navRail;
+        private Panel[] settingPages;
+        private Button[] navButtons;
         private readonly ProgressBar localProgress = new ProgressBar();
-        private readonly Button localInstallButton = new Button();
-        private readonly Button chooseWhisperButton = new Button();
-        private readonly Button chooseModelButton = new Button();
+        private readonly ThemedButton localInstallButton = new ThemedButton();
+        private readonly ThemedButton chooseWhisperButton = new ThemedButton();
+        private readonly ThemedButton chooseModelButton = new ThemedButton();
         private string whisperExe;
         private string whisperServer;
         private string whisperModel;
@@ -6784,34 +8429,37 @@ namespace Flowtype
         public event Action<AppSettings, string, string> SettingsSaved;
         public event Action<string> HotkeyPreviewChanged;
 
-        public SettingsForm(ConfigStore store, AppSettings settings, string appDirectory, Func<bool> microphoneBusy)
+        public SettingsForm(ConfigStore store, AppSettings settings, string appDirectory, Func<bool> microphoneBusy, AgentSession agentSession)
         {
             this.store = store;
             this.appDirectory = appDirectory;
             this.microphoneBusy = microphoneBusy ?? delegate { return false; };
+            this.agentSession = agentSession ?? new AgentSession();
+            UiTheme.Apply(settings.AppAppearance);
+            UiTheme.Soften(this);
             Text = "Flowtype Settings";
-            Width = 760;
-            Height = 780;
-            MinimumSize = new Size(720, 740);
+            Width = 980;
+            Height = 840;
+            MinimumSize = new Size(900, 760);
             StartPosition = FormStartPosition.CenterScreen;
             Font = AppFonts.Ui(9.25f, FontStyle.Regular);
             BackColor = UiTheme.Window;
             ForeColor = UiTheme.Text;
             Icon = FlowtypeApp.ProductIcon ?? SystemIcons.Application;
 
-            Panel header = new Panel();
-            header.Dock = DockStyle.Top;
-            header.Height = 68;
-            header.BackColor = UiTheme.Header;
-            header.Padding = new Padding(20, 14, 20, 10);
-            header.Paint += delegate(object sender, PaintEventArgs e)
+            headerBar = new Panel();
+            headerBar.Dock = DockStyle.Top;
+            headerBar.Height = 80;
+            headerBar.Tag = "chrome";
+            headerBar.Padding = new Padding(22, 16, 22, 12);
+            headerBar.Paint += delegate(object sender, PaintEventArgs e)
             {
-                using (Pen line = new Pen(UiTheme.Border))
-                    e.Graphics.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
+                using (Pen line = new Pen(UiTheme.BorderSoft))
+                    e.Graphics.DrawLine(line, 0, headerBar.Height - 1, headerBar.Width, headerBar.Height - 1);
             };
             PictureBox logoBox = new PictureBox();
-            logoBox.Size = new Size(36, 36);
-            logoBox.Location = new Point(20, 14);
+            logoBox.Size = new Size(34, 34);
+            logoBox.Location = new Point(22, 22);
             logoBox.SizeMode = PictureBoxSizeMode.Zoom;
             logoBox.BackColor = Color.Transparent;
             try
@@ -6822,37 +8470,90 @@ namespace Flowtype
             catch { }
             Label title = new Label();
             title.Text = "Flowtype";
-            title.Font = AppFonts.Ui(14f, FontStyle.Bold);
+            title.Font = AppFonts.Ui(15f, FontStyle.Bold);
             title.ForeColor = UiTheme.Text;
-            title.SetBounds(64, 16, 200, 28);
+            title.SetBounds(66, 16, 240, 30);
             Label subtitle = new Label();
-            subtitle.Text = "Push-to-talk dictation";
-            subtitle.Font = AppFonts.Ui(9f, FontStyle.Regular);
-            subtitle.ForeColor = UiTheme.TextMuted;
-            subtitle.SetBounds(64, 40, 260, 20);
-            header.Controls.Add(logoBox);
-            header.Controls.Add(title);
-            header.Controls.Add(subtitle);
-
-            TabControl tabs = new TabControl();
-            tabs.Dock = DockStyle.Fill;
-            tabs.Padding = new Point(16, 8);
-            tabs.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
-            tabs.TabPages.Add(BuildGeneralTab());
-            tabs.TabPages.Add(BuildAgentTab());
-            tabs.TabPages.Add(BuildCloudTab());
-            tabs.TabPages.Add(BuildLocalTab());
-            tabs.TabPages.Add(BuildPersonalizationTab());
-
-            Panel footer = new Panel();
-            footer.Dock = DockStyle.Bottom;
-            footer.Height = 58;
-            footer.BackColor = UiTheme.Header;
-            footer.Padding = new Padding(16, 10, 16, 10);
-            footer.Paint += delegate(object sender, PaintEventArgs e)
+            subtitle.Text = "Push-to-talk dictation  ·  " + FlowtypeVersion.CurrentLabel;
+            subtitle.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
+            UiTheme.Mute(subtitle);
+            subtitle.SetBounds(66, 44, 340, 20);
+            Label appearanceLabel = new Label();
+            appearanceLabel.Text = "Appearance";
+            appearanceLabel.TextAlign = ContentAlignment.MiddleRight;
+            appearanceLabel.SetBounds(0, 28, 88, 24);
+            appearanceLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            UiTheme.Mute(appearanceLabel);
+            ConfigureDropDown(appearanceBox, 0, 22, 148);
+            appearanceBox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            appearanceBox.Items.AddRange(new object[] { "Dark", "Light", "Match Windows" });
+            appearanceBox.SelectedIndexChanged += AppearanceChanged;
+            headerBar.Controls.Add(logoBox);
+            headerBar.Controls.Add(title);
+            headerBar.Controls.Add(subtitle);
+            headerBar.Controls.Add(appearanceLabel);
+            headerBar.Controls.Add(appearanceBox);
+            headerBar.Resize += delegate
             {
-                using (Pen line = new Pen(UiTheme.Border))
-                    e.Graphics.DrawLine(line, 0, 0, footer.Width, 0);
+                appearanceBox.Location = new Point(headerBar.Width - 174, 22);
+                appearanceLabel.Location = new Point(headerBar.Width - 266, 28);
+            };
+
+            navRail = new Panel();
+            navRail.Dock = DockStyle.Left;
+            navRail.Width = 188;
+            navRail.Tag = "nav";
+            navRail.Padding = new Padding(12, 16, 12, 16);
+            navRail.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (Pen line = new Pen(UiTheme.BorderSoft))
+                    e.Graphics.DrawLine(line, navRail.Width - 1, 0, navRail.Width - 1, navRail.Height);
+            };
+
+            Panel body = new Panel();
+            body.Dock = DockStyle.Fill;
+            body.Padding = new Padding(8, 8, 12, 8);
+            settingPages = new Panel[]
+            {
+                BuildGeneralTab(),
+                BuildAgentTab(),
+                BuildCloudTab(),
+                BuildLocalTab(),
+                BuildPersonalizationTab()
+            };
+            string[] navNames = new string[] { "General", "Agent", "Cloud", "Local", "Personalization" };
+            navButtons = new Button[navNames.Length];
+            for (int index = navNames.Length - 1; index >= 0; index--)
+            {
+                int pageIndex = index;
+                ThemedButton nav = new ThemedButton();
+                nav.Text = navNames[index];
+                nav.Dock = DockStyle.Top;
+                nav.Height = 44;
+                nav.TextAlign = ContentAlignment.MiddleLeft;
+                nav.Tag = "nav-item";
+                nav.Font = AppFonts.Ui(10f, FontStyle.Regular);
+                nav.Click += delegate { ShowSettingsPage(pageIndex); };
+                navButtons[index] = nav;
+                navRail.Controls.Add(nav);
+                settingPages[index].Visible = false;
+                body.Controls.Add(settingPages[index]);
+            }
+            Panel navSpacer = new Panel();
+            navSpacer.Height = 12;
+            navSpacer.Dock = DockStyle.Top;
+            navSpacer.Tag = "nav";
+            navRail.Controls.Add(navSpacer);
+
+            footerBar = new Panel();
+            footerBar.Dock = DockStyle.Bottom;
+            footerBar.Height = 64;
+            footerBar.Tag = "chrome";
+            footerBar.Padding = new Padding(18, 12, 18, 12);
+            footerBar.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (Pen line = new Pen(UiTheme.BorderSoft))
+                    e.Graphics.DrawLine(line, 0, 0, footerBar.Width, 0);
             };
 
             FlowLayoutPanel actions = new FlowLayoutPanel();
@@ -6862,8 +8563,9 @@ namespace Flowtype
             actions.AutoSize = true;
             actions.Padding = new Padding(0);
             actions.Margin = new Padding(0);
+            actions.Tag = "chrome";
 
-            Button saveCloseButton = MakeActionButton("Save & close", true);
+            ThemedButton saveCloseButton = MakeActionButton("Save and close", true);
             saveCloseButton.Click += SaveClicked;
             Button applyButton = MakeActionButton("Apply", false);
             applyButton.Click += ApplyClicked;
@@ -6872,16 +8574,25 @@ namespace Flowtype
             actions.Controls.Add(saveCloseButton);
             actions.Controls.Add(applyButton);
             actions.Controls.Add(cancelButton);
-            footer.Controls.Add(actions);
+            footerBar.Controls.Add(actions);
 
-            Controls.Add(tabs);
-            Controls.Add(footer);
-            Controls.Add(header);
+            Controls.Add(body);
+            Controls.Add(navRail);
+            Controls.Add(footerBar);
+            Controls.Add(headerBar);
 
             AcceptButton = saveCloseButton;
             CancelButton = cancelButton;
+            HandleCreated += delegate { UiTheme.ApplyTitleBar(this); };
+            Shown += delegate
+            {
+                appearanceBox.Location = new Point(headerBar.Width - 174, 22);
+                appearanceLabel.Location = new Point(headerBar.Width - 266, 28);
+            };
 
             LoadValues(settings);
+            ShowSettingsPage(0);
+            Restyle();
             LatencyStats.StatsUpdated += OnLatencyStatsUpdated;
             FormClosed += delegate
             {
@@ -6895,39 +8606,108 @@ namespace Flowtype
             };
         }
 
-        private TabPage NewTab(string name)
+        private void AppearanceChanged(object sender, EventArgs e)
         {
-            TabPage page = new TabPage(name);
-            page.BackColor = UiTheme.Window;
-            page.AutoScroll = true;
-            page.Padding = new Padding(4);
-            return page;
+            UiTheme.Apply(AppearanceFromIndex(appearanceBox.SelectedIndex));
+            Restyle();
         }
 
-        private static Button MakeActionButton(string text, bool primary)
+        private void ShowSettingsPage(int index)
         {
-            Button button = new Button();
-            button.Text = text;
-            button.AutoSize = true;
-            button.MinimumSize = new Size(primary ? 118 : 88, 34);
-            button.Padding = new Padding(12, 0, 12, 0);
-            button.Margin = new Padding(6, 0, 0, 0);
-            button.FlatStyle = FlatStyle.Flat;
-            button.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
-            button.Cursor = Cursors.Hand;
-            if (primary)
+            if (settingPages == null) return;
+            for (int i = 0; i < settingPages.Length; i++)
             {
-                button.BackColor = UiTheme.Accent;
-                button.ForeColor = Color.White;
-                button.FlatAppearance.BorderColor = UiTheme.Accent;
+                settingPages[i].Visible = i == index;
+                settingPages[i].Dock = DockStyle.Fill;
+                if (navButtons != null && i < navButtons.Length)
+                    navButtons[i].Tag = i == index ? "nav-item-on" : "nav-item";
             }
+            Restyle();
+        }
+
+        private void Restyle()
+        {
+            UiTheme.ThemeForm(this);
+            if (headerBar != null) headerBar.Invalidate();
+            if (footerBar != null) footerBar.Invalidate();
+            if (navRail != null) navRail.Invalidate();
+            if (navButtons != null)
+            {
+                foreach (Button nav in navButtons)
+                    if (nav != null) nav.Invalidate();
+            }
+        }
+
+        private static void PaintCard(object sender, PaintEventArgs e)
+        {
+            Panel card = sender as Panel;
+            if (card == null) return;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(UiTheme.Window);
+            Rectangle box = new Rectangle(0, 0, Math.Max(1, card.Width - 1), Math.Max(1, card.Height - 1));
+            UiTheme.FillRound(g, box, UiTheme.Card, 14);
+            UiTheme.StrokeRound(g, box, UiTheme.BorderSoft, 14);
+        }
+
+        private Panel FinishCard(Panel page, Panel card, FieldStack stack, int x, int y, int width)
+        {
+            card.SetBounds(x, y, width, Math.Max(56, stack.Y + 8));
+            card.Resize += delegate { card.Invalidate(); };
+            PageContent(page).Controls.Add(card);
+            SealPage(page);
+            return card;
+        }
+
+        private static Control PageContent(Panel page)
+        {
+            SettingsPage themed = page as SettingsPage;
+            return themed != null ? (Control)themed.Host : page;
+        }
+
+        private static void SealPage(Panel page)
+        {
+            Control host = PageContent(page);
+            int bottom = 0;
+            foreach (Control child in host.Controls)
+            {
+                if (child.Tag as string == "vscroll") continue;
+                bottom = Math.Max(bottom, child.Bottom);
+            }
+            SettingsContent scroll = host as SettingsContent;
+            if (scroll != null) scroll.AutoScrollMinSize = new Size(0, bottom + 28);
             else
             {
-                button.BackColor = UiTheme.Surface;
-                button.ForeColor = UiTheme.Text;
-                button.FlatAppearance.BorderColor = UiTheme.Border;
+                Panel panel = host as Panel;
+                if (panel != null) panel.AutoScrollMinSize = new Size(0, bottom + 28);
             }
-            button.FlatAppearance.BorderSize = 1;
+            SettingsPage themed = page as SettingsPage;
+            if (themed != null) themed.SyncChrome();
+        }
+
+        private static Panel MakeCard()
+        {
+            Panel card = new Panel();
+            card.Tag = "card";
+            UiTheme.Soften(card);
+            card.Paint += PaintCard;
+            return card;
+        }
+
+        private Panel NewTab(string name)
+        {
+            return new SettingsPage();
+        }
+
+        private static ThemedButton MakeActionButton(string text, bool primary)
+        {
+            ThemedButton button = new ThemedButton();
+            button.Text = text;
+            button.AutoSize = false;
+            button.Size = new Size(primary ? 148 : 104, 38);
+            button.Margin = new Padding(8, 2, 0, 2);
+            button.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
+            if (primary) button.Tag = "primary";
             return button;
         }
 
@@ -6938,48 +8718,129 @@ namespace Flowtype
             control.BackColor = UiTheme.Surface;
         }
 
-        private TabPage BuildGeneralTab()
+        private sealed class FieldStack
         {
-            TabPage page = NewTab("General");
-            Label intro = LabelAt("Hold your push-to-talk key to dictate. Double-press quickly for hands-free mode, then press the key once more to finish.", 24, 22, 650, 36);
-            intro.Font = AppFonts.UiLarge(10.5f);
-            page.Controls.Add(intro);
+            public readonly Control Host;
+            public readonly int X;
+            public readonly int Width;
+            public int Y;
 
-            page.Controls.Add(LabelAt("Speech engine", 24, 76, 170, 24));
-            ConfigureDropDown(engineBox, 210, 72, 430);
+            public FieldStack(Control host, int x, int y, int width)
+            {
+                Host = host;
+                X = x;
+                Y = y;
+                Width = width;
+            }
+
+            public void Title(string text)
+            {
+                Label label = LabelAt(text, X, Y, Width, 24);
+                label.Font = AppFonts.Ui(11f, FontStyle.Bold);
+                Host.Controls.Add(label);
+                Y += 28;
+            }
+
+            public void Note(string text, int height)
+            {
+                Label label = LabelAt(text, X, Y, Width, height);
+                UiTheme.Mute(label);
+                label.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
+                Host.Controls.Add(label);
+                Y += height + 10;
+            }
+
+            public void Caption(string text)
+            {
+                Label label = LabelAt(text, X, Y, Width, 18);
+                UiTheme.Mute(label);
+                label.Font = AppFonts.Ui(8.5f, FontStyle.Regular);
+                Host.Controls.Add(label);
+                Y += 20;
+            }
+
+            public void Combo(ComboBox box)
+            {
+                ConfigureDropDown(box, X, Y, Width);
+                Host.Controls.Add(box);
+                Y += 50;
+            }
+
+            public void Check(CheckBox box)
+            {
+                box.SetBounds(X, Y, Width, 32);
+                Host.Controls.Add(box);
+                Y += 36;
+            }
+
+            public FieldHost TextWell(TextBox box, int height)
+            {
+                FieldHost well = new FieldHost(box);
+                well.SetBounds(X, Y, Width, height);
+                Host.Controls.Add(well);
+                Y += height + 14;
+                return well;
+            }
+
+            public void Add(Control control, int height)
+            {
+                control.SetBounds(X, Y, Width, height);
+                Host.Controls.Add(control);
+                Y += height + 10;
+            }
+
+            public void Gap(int extra)
+            {
+                Y += extra;
+            }
+
+            public void Triple(string c1, ComboBox b1, string c2, ComboBox b2, string c3, ComboBox b3)
+            {
+                int gap = 12;
+                int col = (Width - gap * 2) / 3;
+                Label a = LabelAt(c1, X, Y, col, 18);
+                Label b = LabelAt(c2, X + col + gap, Y, col, 18);
+                Label c = LabelAt(c3, X + (col + gap) * 2, Y, col, 18);
+                UiTheme.Mute(a);
+                UiTheme.Mute(b);
+                UiTheme.Mute(c);
+                a.Font = b.Font = c.Font = AppFonts.Ui(8.5f, FontStyle.Regular);
+                Host.Controls.Add(a);
+                Host.Controls.Add(b);
+                Host.Controls.Add(c);
+                Y += 20;
+                ConfigureDropDown(b1, X, Y, col);
+                ConfigureDropDown(b2, X + col + gap, Y, col);
+                ConfigureDropDown(b3, X + (col + gap) * 2, Y, col);
+                Host.Controls.Add(b1);
+                Host.Controls.Add(b2);
+                Host.Controls.Add(b3);
+                Y += 50;
+            }
+        }
+
+        private Panel BuildGeneralTab()
+        {
+            Panel page = NewTab("General");
+            int y = 8;
+            const int x = 16;
+            const int width = 700;
+
+            Label intro = LabelAt("Hold your push-to-talk key to dictate. Double-press quickly for hands-free mode, then press the key once more to finish.", x, y, width, 36);
+            intro.Font = AppFonts.UiLarge(10.5f);
+            PageContent(page).Controls.Add(intro);
+            y += 44;
+
             engineBox.Items.AddRange(new object[]
             {
                 "Local — offline, private",
                 "Groq — fast cloud (free tier)",
                 "OpenAI — your API key"
             });
-            page.Controls.Add(engineBox);
-            page.Controls.Add(LabelAt("Push-to-talk key", 24, 120, 170, 24));
-            ConfigureDropDown(hotkeyBox, 210, 116, 430);
             hotkeyBox.Items.AddRange(Hotkeys.Names.Cast<object>().ToArray());
-            page.Controls.Add(hotkeyBox);
-            ConfigureCheck(handsFreeBox, "Double-press key for hands-free mode (talk without holding)", 24, 148, 620);
-            page.Controls.Add(handsFreeBox);
-            Label handsFreeHint = LabelAt("Press the same key again (or Escape) to finish and insert.", 42, 178, 600, 20);
-            handsFreeHint.ForeColor = UiTheme.TextMuted;
-            handsFreeHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(handsFreeHint);
-            page.Controls.Add(LabelAt("Writing style", 24, 204, 170, 24));
-            ConfigureDropDown(styleBox, 210, 200, 230);
             styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
-            page.Controls.Add(styleBox);
-            page.Controls.Add(LabelAt("Voice capsule", 24, 248, 92, 24));
-            ConfigureDropDown(overlayThemeBox, 118, 244, 168);
             overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Ember", "Liquid glass" });
-            page.Controls.Add(overlayThemeBox);
-            page.Controls.Add(LabelAt("Live mark", 300, 248, 72, 24));
-            ConfigureDropDown(overlayMarkBox, 374, 244, 150);
             overlayMarkBox.Items.AddRange(new object[] { "Orb", "Hex", "Iris", "Grid" });
-            page.Controls.Add(overlayMarkBox);
-
-            ConfigureCheck(cleanupBox, "Smart cleanup (fillers, punctuation, lists)", 24, 294, 540);
-            page.Controls.Add(LabelAt("Cleanup engine", 24, 342, 170, 24));
-            ConfigureDropDown(cleanupProviderBox, 210, 338, 430);
             cleanupProviderBox.Items.AddRange(new object[]
             {
                 "Built-in — free, offline",
@@ -6987,201 +8848,313 @@ namespace Flowtype
                 "OpenAI — your key",
                 "Ollama — local streaming model"
             });
-            page.Controls.Add(cleanupProviderBox);
-            ConfigureCheck(contextBox, "Adapt cleanup to the active app/window", 24, 384, 540);
-            ConfigureCheck(historyBox, "Keep a local history of dictations", 24, 422, 540);
-            ConfigureCheck(recoveryBox, "Save failed recordings to Recovery folder", 24, 460, 590);
-            ConfigureCheck(startupBox, "Start with Windows", 24, 498, 540);
-            ConfigureCheck(autoUpdateBox, "Check for updates automatically", 24, 536, 620);
-            page.Controls.AddRange(new Control[] { cleanupBox, contextBox, historyBox, recoveryBox, startupBox, autoUpdateBox });
+            handsFreeBox.Text = "Double-press key for hands-free mode (talk without holding)";
+            cleanupBox.Text = "Smart cleanup (fillers, punctuation, lists)";
+            contextBox.Text = "Adapt cleanup to the active app/window";
+            historyBox.Text = "Keep a local history of dictations";
+            recoveryBox.Text = "Save failed recordings to Recovery folder";
+            startupBox.Text = "Start with Windows";
+            autoUpdateBox.Text = "Check for updates automatically";
+            pasteBox.Text = "Leave each dictation on the clipboard after insert";
+            turboBox.Text = "Fast mode — quicker on long dictations";
+            suppressNonSpeechBox.Text = "Filter non-speech sounds (may drop quiet words)";
+            completionSoundBox.Text = "Sound effects on start and finish";
+            insertNotifyBox.Text = "Tray toast after each dictation";
 
-            Label optionalTitle = LabelAt("Optional", 24, 580, 200, 24);
-            optionalTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            optionalTitle.ForeColor = UiTheme.TextMuted;
-            page.Controls.Add(optionalTitle);
-            ConfigureCheck(pasteBox, "Leave each dictation on the clipboard after insert", 24, 610, 620);
-            page.Controls.Add(pasteBox);
-            Label pasteHint = LabelAt("Off by default. Inserts into your field, then puts back whatever you had copied.", 42, 640, 600, 32);
-            pasteHint.ForeColor = UiTheme.TextMuted;
-            pasteHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(pasteHint);
+            Panel dictation = MakeCard();
+            FieldStack speak = new FieldStack(dictation, 20, 18, width - 40);
+            speak.Title("Dictation");
+            speak.Caption("Speech engine");
+            speak.Combo(engineBox);
+            speak.Caption("Push-to-talk key");
+            speak.Combo(hotkeyBox);
+            speak.Check(handsFreeBox);
+            speak.Note("Press the same key again (or Escape) to finish and insert.", 18);
+            speak.Triple("Writing style", styleBox, "Voice capsule", overlayThemeBox, "Live mark", overlayMarkBox);
+            FinishCard(page, dictation, speak, x, y, width);
+            y += dictation.Height + 12;
 
-            Label perfTitle = LabelAt("Performance", 24, 682, 200, 24);
-            perfTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(perfTitle);
-            ConfigureCheck(turboBox, "Fast mode — quicker on long dictations", 24, 712, 620);
-            ConfigureCheck(suppressNonSpeechBox, "Filter non-speech sounds (may drop quiet words)", 24, 744, 620);
-            ConfigureCheck(completionSoundBox, "Sound effects on start and finish", 24, 776, 620);
-            ConfigureCheck(insertNotifyBox, "Tray toast after each dictation", 24, 808, 620);
-            page.Controls.AddRange(new Control[] { turboBox, suppressNonSpeechBox, completionSoundBox, insertNotifyBox });
-            page.Controls.Add(LabelAt("Microphone boost", 24, 846, 140, 24));
-            micGainBar.SetBounds(170, 842, 360, 45);
+            Panel cleanup = MakeCard();
+            FieldStack clean = new FieldStack(cleanup, 20, 18, width - 40);
+            clean.Title("Cleanup");
+            clean.Check(cleanupBox);
+            clean.Caption("Cleanup engine");
+            clean.Combo(cleanupProviderBox);
+            clean.Check(contextBox);
+            FinishCard(page, cleanup, clean, x, y, width);
+            y += cleanup.Height + 12;
+
+            Panel app = MakeCard();
+            FieldStack system = new FieldStack(app, 20, 18, width - 40);
+            system.Title("This PC");
+            system.Check(historyBox);
+            system.Check(recoveryBox);
+            system.Check(startupBox);
+            system.Check(autoUpdateBox);
+            FinishCard(page, app, system, x, y, width);
+            y += app.Height + 12;
+
+            Panel optional = MakeCard();
+            FieldStack extra = new FieldStack(optional, 20, 18, width - 40);
+            extra.Title("Optional");
+            extra.Check(pasteBox);
+            extra.Note("Off by default. Inserts into your field, then puts back whatever you had copied.", 32);
+            FinishCard(page, optional, extra, x, y, width);
+            y += optional.Height + 12;
+
+            Panel input = MakeCard();
+            FieldStack mic = new FieldStack(input, 20, 18, width - 40);
+            mic.Title("Input & performance");
+            mic.Check(turboBox);
+            mic.Check(suppressNonSpeechBox);
+            mic.Check(completionSoundBox);
+            mic.Check(insertNotifyBox);
+            mic.Caption("Microphone boost");
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
+            micGainBar.TickStyle = TickStyle.None;
             micGainBar.ValueChanged += delegate
             {
                 float gain = micGainBar.Value / 10f;
                 micGainLabel.Text = gain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
                 if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
             };
-            page.Controls.Add(micGainBar);
-            micGainLabel.SetBounds(540, 850, 60, 24);
-            page.Controls.Add(micGainLabel);
-            Label micHealthTitle = LabelAt("Microphone health", 24, 888, 420, 24);
-            micHealthTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(micHealthTitle);
-            micLevelBar.SetBounds(24, 918, 420, 18);
+            micGainBar.SetBounds(mic.X, mic.Y, mic.Width - 56, 36);
+            micGainLabel.SetBounds(mic.X + mic.Width - 52, mic.Y + 6, 52, 24);
+            input.Controls.Add(micGainBar);
+            input.Controls.Add(micGainLabel);
+            mic.Y += 42;
+            mic.Caption("Microphone health");
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
             micLevelBar.Style = ProgressBarStyle.Continuous;
-            page.Controls.Add(micLevelBar);
-            micTestButton.SetBounds(456, 910, 110, 34);
+            micLevelBar.SetBounds(mic.X, mic.Y + 4, mic.Width - 126, 18);
             micTestButton.Text = "Test 3s";
+            micTestButton.SetBounds(mic.X + mic.Width - 118, mic.Y, 118, 36);
             micTestButton.Click += MicTestClicked;
-            page.Controls.Add(micTestButton);
-            micTestStatus.SetBounds(24, 948, 650, 72);
-            micTestStatus.ForeColor = UiTheme.TextMuted;
+            input.Controls.Add(micLevelBar);
+            input.Controls.Add(micTestButton);
+            mic.Y += 46;
             micTestStatus.AutoSize = false;
             micTestStatus.Text = "The bar is your real voice at the mic (not Whisper). Speak normally and aim for 15–40%. Boost is only for quiet mics — 2× is not a quality score.";
-            page.Controls.Add(micTestStatus);
-            latencyLabel.SetBounds(24, 1024, 650, 22);
-            latencyLabel.ForeColor = UiTheme.TextMuted;
+            UiTheme.Mute(micTestStatus);
+            mic.Add(micTestStatus, 56);
             latencyLabel.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
             latencyLabel.Text = LatencyStats.Summary;
-            page.Controls.Add(latencyLabel);
+            UiTheme.Mute(latencyLabel);
+            mic.Add(latencyLabel, 22);
+            FinishCard(page, input, mic, x, y, width);
+            y += input.Height + 12;
 
-            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", 24, 1052, 640, 40);
-            privacy.ForeColor = UiTheme.TextMuted;
-            page.Controls.Add(privacy);
+            Label privacy = LabelAt("Successful audio is always deleted. Flowtype has no telemetry or account system.", x, y, width, 36);
+            UiTheme.Mute(privacy);
+            PageContent(page).Controls.Add(privacy);
+            SealPage(page);
             return page;
         }
 
-        private TabPage BuildAgentTab()
+        private Panel BuildAgentTab()
         {
-            TabPage page = NewTab("Agent");
+            Panel page = NewTab("Agent");
+            int y = 8;
+            const int x = 16;
+            const int width = 700;
+
             Label intro = LabelAt(
-                "Agent mode is a second push-to-talk key. Instead of typing what you said, it hands the ask to an AI agent already running on this PC — and that agent does the work. Your dictation key is untouched.",
-                24, 22, 660, 56);
+                "Install OpenCode or Claude Code once. You do not open them first. Connect starts a hidden listener on this PC and arms the key. Dictation still types as usual.",
+                x, y, width, 44);
             intro.Font = AppFonts.UiLarge(10.5f);
-            page.Controls.Add(intro);
+            PageContent(page).Controls.Add(intro);
+            y += 52;
 
-            ConfigureCheck(agentEnabledBox, "Enable agent mode", 24, 88, 420);
+            agentEnabledBox.Text = "Arm the agent key";
             agentEnabledBox.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(agentEnabledBox);
-
-            page.Controls.Add(LabelAt("Agent key", 24, 130, 170, 24));
-            ConfigureDropDown(agentHotkeyBox, 210, 126, 260);
             agentHotkeyBox.Items.AddRange(Hotkeys.Names.Cast<object>().ToArray());
-            page.Controls.Add(agentHotkeyBox);
-            Label chordHint = LabelAt("Must differ from your dictation key. Hold it, speak the ask, release.", 210, 158, 460, 20);
-            chordHint.ForeColor = UiTheme.TextMuted;
-            chordHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(chordHint);
+            agentRuntimeBox.Items.AddRange(new object[]
+            {
+                "OpenCode — local / free models (Ollama, LM Studio)",
+                "Claude — Claude Code login (uses your Claude usage)",
+                "Custom — you start whatever listens on the endpoint"
+            });
 
-            AddTextField(page, "Agent endpoint", agentEndpointBox, 24, 190, false);
-            Label endpointHint = LabelAt(
-                "Must be on this PC (127.0.0.1 or localhost). Any local runtime that accepts a JSON POST — the bundled daemon, OpenCode, Codex, n8n, or your own script. Flowtype only sends the words; it never runs anything itself.",
-                210, 226, 460, 44);
-            endpointHint.ForeColor = UiTheme.TextMuted;
-            endpointHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(endpointHint);
-
-            Button testAgentButton = ButtonAt("Test connection", 210, 278, 150, 34);
+            Panel connect = MakeCard();
+            FieldStack go = new FieldStack(connect, 20, 18, width - 40);
+            go.Title("Connect");
+            go.Note("You do not launch OpenCode or Claude first. Connect starts the listener inside Flowtype. Close Settings anytime. Stop in this tab shuts it down.", 40);
+            connectOpenCodeButton.Text = "Connect OpenCode";
+            connectOpenCodeButton.Tag = "primary";
+            connectOpenCodeButton.SetBounds(go.X, go.Y, 168, 38);
+            connectOpenCodeButton.Click += delegate { ConnectAgent("OpenCode"); };
+            connectClaudeButton.Text = "Connect Claude";
+            connectClaudeButton.SetBounds(go.X + 180, go.Y, 150, 38);
+            connectClaudeButton.Click += delegate { ConnectAgent("Claude"); };
+            stopAgentButton.Text = "Stop";
+            stopAgentButton.SetBounds(go.X + 342, go.Y, 88, 38);
+            stopAgentButton.Click += StopAgentClicked;
+            ThemedButton testAgentButton = ButtonAt("Test", go.X + 442, go.Y, 88, 38);
             testAgentButton.Click += delegate { TestAgentEndpoint(testAgentButton); };
-            page.Controls.Add(testAgentButton);
+            connect.Controls.Add(connectOpenCodeButton);
+            connect.Controls.Add(connectClaudeButton);
+            connect.Controls.Add(stopAgentButton);
+            connect.Controls.Add(testAgentButton);
+            go.Y += 48;
+            agentStatusLabel.AutoSize = false;
+            agentStatusLabel.Text = "Not connected yet.";
+            UiTheme.Mute(agentStatusLabel);
+            go.Add(agentStatusLabel, 40);
+            go.Caption("Agent key");
+            go.Combo(agentHotkeyBox);
+            go.Check(agentEnabledBox);
+            go.Note("Must differ from your dictation key. Connect ticks this for you.", 18);
+            FinishCard(page, connect, go, x, y, width);
+            y += connect.Height + 12;
 
-            agentStatusLabel.SetBounds(374, 284, 300, 24);
-            agentStatusLabel.ForeColor = UiTheme.TextMuted;
-            agentStatusLabel.Font = AppFonts.Ui(9f, FontStyle.Regular);
-            agentStatusLabel.Text = "Not checked yet.";
-            page.Controls.Add(agentStatusLabel);
-
-            Label runTitle = LabelAt("Start the bundled agent daemon", 24, 336, 500, 26);
-            runTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(runTitle);
-            TextBox runBox = new TextBox();
-            runBox.ReadOnly = true;
-            runBox.SetBounds(24, 368, 646, 30);
-            runBox.Font = new Font(FontFamily.GenericMonospace, 9f);
-            runBox.Text = "python agent-bridge\\flowtype_agentd.py";
-            page.Controls.Add(runBox);
-            Label runHint = LabelAt(
-                "Keeps one agent session warm so an ask answers in seconds. Every ask and reply is written to agent-bridge\\flight-recorder.jsonl, so what the voice did is always answerable.",
-                24, 404, 646, 44);
-            runHint.ForeColor = UiTheme.TextMuted;
-            runHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(runHint);
+            Panel runtime = MakeCard();
+            FieldStack run = new FieldStack(runtime, 20, 18, width - 40);
+            run.Title("Already running your own listener?");
+            run.Caption("Endpoint (this PC only)");
+            run.TextWell(agentEndpointBox, 38);
+            run.Caption("Runtime");
+            run.Combo(agentRuntimeBox);
+            run.Note("Custom means you start the listener yourself, then Test. OpenCode and Claude are the Connect buttons above.", 36);
+            FinishCard(page, runtime, run, x, y, width);
+            y += runtime.Height + 12;
 
             Label safety = LabelAt(
-                "Safety: the agent runs under its own permission model, in its own process. Turning agent mode off here disables the key completely — dictation keeps working.",
-                24, 458, 646, 44);
-            safety.ForeColor = UiTheme.TextMuted;
+                "Safety: the agent runs under its own permission model, in its own process. Uncheck Arm the agent key to disable the chord — dictation keeps working.",
+                x, y, width, 40);
+            UiTheme.Mute(safety);
             safety.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(safety);
+            PageContent(page).Controls.Add(safety);
+            SealPage(page);
             return page;
         }
 
         private async void TestAgentEndpoint(Button button)
         {
-            string endpoint = agentEndpointBox.Text.Trim();
-            if (endpoint.Length == 0)
-            {
-                agentStatusLabel.Text = "Enter an endpoint first.";
-                return;
-            }
-            if (!AgentBridge.IsLoopbackEndpoint(endpoint))
-            {
-                agentStatusLabel.ForeColor = Color.FromArgb(176, 58, 46);
-                agentStatusLabel.Text = "Must be 127.0.0.1 or localhost.";
-                return;
-            }
             button.Enabled = false;
-            agentStatusLabel.ForeColor = UiTheme.TextMuted;
+            UiTheme.Mute(agentStatusLabel);
             agentStatusLabel.Text = "Checking…";
             try
             {
-                string statusUrl = endpoint;
-                int lastSlash = endpoint.LastIndexOf('/');
-                if (lastSlash > "https://".Length) statusUrl = endpoint.Substring(0, lastSlash) + "/status";
-                using (HttpClient client = new HttpClient())
+                AgentBridge.ProbeResult probe = await Task.Run(delegate { return AgentBridge.Probe(agentEndpointBox.Text.Trim()); });
+                if (IsDisposed) return;
+                if (probe.Ok) UiTheme.Tone(agentStatusLabel, "ok");
+                else UiTheme.Tone(agentStatusLabel, "danger");
+                agentStatusLabel.Text = probe.Message;
+            }
+            finally { if (!IsDisposed) button.Enabled = true; }
+        }
+
+        private async void ConnectAgent(string runtime)
+        {
+            agentRuntimeBox.SelectedIndex = RuntimeToIndex(runtime);
+            connectOpenCodeButton.Enabled = false;
+            connectClaudeButton.Enabled = false;
+            UiTheme.Mute(agentStatusLabel);
+            agentStatusLabel.Text = String.Equals(runtime, "Claude", StringComparison.OrdinalIgnoreCase)
+                ? "Starting Claude… this can take half a minute while the session warms."
+                : "Starting OpenCode…";
+            try
+            {
+                string endpoint = agentEndpointBox.Text.Trim();
+                string model = OpenCodeModelFlag();
+                string directory = appDirectory;
+                string status = await Task.Run(delegate { return agentSession.Start(runtime, endpoint, model, directory); });
+                if (IsDisposed) return;
+                if (agentSession.IsRunning)
                 {
-                    client.Timeout = TimeSpan.FromSeconds(5);
-                    client.DefaultRequestHeaders.Add("X-Flowtype-Token", AgentBridge.TokenForStatus());
-                    string body = await client.GetStringAsync(statusUrl);
-                    bool warm = body.IndexOf("\"warm\":true", StringComparison.OrdinalIgnoreCase) >= 0;
-                    agentStatusLabel.ForeColor = Color.FromArgb(24, 128, 74);
-                    agentStatusLabel.Text = warm ? "Connected — session is warm." : "Connected.";
+                    ArmAgentMode();
+                    if (status != null && status.IndexOf("warming", StringComparison.OrdinalIgnoreCase) >= 0)
+                        UiTheme.Mute(agentStatusLabel);
+                    else
+                        UiTheme.Tone(agentStatusLabel, "ok");
                 }
+                else UiTheme.Tone(agentStatusLabel, "danger");
+                agentStatusLabel.Text = status ?? "Connect failed.";
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    connectOpenCodeButton.Enabled = true;
+                    connectClaudeButton.Enabled = true;
+                }
+            }
+        }
+
+        private void ArmAgentMode()
+        {
+            agentEnabledBox.Checked = true;
+            try
+            {
+                AppSettings value = ReadValues();
+                store.Save(value);
+                Action<AppSettings, string, string> handler = SettingsSaved;
+                if (handler != null) handler(value, apiKeyBox.Text.Trim(), openRouterKeyBox.Text.Trim());
             }
             catch (Exception exception)
             {
-                agentStatusLabel.ForeColor = Color.FromArgb(176, 58, 46);
-                string reason = exception.InnerException != null ? exception.InnerException.Message : exception.Message;
-                agentStatusLabel.Text = reason.Length > 60 ? "Nothing listening there." : "Nothing listening there.";
+                UiTheme.Tone(agentStatusLabel, "danger");
+                agentStatusLabel.Text = exception.Message;
             }
-            finally { button.Enabled = true; }
         }
 
-        private TabPage BuildCloudTab()
+        private void StopAgentClicked(object sender, EventArgs e)
         {
-            TabPage page = NewTab("Cloud engines");
-            Label intro = LabelAt("Optional cloud engines connect directly from this PC. Flowtype never receives your audio, text, or keys.", 24, 22, 650, 40);
-            intro.Font = AppFonts.UiLarge(10.5f);
-            page.Controls.Add(intro);
+            agentSession.Stop();
+            UiTheme.Mute(agentStatusLabel);
+            agentStatusLabel.Text = "Stopped.";
+        }
 
-            Label groqTitle = LabelAt("Groq speech (recommended cloud option)", 24, 72, 500, 28);
-            groqTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(groqTitle);
-            Label groqHelp = LabelAt(
-                "Free API keys at console.groq.com → API Keys → Create. Recommended model: whisper-large-v3-turbo (fast + accurate). Audio is sent to Groq; cleanup stays local unless you choose a cloud cleanup engine.",
-                24, 102, 650, 54);
-            groqHelp.ForeColor = Color.FromArgb(95, 100, 112);
-            page.Controls.Add(groqHelp);
-            AddTextField(page, "Groq API key", groqKeyBox, 24, 166, true);
+        private string OpenCodeModelFlag()
+        {
+            string model = ollamaModelBox.Text.Trim();
+            if (model.Length == 0) return "";
+            if (model.IndexOf('/') >= 0) return model;
+            return "ollama/" + model;
+        }
+
+        private static string RuntimeFromIndex(int index)
+        {
+            if (index == 1) return "Claude";
+            if (index == 2) return "Custom";
+            return "OpenCode";
+        }
+
+        private static int RuntimeToIndex(string runtime)
+        {
+            if (String.Equals(runtime, "Claude", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (String.Equals(runtime, "Custom", StringComparison.OrdinalIgnoreCase)) return 2;
+            return 0;
+        }
+
+        private Panel BuildCloudTab()
+        {
+            Panel page = NewTab("Cloud engines");
+            int y = 8;
+            const int x = 16;
+            const int width = 700;
+
+            Label intro = LabelAt("Optional cloud engines connect directly from this PC. Flowtype never receives your audio, text, or keys.", x, y, width, 36);
+            intro.Font = AppFonts.UiLarge(10.5f);
+            PageContent(page).Controls.Add(intro);
+            y += 44;
+
             groqKeyBox.UseSystemPasswordChar = true;
-            AddTextField(page, "Groq model", groqModelBox, 24, 222, false);
-            Button groqTestButton = ButtonAt("Test Groq", 210, 278, 120, 34);
+            apiKeyBox.UseSystemPasswordChar = true;
+            openRouterKeyBox.UseSystemPasswordChar = true;
+
+            Panel groq = MakeCard();
+            FieldStack g = new FieldStack(groq, 20, 18, width - 40);
+            g.Title("Groq speech");
+            g.Note("Free API keys at console.groq.com → API Keys → Create. Recommended model: whisper-large-v3-turbo. Audio is sent to Groq; cleanup stays local unless you choose a cloud cleanup engine.", 48);
+            g.Caption("Groq API key");
+            g.TextWell(groqKeyBox, 38);
+            g.Caption("Groq model");
+            g.TextWell(groqModelBox, 38);
+            ThemedButton groqTestButton = ButtonAt("Test Groq", g.X, g.Y, 120, 36);
             groqTestButton.Click += async delegate
             {
                 groqTestButton.Enabled = false;
@@ -7193,17 +9166,23 @@ namespace Flowtype
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 finally { groqTestButton.Enabled = true; }
             };
-            page.Controls.Add(groqTestButton);
+            groq.Controls.Add(groqTestButton);
+            g.Y += 46;
+            FinishCard(page, groq, g, x, y, width);
+            y += groq.Height + 12;
 
-            Label openAiTitle = LabelAt("OpenAI", 24, 332, 400, 28);
-            openAiTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(openAiTitle);
-            AddTextField(page, "OpenAI API key", apiKeyBox, 24, 366, true);
-            apiKeyBox.UseSystemPasswordChar = true;
-            AddTextField(page, "API base URL", apiUrlBox, 24, 422, false);
-            AddTextField(page, "Transcription model", transcriptionModelBox, 24, 478, false);
-            AddTextField(page, "Cleanup model", cleanupModelBox, 24, 534, false);
-            Button testButton = ButtonAt("Test connection", 210, 590, 150, 34);
+            Panel openai = MakeCard();
+            FieldStack o = new FieldStack(openai, 20, 18, width - 40);
+            o.Title("OpenAI");
+            o.Caption("OpenAI API key");
+            o.TextWell(apiKeyBox, 38);
+            o.Caption("API base URL");
+            o.TextWell(apiUrlBox, 38);
+            o.Caption("Transcription model");
+            o.TextWell(transcriptionModelBox, 38);
+            o.Caption("Cleanup model");
+            o.TextWell(cleanupModelBox, 38);
+            ThemedButton testButton = ButtonAt("Test connection", o.X, o.Y, 150, 36);
             testButton.Click += async delegate
             {
                 testButton.Enabled = false;
@@ -7216,19 +9195,23 @@ namespace Flowtype
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 finally { testButton.Enabled = true; }
             };
-            page.Controls.Add(testButton);
-            Label note = LabelAt("OpenAI is optional. For speech-only cloud, Groq's free tier is usually faster and cheaper than OpenAI transcription.", 210, 646, 440, 48);
-            note.ForeColor = Color.FromArgb(95, 100, 112);
-            page.Controls.Add(note);
+            openai.Controls.Add(testButton);
+            o.Y += 42;
+            o.Note("OpenAI is optional. For speech-only cloud, Groq's free tier is usually faster and cheaper than OpenAI transcription.", 36);
+            FinishCard(page, openai, o, x, y, width);
+            y += openai.Height + 12;
 
-            Label routerTitle = LabelAt("OpenRouter cleanup", 24, 710, 400, 28);
-            routerTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(routerTitle);
-            page.Controls.Add(LabelAt("Local speech sends only the resulting text to OpenRouter for optional polish. The free router is not used in instant mode because provider queues can stall insertion.", 24, 742, 650, 54));
-            AddTextField(page, "OpenRouter key", openRouterKeyBox, 24, 806, true);
-            AddTextField(page, "OpenRouter URL", openRouterUrlBox, 24, 862, false);
-            AddTextField(page, "Model", openRouterModelBox, 24, 918, false);
-            Button routerTestButton = ButtonAt("Test OpenRouter", 210, 974, 150, 34);
+            Panel router = MakeCard();
+            FieldStack r = new FieldStack(router, 20, 18, width - 40);
+            r.Title("OpenRouter cleanup");
+            r.Note("Local speech sends only the resulting text to OpenRouter for optional polish. The free router is not used in instant mode because provider queues can stall insertion.", 48);
+            r.Caption("OpenRouter key");
+            r.TextWell(openRouterKeyBox, 38);
+            r.Caption("OpenRouter URL");
+            r.TextWell(openRouterUrlBox, 38);
+            r.Caption("Model");
+            r.TextWell(openRouterModelBox, 38);
+            ThemedButton routerTestButton = ButtonAt("Test OpenRouter", r.X, r.Y, 150, 36);
             routerTestButton.Click += async delegate
             {
                 routerTestButton.Enabled = false;
@@ -7241,47 +9224,57 @@ namespace Flowtype
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 finally { routerTestButton.Enabled = true; }
             };
-            page.Controls.Add(routerTestButton);
+            router.Controls.Add(routerTestButton);
+            r.Y += 46;
+            FinishCard(page, router, r, x, y, width);
             return page;
         }
 
-        private TabPage BuildLocalTab()
+        private Panel BuildLocalTab()
         {
-            TabPage page = NewTab("Local");
-            Label intro = LabelAt("Offline dictation uses the Instant English model (~60 MB). It stays warm in memory for fast repeat dictations. For higher accuracy online, switch to Groq in General settings.", 24, 22, 650, 48);
-            intro.Font = AppFonts.UiLarge(10.5f);
-            page.Controls.Add(intro);
-            localStatus.SetBounds(24, 92, 650, 48);
-            page.Controls.Add(localStatus);
-            localInstallButton.SetBounds(24, 150, 210, 38);
-            localInstallButton.Text = "Install local engine";
-            localInstallButton.Click += InstallLocalClicked;
-            page.Controls.Add(localInstallButton);
-            localProgress.SetBounds(250, 200, 390, 24);
-            localProgress.Visible = false;
-            page.Controls.Add(localProgress);
+            Panel page = NewTab("Local");
+            int y = 8;
+            const int x = 16;
+            const int width = 700;
 
-            chooseWhisperButton.SetBounds(250, 150, 190, 38);
+            Label intro = LabelAt("Offline dictation uses the Instant English model (~60 MB). It stays warm in memory for fast repeat dictations. For higher accuracy online, switch to Groq in General settings.", x, y, width, 48);
+            intro.Font = AppFonts.UiLarge(10.5f);
+            PageContent(page).Controls.Add(intro);
+            y += 56;
+
+            Panel install = MakeCard();
+            FieldStack s = new FieldStack(install, 20, 18, width - 40);
+            s.Title("Whisper.cpp");
+            s.Add(localStatus, 48);
+            localInstallButton.Text = "Install local engine";
+            localInstallButton.Tag = "primary";
+            localInstallButton.Click += InstallLocalClicked;
+            localInstallButton.SetBounds(s.X, s.Y, 200, 38);
             chooseWhisperButton.Text = "Choose whisper-cli.exe…";
             chooseWhisperButton.Click += ChooseWhisperClicked;
-            page.Controls.Add(chooseWhisperButton);
-            chooseModelButton.SetBounds(450, 150, 190, 38);
+            chooseWhisperButton.SetBounds(s.X + 212, s.Y, 200, 38);
             chooseModelButton.Text = "Choose model .bin…";
             chooseModelButton.Click += ChooseModelClicked;
-            page.Controls.Add(chooseModelButton);
-            Label manualNote = LabelAt("Downloads resume automatically. If GitHub or Hugging Face is blocked, download whisper-bin-x64.zip and ggml-base.en-q5_1.bin in your browser, then select them here.", 24, 196, 650, 42);
-            manualNote.ForeColor = Color.FromArgb(95, 100, 112);
-            page.Controls.Add(manualNote);
+            chooseModelButton.SetBounds(s.X + 424, s.Y, 204, 38);
+            install.Controls.Add(localInstallButton);
+            install.Controls.Add(chooseWhisperButton);
+            install.Controls.Add(chooseModelButton);
+            s.Y += 48;
+            localProgress.Visible = false;
+            s.Add(localProgress, 22);
+            s.Note("Downloads resume automatically. If GitHub or Hugging Face is blocked, download whisper-bin-x64.zip and ggml-base.en-q5_1.bin in your browser, then select them here.", 42);
+            FinishCard(page, install, s, x, y, width);
+            y += install.Height + 12;
 
-            Label polishTitle = LabelAt("Local streaming model", 24, 256, 400, 28);
-            polishTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(polishTitle);
-            Label polishNote = LabelAt("Optional polish after Whisper. Works with Ollama, LM Studio, or llama.cpp on this PC. Tokens stream on the capsule, then Flowtype pastes once into the field you were in — nothing is uploaded. Find local models turns this on for dictation. Leave the model blank and Flowtype will pick a small one if any are installed.", 24, 290, 640, 54);
-            polishNote.ForeColor = Color.FromArgb(95, 100, 112);
-            page.Controls.Add(polishNote);
-            AddTextField(page, "Local URL", ollamaUrlBox, 24, 356, false);
-            AddTextField(page, "Model name", ollamaModelBox, 24, 412, false);
-            Button findModelsButton = ButtonAt("Find local models", 210, 468, 160, 34);
+            Panel polish = MakeCard();
+            FieldStack p = new FieldStack(polish, 20, 18, width - 40);
+            p.Title("Local streaming model");
+            p.Note("Optional polish after Whisper. Works with Ollama, LM Studio, or llama.cpp on this PC. Tokens stream on the capsule, then Flowtype pastes once into the field you were in — nothing is uploaded. Find local models turns this on for dictation. Leave the model blank and Flowtype will pick a small one if any are installed.", 54);
+            p.Caption("Local URL");
+            p.TextWell(ollamaUrlBox, 38);
+            p.Caption("Model name");
+            p.TextWell(ollamaModelBox, 38);
+            ThemedButton findModelsButton = ButtonAt("Find local models", p.X, p.Y, 168, 36);
             findModelsButton.Click += async delegate
             {
                 findModelsButton.Enabled = false;
@@ -7305,8 +9298,7 @@ namespace Flowtype
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Local model", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 finally { findModelsButton.Enabled = true; }
             };
-            page.Controls.Add(findModelsButton);
-            Button testOllamaButton = ButtonAt("Test stream", 380, 468, 120, 34);
+            ThemedButton testOllamaButton = ButtonAt("Test stream", p.X + 180, p.Y, 120, 36);
             testOllamaButton.Click += async delegate
             {
                 testOllamaButton.Enabled = false;
@@ -7320,53 +9312,60 @@ namespace Flowtype
                 catch (Exception exception) { MessageBox.Show(this, exception.Message, "Connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 finally { testOllamaButton.Enabled = true; }
             };
-            page.Controls.Add(testOllamaButton);
+            polish.Controls.Add(findModelsButton);
+            polish.Controls.Add(testOllamaButton);
+            p.Y += 46;
+            FinishCard(page, polish, p, x, y, width);
             return page;
         }
 
-        private TabPage BuildPersonalizationTab()
+        private Panel BuildPersonalizationTab()
         {
-            TabPage page = NewTab("Personalization");
-            Label listsTitle = LabelAt("Spoken lists", 24, 22, 620, 26);
-            listsTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(listsTitle);
-            ConfigureCheck(spokenListsBox, "Enable spoken list commands", 24, 50, 620);
-            page.Controls.Add(spokenListsBox);
-            page.Controls.Add(LabelAt("New bullet when you say", 24, 90, 186, 24));
-            spokenBulletBox.SetBounds(210, 86, 430, 30);
-            spokenBulletBox.MaxLength = 120;
-            StyleField(spokenBulletBox);
-            page.Controls.Add(spokenBulletBox);
-            page.Controls.Add(LabelAt("New number when you say", 24, 126, 186, 24));
-            spokenNumberBox.SetBounds(210, 122, 430, 30);
-            spokenNumberBox.MaxLength = 120;
-            StyleField(spokenNumberBox);
-            page.Controls.Add(spokenNumberBox);
-            Label listsHint = LabelAt("Say the phrase during a take to start a new item. Extra phrases can be comma-separated. Also understands bullet point, next bullet, and similar.", 24, 158, 650, 36);
-            listsHint.ForeColor = UiTheme.TextMuted;
-            listsHint.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
-            page.Controls.Add(listsHint);
-            spokenListsBox.CheckedChanged += delegate { SyncSpokenListFields(); };
+            Panel page = NewTab("Personalization");
+            int y = 8;
+            const int x = 16;
+            const int width = 700;
 
-            Label dictionaryTitle = LabelAt("Dictionary", 24, 210, 620, 26);
-            dictionaryTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(dictionaryTitle);
-            page.Controls.Add(LabelAt("One term per line. Use spoken => written so Whisper misspellings still convert, e.g. eppi => epa or flow type => Flowtype.", 24, 238, 650, 34));
-            dictionaryBox.SetBounds(24, 276, 650, 150);
+            spokenListsBox.Text = "Enable spoken list commands";
+            spokenBulletBox.MaxLength = 120;
+            spokenNumberBox.MaxLength = 120;
+            StyleField(spokenBulletBox);
+            StyleField(spokenNumberBox);
+
+            Panel lists = MakeCard();
+            FieldStack l = new FieldStack(lists, 20, 18, width - 40);
+            l.Title("Spoken lists");
+            l.Check(spokenListsBox);
+            l.Caption("New bullet when you say");
+            l.TextWell(spokenBulletBox, 38);
+            l.Caption("New number when you say");
+            l.TextWell(spokenNumberBox, 38);
+            l.Note("Say the phrase during a take to start a new item. Extra phrases can be comma-separated. Also understands bullet point, next bullet, and similar.", 36);
+            spokenListsBox.CheckedChanged += delegate { SyncSpokenListFields(); };
+            FinishCard(page, lists, l, x, y, width);
+            y += lists.Height + 12;
+
             dictionaryBox.Multiline = true;
             dictionaryBox.ScrollBars = ScrollBars.Vertical;
             dictionaryBox.AcceptsReturn = true;
-            page.Controls.Add(dictionaryBox);
+            Panel dictionary = MakeCard();
+            FieldStack d = new FieldStack(dictionary, 20, 18, width - 40);
+            d.Title("Dictionary");
+            d.Note("One replacement per line: heard => written. Only an exact match is changed — nothing is weighted, guessed, or fed to Whisper.", 40);
+            d.TextWell(dictionaryBox, 180);
+            FinishCard(page, dictionary, d, x, y, width);
+            y += dictionary.Height + 12;
 
-            Label snippetsTitle = LabelAt("Voice snippets", 24, 444, 620, 26);
-            snippetsTitle.Font = AppFonts.Ui(10f, FontStyle.Bold);
-            page.Controls.Add(snippetsTitle);
-            page.Controls.Add(LabelAt("One per line as trigger => expansion, e.g. my sign off => Cheers, Alex", 24, 472, 650, 32));
-            snippetsBox.SetBounds(24, 508, 650, 140);
             snippetsBox.Multiline = true;
             snippetsBox.ScrollBars = ScrollBars.Vertical;
             snippetsBox.AcceptsReturn = true;
-            page.Controls.Add(snippetsBox);
+            Panel snippets = MakeCard();
+            FieldStack sn = new FieldStack(snippets, 20, 18, width - 40);
+            sn.Title("Voice snippets");
+            sn.Note("One per line as trigger => expansion, e.g. my sign off => Cheers, Alex", 32);
+            sn.TextWell(snippetsBox, 160);
+            FinishCard(page, snippets, sn, x, y, width);
+            SealPage(page);
             return page;
         }
 
@@ -7406,6 +9405,9 @@ namespace Flowtype
             autoUpdateBox.Checked = value.AutoCheckUpdates;
             overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
             overlayMarkBox.SelectedIndex = OverlayMarkToIndex(value.OverlayMark);
+            appearanceBox.SelectedIndexChanged -= AppearanceChanged;
+            appearanceBox.SelectedIndex = AppearanceToIndex(value.AppAppearance);
+            appearanceBox.SelectedIndexChanged += AppearanceChanged;
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
             latencyLabel.Text = LatencyStats.Summary;
@@ -7421,13 +9423,18 @@ namespace Flowtype
             dictionaryBox.Lines = value.Dictionary.ToArray();
             snippetsBox.Lines = value.Snippets.Select(pair => pair.Key + " => " + pair.Value).ToArray();
             spokenListsBox.Checked = value.SpokenListsEnabled;
-            spokenBulletBox.Text = value.SpokenBulletPhrase ?? "next point";
+            spokenBulletBox.Text = String.IsNullOrWhiteSpace(value.SpokenBulletPhrase) ? "next point" : value.SpokenBulletPhrase;
             spokenNumberBox.Text = value.SpokenNumberPhrase ?? "next number";
+            loadedDictionary = new List<string>(value.Dictionary);
+            loadedSnippets = new Dictionary<string, string>(value.Snippets, StringComparer.OrdinalIgnoreCase);
+            loadedBulletPhrase = spokenBulletBox.Text;
+            loadedNumberPhrase = spokenNumberBox.Text;
             SyncSpokenListFields();
             agentEnabledBox.Checked = value.AgentModeEnabled;
             agentHotkeyBox.SelectedItem = value.AgentHotkey;
             if (agentHotkeyBox.SelectedIndex < 0) agentHotkeyBox.SelectedIndex = 0;
             agentEndpointBox.Text = value.AgentEndpoint;
+            agentRuntimeBox.SelectedIndex = RuntimeToIndex(value.AgentRuntime);
             UpdateLocalStatus();
         }
 
@@ -7452,6 +9459,7 @@ namespace Flowtype
             value.AutoCheckUpdates = autoUpdateBox.Checked;
             value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
             value.OverlayMark = OverlayMarkFromIndex(overlayMarkBox.SelectedIndex);
+            value.AppAppearance = AppearanceFromIndex(appearanceBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
             value.ApiBaseUrl = apiUrlBox.Text.Trim();
@@ -7468,10 +9476,14 @@ namespace Flowtype
             value.AgentModeEnabled = agentEnabledBox.Checked;
             value.AgentHotkey = Convert.ToString(agentHotkeyBox.SelectedItem);
             value.AgentEndpoint = agentEndpointBox.Text.Trim();
+            value.AgentRuntime = RuntimeFromIndex(agentRuntimeBox.SelectedIndex);
             value.SpokenListsEnabled = spokenListsBox.Checked;
             value.SpokenBulletPhrase = spokenBulletBox.Text.Trim();
+            if (value.SpokenBulletPhrase.Length == 0) value.SpokenBulletPhrase = loadedBulletPhrase;
             value.SpokenNumberPhrase = spokenNumberBox.Text.Trim();
+            if (value.SpokenNumberPhrase.Length == 0) value.SpokenNumberPhrase = loadedNumberPhrase;
             value.Dictionary = dictionaryBox.Lines.Select(line => line.Trim()).Where(line => line.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (value.Dictionary.Count == 0 && loadedDictionary.Count > 0) value.Dictionary = new List<string>(loadedDictionary);
             value.Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (string line in snippetsBox.Lines)
             {
@@ -7484,6 +9496,8 @@ namespace Flowtype
                     if (key.Length > 0) value.Snippets[key] = expansion;
                 }
             }
+            if (value.Snippets.Count == 0 && loadedSnippets.Count > 0)
+                value.Snippets = new Dictionary<string, string>(loadedSnippets, StringComparer.OrdinalIgnoreCase);
             value.Repair();
             return value;
         }
@@ -7646,7 +9660,8 @@ namespace Flowtype
             localStatus.Text = instantReady ? "Ready — Instant model installed and will stay warm between dictations." :
                 (ready ? "A non-Instant model is selected. Choose ggml-base.en-q5_1.bin or click Install." :
                 "Not installed — one click downloads about 60 MB.");
-            localStatus.ForeColor = instantReady ? Color.FromArgb(25, 128, 91) : Color.FromArgb(95, 100, 112);
+            if (instantReady) UiTheme.Tone(localStatus, "ok");
+            else UiTheme.Mute(localStatus);
             localInstallButton.Text = instantReady ? "Reinstall / update" : "Install local engine";
         }
 
@@ -7658,9 +9673,9 @@ namespace Flowtype
             return label;
         }
 
-        private static Button ButtonAt(string text, int x, int y, int width, int height)
+        private static ThemedButton ButtonAt(string text, int x, int y, int width, int height)
         {
-            Button button = new Button();
+            ThemedButton button = new ThemedButton();
             button.Text = text;
             button.SetBounds(x, y, width, height);
             return button;
@@ -7668,22 +9683,10 @@ namespace Flowtype
 
         private static void ConfigureDropDown(ComboBox box, int x, int y, int width)
         {
-            box.SetBounds(x, y, width, 30);
+            box.SetBounds(x, y, width, 40);
             box.DropDownStyle = ComboBoxStyle.DropDownList;
-        }
-
-        private static void ConfigureCheck(CheckBox box, string text, int x, int y, int width)
-        {
-            box.Text = text;
-            box.SetBounds(x, y, width, 30);
-        }
-
-        private static void AddTextField(Control parent, string label, TextBox box, int x, int y, bool password)
-        {
-            parent.Controls.Add(LabelAt(label, x, y + 5, 170, 25));
-            box.SetBounds(x + 186, y, 430, 30);
-            if (password) box.UseSystemPasswordChar = true;
-            parent.Controls.Add(box);
+            box.ItemHeight = 28;
+            UiTheme.StyleCombo(box);
         }
 
         private void OnLatencyStatsUpdated()
@@ -7847,6 +9850,20 @@ namespace Flowtype
             if (index == 3) return "Grid";
             return "Orb";
         }
+
+        private static int AppearanceToIndex(string appearance)
+        {
+            if (String.Equals(appearance, "Light", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (String.Equals(appearance, "System", StringComparison.OrdinalIgnoreCase)) return 2;
+            return 0;
+        }
+
+        private static string AppearanceFromIndex(int index)
+        {
+            if (index == 1) return "Light";
+            if (index == 2) return "System";
+            return "Dark";
+        }
     }
 
     public sealed class HistoryForm : Form
@@ -7863,11 +9880,17 @@ namespace Flowtype
             Height = 580;
             StartPosition = FormStartPosition.CenterScreen;
             Font = AppFonts.Ui(9.5f, FontStyle.Regular);
-            Icon = SystemIcons.Information;
+            Icon = FlowtypeApp.ProductIcon ?? SystemIcons.Application;
+            BackColor = UiTheme.Window;
+            ForeColor = UiTheme.Text;
 
             ToolStrip toolbar = new ToolStrip();
+            toolbar.GripStyle = ToolStripGripStyle.Hidden;
+            toolbar.Padding = new Padding(8, 6, 8, 6);
             ToolStripButton copy = new ToolStripButton("Copy selected");
             ToolStripButton clear = new ToolStripButton("Clear history");
+            copy.ForeColor = UiTheme.Text;
+            clear.ForeColor = UiTheme.Text;
             toolbar.Items.Add(copy);
             toolbar.Items.Add(new ToolStripSeparator());
             toolbar.Items.Add(clear);
@@ -7884,10 +9907,12 @@ namespace Flowtype
             SplitContainer split = new SplitContainer();
             split.Dock = DockStyle.Fill;
             split.SplitterDistance = 310;
+            split.SplitterWidth = 6;
             list.Dock = DockStyle.Fill;
             list.View = View.Details;
             list.FullRowSelect = true;
             list.HideSelection = false;
+            list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             list.Columns.Add("When", 125);
             list.Columns.Add("Application", 150);
             list.SelectedIndexChanged += delegate
@@ -7900,13 +9925,14 @@ namespace Flowtype
             text.Multiline = true;
             text.ScrollBars = ScrollBars.Vertical;
             text.ReadOnly = true;
-            text.BackColor = Color.White;
             text.Font = AppFonts.UiLarge(10.5f);
             split.Panel1.Controls.Add(list);
             split.Panel2.Controls.Add(text);
             Controls.Add(split);
             Controls.Add(toolbar);
             toolbar.Dock = DockStyle.Top;
+            HandleCreated += delegate { UiTheme.ApplyTitleBar(this); };
+            UiTheme.ThemeForm(this);
             Reload();
         }
 
@@ -7996,6 +10022,7 @@ namespace Flowtype
         private string askLine = "";
         private string[] replyLines = new string[0];
         private string endpointLabel = "";
+        private string runtimeLabel = "agent";
         private int tick;
         private float level;
         private long finishedMs;
@@ -8077,9 +10104,15 @@ namespace Flowtype
 
         public void ShowListening(string chord, string endpoint)
         {
+            ShowListening(chord, endpoint, "");
+        }
+
+        public void ShowListening(string chord, string endpoint, string runtime)
+        {
             CancelAutoHide();
             chordLabel = String.IsNullOrWhiteSpace(chord) ? "Win + Alt" : chord;
             endpointLabel = ShortEndpoint(endpoint);
+            runtimeLabel = ShortRuntime(runtime);
             runId = DateTime.Now.ToString("HHmmss", CultureInfo.InvariantCulture);
             message = "";
             askLine = "";
@@ -8269,6 +10302,16 @@ namespace Flowtype
             catch { return endpoint; }
         }
 
+        private static string ShortRuntime(string runtime)
+        {
+            if (String.IsNullOrWhiteSpace(runtime)) return "agent";
+            string value = runtime.Trim();
+            if (value.StartsWith("OpenCode", StringComparison.OrdinalIgnoreCase)) return "opencode";
+            if (value.StartsWith("Claude", StringComparison.OrdinalIgnoreCase)) return "claude";
+            if (value.StartsWith("Custom", StringComparison.OrdinalIgnoreCase)) return "custom";
+            return value.ToLowerInvariant();
+        }
+
         private void Position()
         {
             Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
@@ -8334,7 +10377,7 @@ namespace Flowtype
                 canvas.DrawString("flowtype", monoSmall, dim, shell.Left + 14f, titleY);
                 SizeF head = canvas.MeasureString("flowtype", monoSmall);
                 using (SolidBrush hot = new SolidBrush(edge))
-                    canvas.DrawString("::agent", monoSmall, hot, shell.Left + 14f + head.Width - 4f, titleY);
+                    canvas.DrawString("::" + runtimeLabel, monoSmall, hot, shell.Left + 14f + head.Width - 4f, titleY);
                 string right = "run " + runId + (endpointLabel.Length > 0 ? "  " + endpointLabel : "");
                 SizeF rightSize = canvas.MeasureString(right, monoSmall);
                 canvas.DrawString(right, monoSmall, dim, shell.Right - 14f - rightSize.Width, titleY);
@@ -8578,6 +10621,7 @@ namespace Flowtype
         private const int DoubleTapWindowMs = 450;
         private const int ShortPressMs = 280;
         private SettingsForm settingsForm;
+        private readonly AgentSession agentSession = new AgentSession();
         private HistoryForm historyForm;
         private IntPtr lastForegroundWindow;
         private GlobalKeyHook agentHook;
@@ -8601,6 +10645,7 @@ namespace Flowtype
             store = new ConfigStore();
             bool firstRun = store.IsFirstRun;
             settings = store.Load();
+            UiTheme.Apply(settings.AppAppearance);
             bool bundledInstantReady = ActivateBundledInstantEngine(firstRun);
             apiKey = store.LoadApiKey();
             openRouterKey = store.LoadOpenRouterKey();
@@ -9431,7 +11476,12 @@ namespace Flowtype
                 recordTimer = Stopwatch.StartNew();
                 hook.CaptureEscape = true;
                 // Agent takes get the terminal HUD; dictation keeps the glass capsule.
-                if (currentTakeIsAgent) agentOverlay.ShowListening(settings.AgentHotkey, settings.AgentEndpoint);
+                if (currentTakeIsAgent)
+                {
+                    string who = agentSession.LiveRuntime;
+                    if (who.Length == 0) who = settings.AgentRuntime;
+                    agentOverlay.ShowListening(settings.AgentHotkey, settings.AgentEndpoint, who);
+                }
                 else overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark);
                 if (settings.CompletionSound) RecordingCue.PlayStart();
                 UpdateRecordingStatus();
@@ -9874,6 +11924,7 @@ namespace Flowtype
                 dialog.Font = AppFonts.Ui(9.5f, FontStyle.Regular);
                 dialog.MaximizeBox = false;
                 dialog.MinimizeBox = false;
+                dialog.ShowIcon = false;
                 Label prompt = new Label();
                 prompt.Text = "Heard as \"" + lastDictationWord + "\". Correct spelling:";
                 prompt.SetBounds(16, 16, 388, 36);
@@ -9882,6 +11933,7 @@ namespace Flowtype
                 correctionBox.SetBounds(16, 56, 388, 28);
                 Button okButton = new Button();
                 okButton.Text = "Add";
+                okButton.Tag = "primary";
                 okButton.DialogResult = DialogResult.OK;
                 okButton.SetBounds(228, 100, 84, 32);
                 Button cancelButton = new Button();
@@ -9891,6 +11943,7 @@ namespace Flowtype
                 dialog.Controls.AddRange(new Control[] { prompt, correctionBox, okButton, cancelButton });
                 dialog.AcceptButton = okButton;
                 dialog.CancelButton = cancelButton;
+                UiTheme.ThemeForm(dialog);
                 if (dialog.ShowDialog() != DialogResult.OK) return;
                 string correction = correctionBox.Text.Trim();
                 if (String.IsNullOrWhiteSpace(correction)) return;
@@ -9923,9 +11976,10 @@ namespace Flowtype
                 settingsForm.Activate();
                 return;
             }
+            UiTheme.Apply(settings.AppAppearance);
             try { recorder.ReleaseWarm(); } catch { }
             settingsForm = new SettingsForm(store, settings, FlowtypeApp.AppDirectory,
-                delegate { return recorder.IsRecording || processing; });
+                delegate { return recorder.IsRecording || processing; }, agentSession);
             settingsForm.HotkeyPreviewChanged += delegate(string hotkey)
             {
                 if (String.IsNullOrWhiteSpace(hotkey)) return;
@@ -9954,7 +12008,8 @@ namespace Flowtype
                     agentToggleItem.Text = AgentToggleLabel();
                 }
                 overlay.SetTheme(settings.OverlayTheme);
-            overlay.SetMark(settings.OverlayMark);
+                overlay.SetMark(settings.OverlayMark);
+                UiTheme.Apply(settings.AppAppearance);
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();
                 else
@@ -9966,6 +12021,7 @@ namespace Flowtype
             settingsForm.FormClosed += delegate
             {
                 settingsForm = null;
+                UiTheme.Apply(settings.AppAppearance);
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     try { recorder.Prime(); }
@@ -9983,6 +12039,7 @@ namespace Flowtype
                 historyForm.Activate();
                 return;
             }
+            UiTheme.Apply(settings.AppAppearance);
             historyForm = new HistoryForm(history);
             historyForm.FormClosed += delegate { historyForm = null; };
             historyForm.Show();
@@ -10088,6 +12145,7 @@ namespace Flowtype
         private void Quit()
         {
             shuttingDown = true;
+            try { agentSession.Stop(); } catch { }
             try { if (recorder.IsRecording) recorder.Cancel(); } catch { }
             try { hook.Dispose(); } catch { }
             try { if (agentHook != null) agentHook.Dispose(); } catch { }
