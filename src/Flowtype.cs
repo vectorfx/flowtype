@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.79.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.79.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.81.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.81.0")]
 
 namespace Flowtype
 {
@@ -5187,6 +5187,21 @@ namespace Flowtype
             return Regex.IsMatch(core, @"^(?:scratch that|undo that|delete that|undo last)$", RegexOptions.IgnoreCase);
         }
 
+        public static bool IsMeaningfulInsert(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return false;
+            foreach (char value in text)
+                if (Char.IsLetterOrDigit(value)) return true;
+            return false;
+        }
+
+        private static bool IsIntentionalDiscoursePhrase(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return false;
+            string core = Regex.Replace(text.Trim(), @"[.!?""',—-]+$", "").Trim();
+            return Regex.IsMatch(core, @"^(?:you know|i mean)(?:\s+(?:you know|i mean))*$", RegexOptions.IgnoreCase);
+        }
+
         public static bool IsLightCleanup(string text)
         {
             if (String.IsNullOrWhiteSpace(text) || text.IndexOf('\n') >= 0) return false;
@@ -5257,15 +5272,19 @@ namespace Flowtype
 
             text = ApplyBacktrack(text);
 
+            bool keepDiscourse = IsIntentionalDiscoursePhrase(text);
             if (!String.Equals(settings.Style, "Verbatim", StringComparison.OrdinalIgnoreCase))
             {
                 text = Regex.Replace(text, @"\b(?:um+|uh+|erm+|hmm+)\b[,.]?\s*", "", RegexOptions.IgnoreCase);
-                text = Regex.Replace(text, @"(^|[,.!?]\s+)\s*(?:you know|I mean)\s*[,—-]?\s*", "$1", RegexOptions.IgnoreCase);
+                if (!keepDiscourse)
+                    text = Regex.Replace(text, @"(^|[,.!?]\s+)\s*(?:you know|I mean)\s*[,—-]?\s*", "$1", RegexOptions.IgnoreCase);
                 if (String.Equals(settings.Style, "Concise", StringComparison.OrdinalIgnoreCase))
                     text = Regex.Replace(text, @"\b(?:basically|literally|kind of|sort of)\b[,.]?\s*", "", RegexOptions.IgnoreCase);
+                if (!keepDiscourse)
+                    text = Regex.Replace(text, @",\s*$", "").Trim();
             }
             text = Regex.Replace(text, @"\b(\w+)\s+\1\b", "$1", RegexOptions.IgnoreCase);
-            text = RemoveRepeatedPhrases(text);
+            if (!keepDiscourse) text = RemoveRepeatedPhrases(text);
             text = RemoveWhisperRepetitions(text);
             text = Regex.Replace(text,
                 @"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*,?\s*(?:no|sorry|actually|I mean)\s*,?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\b",
@@ -6257,6 +6276,40 @@ namespace Flowtype
             return String.Format("API request failed ({0}). {1}", (int)status, compact);
         }
 
+        public static bool IsTransient(HttpStatusCode status)
+        {
+            int code = (int)status;
+            return code == 429 || code == 500 || code == 502 || code == 503 || code == 504;
+        }
+
+        public static string TranscriptionFailure(string provider, string body, HttpStatusCode status)
+        {
+            if (IsTransient(status))
+            {
+                if (String.Equals(provider, "Groq", StringComparison.OrdinalIgnoreCase))
+                    return "Groq is temporarily unavailable. Flowtype will try the Local engine if it's installed.";
+                return (provider ?? "The speech API") + " is temporarily unavailable. Try again in a moment.";
+            }
+            return ErrorMessage(body, status);
+        }
+
+        public static bool GroqFailureAllowsLocalFallback(Exception exception)
+        {
+            if (exception == null) return false;
+            InvalidOperationException invalid = exception as InvalidOperationException;
+            if (invalid != null)
+            {
+                string message = invalid.Message ?? "";
+                if (message.IndexOf("temporarily unavailable", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (message.StartsWith("API request failed (5", StringComparison.OrdinalIgnoreCase)) return true;
+                if (message.IndexOf("API request failed (429", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                return false;
+            }
+            if (exception is TaskCanceledException) return true;
+            if (exception is HttpRequestException) return true;
+            return false;
+        }
+
         public static string ExtractText(object node)
         {
             Dictionary<string, object> dictionary = node as Dictionary<string, object>;
@@ -6837,33 +6890,72 @@ namespace Flowtype
                 throw new InvalidOperationException("Groq mode needs an API key. Get a free key at console.groq.com, then paste it in Settings.");
             string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
             string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
-            // Reuse the warmed keep-alive client — a fresh HttpClient per dictation pays a full
-            // DNS+TCP+TLS handshake every time, exactly the latency WarmAsync exists to prepay.
             HttpClient http = GetClient(apiKey);
-            using (MultipartFormDataContent form = new MultipartFormDataContent())
-            using (FileStream stream = File.OpenRead(wavePath))
-            using (StreamContent audio = new StreamContent(stream))
-            using (CancellationTokenSource cts = new CancellationTokenSource(AudioTranscriptionTimeouts.ForWavFile(wavePath, false)))
+            string prompt = WhisperEngine.BuildPrompt(settings, context);
+            const int maxAttempts = 3;
+            Exception last = null;
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
-                audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-                form.Add(audio, "file", Path.GetFileName(wavePath));
-                form.Add(new StringContent(model), "model");
-                form.Add(new StringContent("json"), "response_format");
-                form.Add(new StringContent("en"), "language");
-                form.Add(new StringContent("0"), "temperature");
-                string prompt = WhisperEngine.BuildPrompt(settings, context);
-                if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
-                HttpResponseMessage response = await http.PostAsync(url, form, cts.Token);
-                string body = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
-                Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
-                if (value == null || !value.ContainsKey("text"))
-                    throw new InvalidOperationException("Groq returned no transcription text.");
-                SpeechTranscript transcript = new SpeechTranscript();
-                transcript.Text = Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
-                if (String.IsNullOrWhiteSpace(transcript.Text)) throw new InvalidOperationException("No speech was detected.");
-                return transcript;
+                using (MultipartFormDataContent form = new MultipartFormDataContent())
+                using (FileStream stream = File.OpenRead(wavePath))
+                using (StreamContent audio = new StreamContent(stream))
+                using (CancellationTokenSource cts = new CancellationTokenSource(AudioTranscriptionTimeouts.ForWavFile(wavePath, false)))
+                {
+                    audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+                    form.Add(audio, "file", Path.GetFileName(wavePath));
+                    form.Add(new StringContent(model), "model");
+                    form.Add(new StringContent("json"), "response_format");
+                    form.Add(new StringContent("en"), "language");
+                    form.Add(new StringContent("0"), "temperature");
+                    if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
+                    try
+                    {
+                        HttpResponseMessage response = await http.PostAsync(url, form, cts.Token);
+                        string body = await response.Content.ReadAsStringAsync();
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            if (attempt < maxAttempts - 1 && ApiHelpers.IsTransient(response.StatusCode))
+                            {
+                                Thread.Sleep(400 * (attempt + 1));
+                                continue;
+                            }
+                            throw new InvalidOperationException(ApiHelpers.TranscriptionFailure("Groq", body, response.StatusCode));
+                        }
+                        Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
+                        if (value == null || !value.ContainsKey("text"))
+                            throw new InvalidOperationException("Groq returned no transcription text.");
+                        SpeechTranscript transcript = new SpeechTranscript();
+                        transcript.Text = Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
+                        if (String.IsNullOrWhiteSpace(transcript.Text)) throw new InvalidOperationException("No speech was detected.");
+                        return transcript;
+                    }
+                    catch (Exception exception)
+                    {
+                        if (attempt < maxAttempts - 1 && IsRetryableGroqError(exception))
+                        {
+                            last = exception;
+                            Thread.Sleep(400 * (attempt + 1));
+                        }
+                        else throw;
+                    }
+                }
             }
+            if (last != null) throw last;
+            throw new InvalidOperationException("Groq transcription failed.");
+        }
+
+        private static bool IsRetryableGroqError(Exception exception)
+        {
+            if (exception is TaskCanceledException) return true;
+            HttpRequestException http = exception as HttpRequestException;
+            if (http == null) return false;
+            WebException web = http.InnerException as WebException;
+            if (web == null) return false;
+            return web.Status == WebExceptionStatus.ConnectFailure ||
+                web.Status == WebExceptionStatus.NameResolutionFailure ||
+                web.Status == WebExceptionStatus.Timeout ||
+                web.Status == WebExceptionStatus.ReceiveFailure ||
+                web.Status == WebExceptionStatus.SendFailure;
         }
 
         public async Task TestAsync(AppSettings settings, string apiKey)
@@ -7156,6 +7248,13 @@ namespace Flowtype
             // Dictionary terms are exact replacements after transcription. Putting them in
             // this prompt makes Whisper over-produce them. Do not add them here.
             return prompt.ToString().Replace("\"", "'").Trim();
+        }
+
+        public static bool IsInstalled(AppSettings settings)
+        {
+            return settings != null &&
+                !String.IsNullOrWhiteSpace(settings.WhisperExePath) && File.Exists(settings.WhisperExePath) &&
+                !String.IsNullOrWhiteSpace(settings.WhisperModelPath) && File.Exists(settings.WhisperModelPath);
         }
 
         private static int FindFreePort()
@@ -11576,6 +11675,25 @@ namespace Flowtype
             }
         }
 
+        private async Task<SpeechTranscript> TranscribeGroqWithLocalFallback(string path, ForegroundInfo intended)
+        {
+            Exception groqError = null;
+            try
+            {
+                return await groqEngine.TranscribeAsync(path, settings, groqKey, intended);
+            }
+            catch (Exception exception)
+            {
+                groqError = exception;
+            }
+            if (WhisperEngine.IsInstalled(settings) && ApiHelpers.GroqFailureAllowsLocalFallback(groqError))
+            {
+                AgentTrace.Log("Groq failed, falling back to local: " + groqError.Message);
+                return await whisperEngine.TranscribeAsync(path, settings, intended);
+            }
+            throw groqError;
+        }
+
         private async void ProcessRecording(string path, int sequence, long recordMs, ForegroundInfo intended, bool agentTake)
         {
             string raw = "";
@@ -11593,9 +11711,7 @@ namespace Flowtype
                     transcript.Text = await new OpenAiEngine().TranscribeAsync(path, settings, apiKey);
                 }
                 else if (settings.Engine == "Groq")
-                {
-                    transcript = await groqEngine.TranscribeAsync(path, settings, groqKey, intended);
-                }
+                    transcript = await TranscribeGroqWithLocalFallback(path, intended);
                 else transcript = await whisperEngine.TranscribeAsync(path, settings, intended);
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
@@ -11681,6 +11797,8 @@ namespace Flowtype
                 finalText = TextProcessor.NormalizePunctuationSpacing(finalText);
                 bool pressEnter = TextProcessor.ExtractPressEnter(ref finalText);
                 if (String.IsNullOrWhiteSpace(finalText) && !pressEnter) throw new InvalidOperationException("No speech was detected.");
+                if (!TextProcessor.IsMeaningfulInsert(finalText) && !pressEnter)
+                    throw new InvalidOperationException("Speech was too unclear to insert. Hold the hotkey a moment longer and try again.");
 
                 PendingInsert job = new PendingInsert();
                 job.Text = finalText;

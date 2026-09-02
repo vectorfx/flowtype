@@ -253,6 +253,19 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("hey pinbal", AppSettings.Defaults(), DiscordContext("PinBal")));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
             failures += AssertEqual("spoken question", "Ready?", TextProcessor.Clean("ready question mark", AppSettings.Defaults()));
+            failures += AssertEqual("you know kept when whole take", "You know.",
+                TextProcessor.Clean("you know", AppSettings.Defaults()));
+            failures += AssertEqual("you know question kept", "You know?",
+                TextProcessor.Clean("you know?", AppSettings.Defaults()));
+            failures += AssertEqual("you know twice kept", "You know you know.",
+                TextProcessor.Clean("you know you know", AppSettings.Defaults()));
+            failures += AssertEqual("mid sentence you know still stripped",
+                "Something else.",
+                TextProcessor.Clean("something else, you know", AppSettings.Defaults()));
+            failures += AssertFalse(TextProcessor.IsMeaningfulInsert("?"));
+            failures += AssertFalse(TextProcessor.IsMeaningfulInsert("."));
+            failures += AssertTrue(TextProcessor.IsMeaningfulInsert("Her?"));
+            failures += AssertTrue(TextProcessor.IsMeaningfulInsert("you know"));
             failures += AssertTrue(Hotkeys.IsChord("Win + Ctrl"));
             failures += AssertFalse(Hotkeys.IsChord("Right Ctrl"));
             failures += AssertTrue(Hotkeys.IsModifierChord("Win + Alt"));
@@ -278,6 +291,24 @@ namespace Flowtype.Tests
             failures += AssertEqual("ollama chat delta", "lo", OllamaEngine.ExtractStreamDelta("{\"message\":{\"role\":\"assistant\",\"content\":\"lo\"},\"done\":false}"));
             failures += AssertEqual("openai sse delta", "!", OllamaEngine.ExtractStreamDelta("data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}"));
             failures += AssertEqual("openai done ignored", "", OllamaEngine.ExtractStreamDelta("data: [DONE]"));
+            failures += AssertTrue(ApiHelpers.IsTransient(System.Net.HttpStatusCode.InternalServerError));
+            failures += AssertTrue(ApiHelpers.IsTransient(System.Net.HttpStatusCode.BadGateway));
+            failures += AssertTrue(ApiHelpers.IsTransient(System.Net.HttpStatusCode.ServiceUnavailable));
+            failures += AssertTrue(ApiHelpers.IsTransient((System.Net.HttpStatusCode)429));
+            failures += AssertFalse(ApiHelpers.IsTransient(System.Net.HttpStatusCode.Unauthorized));
+            failures += AssertFalse(ApiHelpers.IsTransient(System.Net.HttpStatusCode.BadRequest));
+            failures += AssertContains("Local",
+                ApiHelpers.TranscriptionFailure("Groq", "{\"error\":{\"message\":\"Internal Server Error\"}}", System.Net.HttpStatusCode.InternalServerError));
+            failures += AssertFalse("raw groq 500 is not shown to the user",
+                String.Equals("Internal Server Error",
+                    ApiHelpers.TranscriptionFailure("Groq", "{\"error\":{\"message\":\"Internal Server Error\"}}", System.Net.HttpStatusCode.InternalServerError),
+                    StringComparison.Ordinal));
+            failures += AssertContains("invalid",
+                ApiHelpers.TranscriptionFailure("Groq", "{\"error\":{\"message\":\"invalid api key\"}}", System.Net.HttpStatusCode.Unauthorized).ToLowerInvariant());
+            failures += AssertTrue(ApiHelpers.GroqFailureAllowsLocalFallback(
+                new InvalidOperationException(ApiHelpers.TranscriptionFailure("Groq", "{}", System.Net.HttpStatusCode.InternalServerError))));
+            failures += AssertFalse(ApiHelpers.GroqFailureAllowsLocalFallback(
+                new InvalidOperationException("invalid api key")));
             failures += AssertTrue(AgentBridge.IsLoopbackEndpoint("http://127.0.0.1:5599/ask"));
             failures += AssertTrue(AgentBridge.IsLoopbackEndpoint("http://localhost:5599/ask"));
             failures += AssertTrue(AgentBridge.IsLoopbackEndpoint("http://[::1]:5599/ask"));
@@ -365,9 +396,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.80"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.82"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.79", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.81", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));

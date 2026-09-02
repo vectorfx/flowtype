@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.3.81
+
+Dictation cleanup no longer eats what you said:
+- Saying "you know" as the whole take is kept — Natural/Concise no longer strip it down to "." or "?"
+- Punctuation-only output after cleanup (a lone "?" or ".") is rejected instead of typed into your field
+- Mid-sentence filler still strips: "something else, you know" → "Something else."
+
+---
+
+## 1.3.80
+
+Groq dictation resilience:
+- Groq 500/502/503 and rate limits retry up to three times before failing
+- When Groq still fails but the local Whisper engine is installed, Flowtype falls back to Local automatically instead of showing a bare "Internal Server Error"
+- Transient Groq failures name what's happening instead of echoing Groq's raw error line
+
+---
+
 ## 1.3.79
 
 Agent replies and connect, for anyone's machine:
