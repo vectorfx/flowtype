@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.84
+
+Crash hardening (NullReference APPCRASH after dictation):
+- Log UI / unhandled / unobserved exceptions to `%APPDATA%\Flowtype\errors.log` with full stacks
+- Never throw out of the keyboard hook, waveIn callback, or overlay paint timer
+- Paste/insert failures are caught per take instead of killing the process
+- Settings save no longer force-reinstalls a live low-level hook (that race could AV)
+
+---
+
+## 1.3.83
+
+Paste and hotkey reliability (OpenWhispr steal list):
+- Dictation paste / Enter / Undo now use batched `SendInput` instead of `keybd_event` (clipboard restore, Cursor, and terminal heuristics unchanged)
+- Low-level keyboard hooks auto-reinstall when the chord poller has to backup-start, on settings save, and on a periodic health check
+- Mic `Prime()` is queued on key-down so Bluetooth / cold mics wake before `StartRecording`
+
+OpenCode agent:
+- Connect no longer forces the Local-tab Ollama model into OpenCode (that made every ask return “started but did not answer”)
+- Cold spawn uses `opencode run --pure --auto` and surfaces stderr errors instead of swallowing them behind plugin banners
+
+Overlay and settings clarity:
+- Liquid glass uses blur only — dropped the per-pixel GetPixel warp that burned UI-thread time
+- Settings nav puts **Agent** last (General → Cloud → Local → Personalization → Agent)
+- Microphone boost is opt-in: toggle on under Input & performance, then set the amount (default off = 1×)
+
+---
+
 ## 1.3.82
 
 Voice capsule freeze / flash:

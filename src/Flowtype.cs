@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.82.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.82.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.84.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.84.0")]
 
 namespace Flowtype
 {
@@ -57,6 +57,7 @@ namespace Flowtype
         public string GroqApiUrl;
         public string GroqTranscriptionModel;
         public float MicGain;
+        public bool MicBoostEnabled;
         public bool TurboTranscription;
         public bool SuppressNonSpeech;
         public bool CompletionSound;
@@ -105,6 +106,7 @@ namespace Flowtype
             value.GroqApiUrl = "https://api.groq.com/openai/v1";
             value.GroqTranscriptionModel = "whisper-large-v3-turbo";
             value.MicGain = 1.2f;
+            value.MicBoostEnabled = false;
             value.TurboTranscription = true;
             value.SuppressNonSpeech = false;
             value.CompletionSound = true;
@@ -192,6 +194,12 @@ namespace Flowtype
                 AgentHotkey = String.Equals(Hotkey, "Win + Alt", StringComparison.OrdinalIgnoreCase) ? "Win + Shift" : "Win + Alt";
             if (Dictionary == null) Dictionary = new List<string>();
             if (Snippets == null) Snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>1× when boost is off; otherwise the saved MicGain slider value.</summary>
+        public float EffectiveMicGain
+        {
+            get { return MicBoostEnabled ? MicGain : 1f; }
         }
     }
 
@@ -2956,8 +2964,8 @@ namespace Flowtype
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
 
-        [DllImport("user32.dll")]
-        private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint SendInput(uint count, INPUT[] inputs, int size);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, StringBuilder lParam);
@@ -2965,6 +2973,43 @@ namespace Flowtype
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+        // 64-bit INPUT must be sized like the full Win32 union (mouse branch is the largest).
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT
+        {
+            public uint type;
+            public InputUnion data;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct InputUnion
+        {
+            [FieldOffset(0)] public MOUSEINPUT mouse;
+            [FieldOffset(0)] public KEYBDINPUT keyboard;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint flags;
+            public uint time;
+            public UIntPtr extraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KEYBDINPUT
+        {
+            public ushort vk;
+            public ushort scan;
+            public uint flags;
+            public uint time;
+            public UIntPtr extraInfo;
+        }
+
+        private const uint InputKeyboard = 1;
         private const uint KEYEVENTF_KEYUP = 0x0002;
         private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
         private const int ContextProbeChars = 16;
@@ -3458,15 +3503,32 @@ namespace Flowtype
 
         private static void HoldKey(byte vk, bool down, bool extended)
         {
-            uint flags = down ? 0u : KEYEVENTF_KEYUP;
-            if (extended) flags |= KEYEVENTF_EXTENDEDKEY;
-            keybd_event(vk, 0, flags, UIntPtr.Zero);
+            INPUT input = new INPUT();
+            input.type = InputKeyboard;
+            input.data.keyboard.vk = vk;
+            input.data.keyboard.flags = (down ? 0u : KEYEVENTF_KEYUP) | (extended ? KEYEVENTF_EXTENDEDKEY : 0u);
+            SendInput(1, new INPUT[] { input }, Marshal.SizeOf(typeof(INPUT)));
         }
 
         private static void PulseKey(byte vk, bool extended)
         {
             HoldKey(vk, true, extended);
             HoldKey(vk, false, extended);
+        }
+
+        private static void SendKeyEvents(params INPUT[] inputs)
+        {
+            if (inputs == null || inputs.Length == 0) return;
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        private static INPUT KeyEvent(byte vk, bool down, bool extended)
+        {
+            INPUT input = new INPUT();
+            input.type = InputKeyboard;
+            input.data.keyboard.vk = vk;
+            input.data.keyboard.flags = (down ? 0u : KEYEVENTF_KEYUP) | (extended ? KEYEVENTF_EXTENDEDKEY : 0u);
+            return input;
         }
 
         private static bool TryGetCharBeforeCaret(ForegroundInfo context, out char previous)
@@ -3623,11 +3685,23 @@ namespace Flowtype
 
         private static void SendPasteChord(bool shiftPaste)
         {
-            HoldKey(0x11, true, false);
-            if (shiftPaste) HoldKey(0x10, true, false);
-            PulseKey(0x56, false);
-            if (shiftPaste) HoldKey(0x10, false, false);
-            HoldKey(0x11, false, false);
+            // One SendInput batch is more reliable than keybd_event under focus races.
+            if (shiftPaste)
+            {
+                SendKeyEvents(
+                    KeyEvent(0x11, true, false),
+                    KeyEvent(0x10, true, false),
+                    KeyEvent(0x56, true, false),
+                    KeyEvent(0x56, false, false),
+                    KeyEvent(0x10, false, false),
+                    KeyEvent(0x11, false, false));
+                return;
+            }
+            SendKeyEvents(
+                KeyEvent(0x11, true, false),
+                KeyEvent(0x56, true, false),
+                KeyEvent(0x56, false, false),
+                KeyEvent(0x11, false, false));
         }
 
         private static bool uiaLoadAttempted;
@@ -3693,6 +3767,7 @@ namespace Flowtype
         private static ForegroundInfo ResolveDeliveryTarget(ForegroundInfo original)
         {
             ForegroundInfo field = Capture(false);
+            if (field == null) return TryRefocus(original);
             if (original != null && original.Handle != IntPtr.Zero && field.Handle != original.Handle)
                 return TryRefocus(original);
             return field;
@@ -3847,8 +3922,9 @@ namespace Flowtype
 
         public static void PressEnter()
         {
-            keybd_event(0x0D, 0, 0, UIntPtr.Zero);
-            keybd_event(0x0D, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            SendKeyEvents(
+                KeyEvent(0x0D, true, false),
+                KeyEvent(0x0D, false, false));
         }
 
         public static bool TryFocus(ForegroundInfo original)
@@ -3859,10 +3935,11 @@ namespace Flowtype
         public static void UndoLastInsert()
         {
             Thread.Sleep(20);
-            keybd_event(0x11, 0, 0, UIntPtr.Zero);
-            keybd_event(0x5A, 0, 0, UIntPtr.Zero);
-            keybd_event(0x5A, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            keybd_event(0x11, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            SendKeyEvents(
+                KeyEvent(0x11, true, false),
+                KeyEvent(0x5A, true, false),
+                KeyEvent(0x5A, false, false),
+                KeyEvent(0x11, false, false));
         }
     }
 
@@ -3893,6 +3970,7 @@ namespace Flowtype
         private static extern IntPtr GetModuleHandle(string moduleName);
 
         private readonly HookProc callback;
+        private readonly object hookGate = new object();
         private IntPtr handle;
         private string hotkeyName;
         private int primaryKey;
@@ -3921,40 +3999,50 @@ namespace Flowtype
 
         private IntPtr Callback(int code, IntPtr wParam, IntPtr lParam)
         {
+            IntPtr currentHandle;
+            lock (hookGate) currentHandle = handle;
             if (code >= 0)
             {
-                KeyboardData data = (KeyboardData)Marshal.PtrToStructure(lParam, typeof(KeyboardData));
-                bool injected = (data.flags & 0x10) != 0;
-                bool down = wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104;
-                bool up = wParam == (IntPtr)0x0101 || wParam == (IntPtr)0x0105;
-                if (!injected && Hotkeys.IsModifierChord(hotkeyName) && (down || up) && HotkeyChordTracker.Handles(data.vkCode, hotkeyName))
+                try
                 {
-                    bool active;
-                    if (chordTracker.Update(data.vkCode, down, out active))
+                    KeyboardData data = (KeyboardData)Marshal.PtrToStructure(lParam, typeof(KeyboardData));
+                    bool injected = (data.flags & 0x10) != 0;
+                    bool down = wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104;
+                    bool up = wParam == (IntPtr)0x0101 || wParam == (IntPtr)0x0105;
+                    if (!injected && Hotkeys.IsModifierChord(hotkeyName) && (down || up) && HotkeyChordTracker.Handles(data.vkCode, hotkeyName))
+                    {
+                        bool active;
+                        if (chordTracker.Update(data.vkCode, down, out active))
+                        {
+                            Action<bool> handler = HotkeyChanged;
+                            if (handler != null) handler(active);
+                        }
+                        // Let Windows see modifier events so neither modifier can become stuck.
+                        return CallNextHookEx(currentHandle, code, wParam, lParam);
+                    }
+                    // A modifier chord has no real primary key — Hotkeys.Code falls back to Right
+                    // Ctrl for chords, so without this guard a "Win + Alt" hook would swallow every
+                    // Right Ctrl press and fire phantom chord events.
+                    if (!injected && !Hotkeys.IsModifierChord(hotkeyName) && data.vkCode == (uint)primaryKey && (down || up))
                     {
                         Action<bool> handler = HotkeyChanged;
-                        if (handler != null) handler(active);
+                        if (handler != null) handler(down);
+                        return (IntPtr)1;
                     }
-                    // Let Windows see modifier events so neither modifier can become stuck.
-                    return CallNextHookEx(handle, code, wParam, lParam);
+                    if (!injected && CaptureEscape && data.vkCode == 0x1B && down)
+                    {
+                        Action handler = CancelPressed;
+                        if (handler != null) handler();
+                        return (IntPtr)1;
+                    }
                 }
-                // A modifier chord has no real primary key — Hotkeys.Code falls back to Right
-                // Ctrl for chords, so without this guard a "Win + Alt" hook would swallow every
-                // Right Ctrl press and fire phantom chord events.
-                if (!injected && !Hotkeys.IsModifierChord(hotkeyName) && data.vkCode == (uint)primaryKey && (down || up))
+                catch
                 {
-                    Action<bool> handler = HotkeyChanged;
-                    if (handler != null) handler(down);
-                    return (IntPtr)1;
-                }
-                if (!injected && CaptureEscape && data.vkCode == 0x1B && down)
-                {
-                    Action handler = CancelPressed;
-                    if (handler != null) handler();
-                    return (IntPtr)1;
+                    // Never throw out of a low-level hook — Windows removes the hook and the
+                    // process can AV. Dictation must degrade, not die.
                 }
             }
-            return CallNextHookEx(handle, code, wParam, lParam);
+            return CallNextHookEx(currentHandle, code, wParam, lParam);
         }
 
         public void ResetChordTracker()
@@ -3962,12 +4050,40 @@ namespace Flowtype
             if (chordTracker != null) chordTracker.Reset();
         }
 
+        public bool IsInstalled
+        {
+            get { lock (hookGate) return handle != IntPtr.Zero; }
+        }
+
+        /// <summary>
+        /// Reinstall the low-level keyboard hook if Windows dropped it (or install failed earlier).
+        /// Safe to call from the UI thread; keeps the same HotkeyName / callbacks.
+        /// </summary>
+        public bool Reinstall()
+        {
+            lock (hookGate)
+            {
+                if (handle != IntPtr.Zero)
+                {
+                    try { UnhookWindowsHookEx(handle); } catch { }
+                    handle = IntPtr.Zero;
+                }
+                handle = SetWindowsHookEx(13, callback, GetModuleHandle(null), 0);
+                if (handle == IntPtr.Zero) return false;
+                if (chordTracker != null) chordTracker.Reset();
+                return true;
+            }
+        }
+
         public void Dispose()
         {
-            if (handle != IntPtr.Zero)
+            lock (hookGate)
             {
-                UnhookWindowsHookEx(handle);
-                handle = IntPtr.Zero;
+                if (handle != IntPtr.Zero)
+                {
+                    UnhookWindowsHookEx(handle);
+                    handle = IntPtr.Zero;
+                }
             }
         }
     }
@@ -4231,33 +4347,49 @@ namespace Flowtype
 
         private void OnWaveMessage(IntPtr source, uint message, IntPtr instance, IntPtr parameter1, IntPtr parameter2)
         {
-            if (message != DataMessage || parameter1 == IntPtr.Zero) return;
-            WaveHeader header = (WaveHeader)Marshal.PtrToStructure(parameter1, typeof(WaveHeader));
-            if (header.bytesRecorded > 0)
+            try
             {
-                byte[] data = new byte[header.bytesRecorded];
-                Marshal.Copy(header.data, data, 0, data.Length);
-                float rawPeak = MeasurePeak(data);
-                ApplyGainInPlace(data);
-                float boostedPeak = MeasurePeak(data);
-                lock (gate)
+                if (message != DataMessage || parameter1 == IntPtr.Zero) return;
+                WaveHeader header = (WaveHeader)Marshal.PtrToStructure(parameter1, typeof(WaveHeader));
+                if (header.bytesRecorded > 0)
                 {
-                    preroll.Write(data);
-                    if (writingFile && rawStream != null) rawStream.Write(data, 0, data.Length);
+                    byte[] data = new byte[header.bytesRecorded];
+                    Marshal.Copy(header.data, data, 0, data.Length);
+                    float rawPeak = MeasurePeak(data);
+                    ApplyGainInPlace(data);
+                    float boostedPeak = MeasurePeak(data);
+                    lock (gate)
+                    {
+                        preroll.Write(data);
+                        if (writingFile && rawStream != null) rawStream.Write(data, 0, data.Length);
+                    }
+                    if (takeActive)
+                    {
+                        AudioMeterReading reading = new AudioMeterReading();
+                        reading.RawPeak = rawPeak;
+                        reading.BoostedPeak = boostedPeak;
+                        reading.Raw = BuildMeter(rawPeak);
+                        reading.Boosted = BuildMeter(boostedPeak);
+                        Action<AudioMeterReading> levelHandler = LevelChanged;
+                        if (levelHandler != null)
+                        {
+                            try { levelHandler(reading); }
+                            catch { }
+                        }
+                    }
                 }
-                if (takeActive)
-                {
-                    AudioMeterReading reading = new AudioMeterReading();
-                    reading.RawPeak = rawPeak;
-                    reading.BoostedPeak = boostedPeak;
-                    reading.Raw = BuildMeter(rawPeak);
-                    reading.Boosted = BuildMeter(boostedPeak);
-                    Action<AudioMeterReading> levelHandler = LevelChanged;
-                    if (levelHandler != null) levelHandler(reading);
-                }
+                if (running) waveInAddBuffer(input, parameter1, (uint)Marshal.SizeOf(typeof(WaveHeader)));
+                else if (Interlocked.Increment(ref drainReturns) >= drainTarget) drained.Set();
             }
-            if (running) waveInAddBuffer(input, parameter1, (uint)Marshal.SizeOf(typeof(WaveHeader)));
-            else if (Interlocked.Increment(ref drainReturns) >= drainTarget) drained.Set();
+            catch
+            {
+                // waveIn callbacks must never throw — that tears down the process.
+                try
+                {
+                    if (!running) drained.Set();
+                }
+                catch { }
+            }
         }
 
         private static float MeasurePeak(byte[] data)
@@ -7621,26 +7753,33 @@ namespace Flowtype
             timer.Interval = 32;
             timer.Tick += delegate
             {
-                UpdateRevealAnimation();
-                animationTick++;
-                if (pendingGlassRecapture && IsGlassTheme() && Visible && !exiting && !glassCapturing)
+                try
                 {
-                    pendingGlassRecapture = false;
-                    CaptureGlassBackdrop();
+                    UpdateRevealAnimation();
+                    animationTick++;
+                    if (pendingGlassRecapture && IsGlassTheme() && Visible && !exiting && !glassCapturing)
+                    {
+                        pendingGlassRecapture = false;
+                        CaptureGlassBackdrop();
+                    }
+                    if (processingMode) DriveProcessingBands();
+                    else
+                    {
+                        level *= 0.84f;
+                        for (int index = 0; index < bands.Length; index++) bands[index] *= 0.82f;
+                    }
+                    if (elapsed.IsRunning && elapsed.Elapsed >= TimeSpan.FromMinutes(10) && !maxRaised)
+                    {
+                        maxRaised = true;
+                        Action handler = MaximumDurationReached;
+                        if (handler != null) handler();
+                    }
+                    RenderLayered();
                 }
-                if (processingMode) DriveProcessingBands();
-                else
+                catch
                 {
-                    level *= 0.84f;
-                    for (int index = 0; index < bands.Length; index++) bands[index] *= 0.82f;
+                    // Overlay paint must never take down the process.
                 }
-                if (elapsed.IsRunning && elapsed.Elapsed >= TimeSpan.FromMinutes(10) && !maxRaised)
-                {
-                    maxRaised = true;
-                    Action handler = MaximumDurationReached;
-                    if (handler != null) handler();
-                }
-                RenderLayered();
             };
         }
 
@@ -7907,7 +8046,8 @@ namespace Flowtype
 
                     using (Bitmap blurred = BlurBitmap(raw, 3))
                     {
-                        Bitmap next = DistortLiquidGlass(blurred);
+                        // Blur only — skip GetPixel warp (DistortLiquidGlass). Same look, far cheaper.
+                        Bitmap next = (Bitmap)blurred.Clone();
                         if (glassBackdrop != null) glassBackdrop.Dispose();
                         glassBackdrop = next;
                     }
@@ -8016,27 +8156,6 @@ namespace Flowtype
                 }
                 return result;
             }
-        }
-
-        private static Bitmap DistortLiquidGlass(Bitmap source)
-        {
-            int width = source.Width;
-            int height = source.Height;
-            Bitmap dest = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    float nx = x * 0.11f;
-                    float ny = y * 0.11f;
-                    int offsetX = (int)(Math.Sin(nx * 1.7f + ny * 0.6f) * 2.2f + Math.Sin(ny * 2.3f) * 1.2f);
-                    int offsetY = (int)(Math.Cos(ny * 1.5f + nx * 0.4f) * 2.2f + Math.Cos(nx * 2.1f) * 1.2f);
-                    int sampleX = Math.Max(0, Math.Min(width - 1, x + offsetX));
-                    int sampleY = Math.Max(0, Math.Min(height - 1, y + offsetY));
-                    dest.SetPixel(x, y, source.GetPixel(sampleX, sampleY));
-                }
-            }
-            return dest;
         }
 
         public void SetLevel(float value)
@@ -8561,6 +8680,7 @@ namespace Flowtype
         private readonly TextBox groqModelBox = new TextBox();
         private readonly TrackBar micGainBar = new TrackBar();
         private readonly Label micGainLabel = new Label();
+        private readonly ThemedCheckBox micBoostBox = new ThemedCheckBox();
         private readonly ProgressBar micLevelBar = new ProgressBar();
         private readonly Label micTestStatus = new Label();
         private readonly ThemedButton micTestButton = new ThemedButton();
@@ -8700,12 +8820,12 @@ namespace Flowtype
             settingPages = new Panel[]
             {
                 BuildGeneralTab(),
-                BuildAgentTab(),
                 BuildCloudTab(),
                 BuildLocalTab(),
-                BuildPersonalizationTab()
+                BuildPersonalizationTab(),
+                BuildAgentTab()
             };
-            string[] navNames = new string[] { "General", "Agent", "Cloud", "Local", "Personalization" };
+            string[] navNames = new string[] { "General", "Cloud", "Local", "Personalization", "Agent" };
             navButtons = new Button[navNames.Length];
             for (int index = navNames.Length - 1; index >= 0; index--)
             {
@@ -9044,6 +9164,8 @@ namespace Flowtype
             suppressNonSpeechBox.Text = "Filter non-speech sounds (may drop quiet words)";
             completionSoundBox.Text = "Sound effects on start and finish";
             insertNotifyBox.Text = "Tray toast after each dictation";
+            micBoostBox.Text = "Microphone boost — amplify quiet mics";
+            micBoostBox.CheckedChanged += delegate { SyncMicBoostUi(); };
 
             Panel dictation = MakeCard();
             FieldStack speak = new FieldStack(dictation, 20, 18, width - 40);
@@ -9093,7 +9215,8 @@ namespace Flowtype
             mic.Check(suppressNonSpeechBox);
             mic.Check(completionSoundBox);
             mic.Check(insertNotifyBox);
-            mic.Caption("Microphone boost");
+            mic.Check(micBoostBox);
+            mic.Note("Off by default. Turn on only if your mic is quiet — then set the amount below.", 28);
             micGainBar.Minimum = 8;
             micGainBar.Maximum = 25;
             micGainBar.TickFrequency = 1;
@@ -9102,13 +9225,14 @@ namespace Flowtype
             {
                 float gain = micGainBar.Value / 10f;
                 micGainLabel.Text = gain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
-                if (micTestRecorder.IsRecording) micTestRecorder.MicGain = gain;
+                if (micTestRecorder.IsRecording) micTestRecorder.MicGain = SelectedMicGain();
             };
             micGainBar.SetBounds(mic.X, mic.Y, mic.Width - 56, 36);
             micGainLabel.SetBounds(mic.X + mic.Width - 52, mic.Y + 6, 52, 24);
             input.Controls.Add(micGainBar);
             input.Controls.Add(micGainLabel);
             mic.Y += 42;
+            SyncMicBoostUi();
             mic.Caption("Microphone health");
             micLevelBar.Minimum = 0;
             micLevelBar.Maximum = 100;
@@ -9121,7 +9245,7 @@ namespace Flowtype
             input.Controls.Add(micTestButton);
             mic.Y += 46;
             micTestStatus.AutoSize = false;
-            micTestStatus.Text = "The bar is your real voice at the mic (not Whisper). Speak normally and aim for 15–40%. Boost is only for quiet mics — 2× is not a quality score.";
+            micTestStatus.Text = "The bar is your real voice at the mic (not Whisper). Speak normally and aim for 15–40%. Boost is optional — leave it off unless the mic is quiet.";
             UiTheme.Mute(micTestStatus);
             mic.Add(micTestStatus, 56);
             latencyLabel.Font = AppFonts.Ui(8.75f, FontStyle.Regular);
@@ -9157,7 +9281,7 @@ namespace Flowtype
             agentHotkeyBox.Items.AddRange(Hotkeys.Names.Cast<object>().ToArray());
             agentRuntimeBox.Items.AddRange(new object[]
             {
-                "OpenCode — local / free models (Ollama, LM Studio)",
+                "OpenCode — uses OpenCode free models (Connect starts it)",
                 "Claude — Claude Code login (uses your Claude usage)",
                 "Custom — you start whatever listens on the endpoint"
             });
@@ -9294,10 +9418,14 @@ namespace Flowtype
 
         private string OpenCodeModelFlag()
         {
+            // Do not force Local-tab Ollama into OpenCode. That wiring made Connect
+            // look healthy while every ask died with only a plugin banner on stdout
+            // (real error on stderr). OpenCode's own default free model works.
+            // Pass through only when the box already names an OpenCode provider/model.
             string model = ollamaModelBox.Text.Trim();
             if (model.Length == 0) return "";
-            if (model.IndexOf('/') >= 0) return model;
-            return "ollama/" + model;
+            if (model.StartsWith("opencode/", StringComparison.OrdinalIgnoreCase)) return model;
+            return "";
         }
 
         private static string RuntimeFromIndex(int index)
@@ -9594,6 +9722,8 @@ namespace Flowtype
             appearanceBox.SelectedIndexChanged += AppearanceChanged;
             micGainBar.Value = Math.Max(micGainBar.Minimum, Math.Min(micGainBar.Maximum, (int)Math.Round(value.MicGain * 10f)));
             micGainLabel.Text = value.MicGain.ToString("0.0", CultureInfo.InvariantCulture) + "×";
+            micBoostBox.Checked = value.MicBoostEnabled;
+            SyncMicBoostUi();
             latencyLabel.Text = LatencyStats.Summary;
             openRouterKeyBox.Text = store.LoadOpenRouterKey();
             openRouterUrlBox.Text = value.OpenRouterUrl;
@@ -9645,6 +9775,7 @@ namespace Flowtype
             value.OverlayMark = OverlayMarkFromIndex(overlayMarkBox.SelectedIndex);
             value.AppAppearance = AppearanceFromIndex(appearanceBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
+            value.MicBoostEnabled = micBoostBox.Checked;
             value.GroqTranscriptionModel = groqModelBox.Text.Trim();
             value.ApiBaseUrl = apiUrlBox.Text.Trim();
             value.TranscriptionModel = transcriptionModelBox.Text.Trim();
@@ -9900,12 +10031,14 @@ namespace Flowtype
             micTestRawPeak = 0f;
             micTestBoostedPeak = 0f;
             micLevelBar.Value = 0;
-            micTestStatus.Text = String.Format(CultureInfo.InvariantCulture,
-                "Listening at {0:0.0}× boost… speak normally.", micGainBar.Value / 10f);
+            float testGain = SelectedMicGain();
+            micTestStatus.Text = micBoostBox.Checked
+                ? String.Format(CultureInfo.InvariantCulture, "Listening at {0:0.0}× boost… speak normally.", testGain)
+                : "Listening with boost off (1×)… speak normally.";
             micTestButton.Text = "Stop test";
             micTestPath = Path.Combine(Path.GetTempPath(),
                 "flowtype-mic-test-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".wav");
-            micTestRecorder.MicGain = micGainBar.Value / 10f;
+            micTestRecorder.MicGain = testGain;
             micTestRecorder.LevelChanged += OnMicTestLevel;
             try
             {
@@ -9943,15 +10076,15 @@ namespace Flowtype
             int voicePercent = (int)Math.Round(Math.Max(0f, Math.Min(1f, reading.RawPeak)) * 100f);
             micLevelBar.Value = Math.Max(micLevelBar.Minimum, Math.Min(micLevelBar.Maximum, voicePercent));
             micTestStatus.Text = String.Format(CultureInfo.InvariantCulture,
-                "{0:0.0}× boost · voice at mic {1}% (target 15–40%)",
-                micGainBar.Value / 10f,
+                "{0:0.0}× · voice at mic {1}% (target 15–40%)",
+                SelectedMicGain(),
                 (int)Math.Round(micTestRawPeak * 100f));
         }
 
         private void FinishMicTest()
         {
             micTestRecorder.LevelChanged -= OnMicTestLevel;
-            float gain = micGainBar.Value / 10f;
+            float gain = SelectedMicGain();
             try
             {
                 if (micTestRecorder.IsRecording) micTestRecorder.Stop();
@@ -9969,8 +10102,22 @@ namespace Flowtype
             MicLevel advice = MicLevel.Evaluate(micTestRawPeak, micTestBoostedPeak, gain);
             micLevelBar.Value = Math.Max(micLevelBar.Minimum, Math.Min(micLevelBar.Maximum, advice.VoicePercent));
             micTestStatus.Text = String.Format(CultureInfo.InvariantCulture,
-                "{0:0.0}× boost · voice at mic {1}% (target 15–40%). {2}",
+                "{0:0.0}× · voice at mic {1}% (target 15–40%). {2}",
                 gain, advice.VoicePercent, advice.Message);
+        }
+
+        private float SelectedMicGain()
+        {
+            return micBoostBox.Checked ? micGainBar.Value / 10f : 1f;
+        }
+
+        private void SyncMicBoostUi()
+        {
+            bool on = micBoostBox.Checked;
+            micGainBar.Enabled = on;
+            micGainLabel.Enabled = on;
+            micGainLabel.ForeColor = on ? UiTheme.Text : UiTheme.TextMuted;
+            if (micTestRecorder.IsRecording) micTestRecorder.MicGain = SelectedMicGain();
         }
 
         private static float MeasurePeakPercent(byte[] pcm)
@@ -10822,6 +10969,8 @@ namespace Flowtype
         private bool updateCheckRunning;
         private bool updateInstallRunning;
         private System.Windows.Forms.Timer updateRecheckTimer;
+        private int hookHealthTicks;
+        private DateTime lastHookReinstallUtc = DateTime.MinValue;
 
         public FlowtypeContext(EventWaitHandle activationEvent)
         {
@@ -10843,7 +10992,7 @@ namespace Flowtype
             overlay.SetMark(settings.OverlayMark);
             recorder = new WaveRecorder();
             RecordingCue.Preload();
-            recorder.MicGain = settings.MicGain;
+            recorder.MicGain = settings.EffectiveMicGain;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 try { recorder.Prime(); }
@@ -10877,6 +11026,9 @@ namespace Flowtype
                 {
                     chordReleaseStreak = 0;
                     chordPolledDown = true;
+                    // Poller saw the chord but the LL hook did not — Windows may have
+                    // dropped the hook while leaving our handle non-zero. Debounced reinstall.
+                    TryReinstallHooks("chord-poller backup start");
                     OnHotkeyChanged(true);
                     return;
                 }
@@ -10903,6 +11055,16 @@ namespace Flowtype
                 catch { }
                 try { ReconcileAfterForegroundChange(); }
                 catch { }
+                // ~ every 6s (120ms * 50): reinstall if Windows silently dropped the LL hook.
+                hookHealthTicks++;
+                if (hookHealthTicks >= 50)
+                {
+                    hookHealthTicks = 0;
+                    if (hook != null && !hook.IsInstalled)
+                        TryReinstallHooks("periodic health");
+                    if (agentHook != null && !agentHook.IsInstalled)
+                        TryReinstallHooks("periodic agent health");
+                }
             };
             activationPoller.Start();
 
@@ -11219,6 +11381,16 @@ namespace Flowtype
                 pendingAgentTake = false;
                 CancelPendingStop();
                 CancelPendingStart();
+                // Warm the mic off the UI thread before StartRecording lands.
+                try
+                {
+                    WaveRecorder warm = recorder;
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        try { warm.Prime(); } catch { }
+                    });
+                }
+                catch { }
                 try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
             }
             else
@@ -11273,6 +11445,15 @@ namespace Flowtype
                 AgentTrace.Log("chord down: queuing agent StartRecording");
                 CancelPendingStop();
                 CancelPendingStart();
+                try
+                {
+                    WaveRecorder warm = recorder;
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        try { warm.Prime(); } catch { }
+                    });
+                }
+                catch { }
                 try { dispatcher.BeginInvoke(new Action(StartRecording)); } catch { }
             }
             else
@@ -11313,6 +11494,26 @@ namespace Flowtype
             agentHotkeyDown = false;
             pendingAgentTake = false;
             StopAgentNoticePoll();
+        }
+
+        private void TryReinstallHooks(string reason)
+        {
+            // Debounce: chord poller can fire this every 20ms while a key is held.
+            if ((DateTime.UtcNow - lastHookReinstallUtc).TotalMilliseconds < 1500) return;
+            lastHookReinstallUtc = DateTime.UtcNow;
+            try
+            {
+                if (hook != null && !hook.Reinstall())
+                    store.LogError(new InvalidOperationException("Dictation hook reinstall failed (" + reason + ")."));
+            }
+            catch (Exception exception) { store.LogError(exception); }
+            try
+            {
+                if (agentHook != null && !agentHook.Reinstall())
+                    store.LogError(new InvalidOperationException("Agent hook reinstall failed (" + reason + ")."));
+            }
+            catch (Exception exception) { store.LogError(exception); }
+            AgentTrace.Log("hook reinstall: " + reason);
         }
 
         // A deferred notice can land long after the ask that armed it, so the only way to
@@ -11631,7 +11832,7 @@ namespace Flowtype
                 }
                 currentTakeIsAgent = pendingAgentTake;
                 pendingAgentTake = false;
-                recorder.MicGain = settings.MicGain;
+                recorder.MicGain = settings.EffectiveMicGain;
                 recordingPath = Path.Combine(store.RecoveryPath,
                     "Flowtype-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".wav");
                 Exception lastMicError = null;
@@ -11954,10 +12155,33 @@ namespace Flowtype
             foreach (PendingInsert job in jobs)
             {
                 if (job == null) continue;
+                try
+                {
+                    DrainOneInsert(job);
+                }
+                catch (Exception exception)
+                {
+                    store.LogError(exception);
+                    AgentTrace.Log("DrainInserts error: " + exception.Message);
+                    try
+                    {
+                        if (!String.IsNullOrWhiteSpace(job.Text))
+                        {
+                            RememberDictation(job.Text, job.Sequence);
+                            Notify("Kept on clipboard", "Insert failed — your take may still be on the clipboard.", ToolTipIcon.Warning);
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        private void DrainOneInsert(PendingInsert job)
+        {
                 if (job.Undo)
                 {
                     UndoLastDictation(job.Delivery ?? lastInsertTarget);
-                    continue;
+                    return;
                 }
                 bool inserted;
                 bool enterSafe;
@@ -12011,7 +12235,6 @@ namespace Flowtype
                         Notify("Kept on clipboard", "Couldn't drop it in, so it's on your clipboard. Click the field and press Ctrl+V.", ToolTipIcon.Info);
                     }
                 }
-            }
         }
 
         private void UndoLastDictation(ForegroundInfo intended)
@@ -12202,8 +12425,12 @@ namespace Flowtype
                 apiKey = key;
                 openRouterKey = routerKey;
                 groqKey = store.LoadGroqKey();
-                recorder.MicGain = settings.MicGain;
+                recorder.MicGain = settings.EffectiveMicGain;
                 hook.HotkeyName = settings.Hotkey;
+                // Only reinstall when Windows actually dropped the hook — unhooking a live
+                // LL hook while a callback can still be on the stack has crashed Flowtype.
+                if (hook != null && !hook.IsInstalled)
+                    TryReinstallHooks("settings saved");
                 // Settings can turn agent mode on or off, so the hook must follow the file.
                 if (settings.AgentModeEnabled) EnableAgentHook(); else DisableAgentHook();
                 SyncAgentHook();
@@ -12404,6 +12631,41 @@ namespace Flowtype
             AppDirectory = appDirectory;
             LoadProductIcon();
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs args)
+            {
+                try
+                {
+                    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Flowtype", "errors.log");
+                    File.AppendAllText(path,
+                        DateTime.Now.ToString("o") + Environment.NewLine + "UI ThreadException" + Environment.NewLine
+                        + args.Exception + Environment.NewLine + Environment.NewLine, Encoding.UTF8);
+                }
+                catch { }
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs args)
+            {
+                try
+                {
+                    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Flowtype", "errors.log");
+                    File.AppendAllText(path,
+                        DateTime.Now.ToString("o") + Environment.NewLine + "UnhandledException isTerminating=" + args.IsTerminating + Environment.NewLine
+                        + args.ExceptionObject + Environment.NewLine + Environment.NewLine, Encoding.UTF8);
+                }
+                catch { }
+            };
+            TaskScheduler.UnobservedTaskException += delegate(object sender, UnobservedTaskExceptionEventArgs args)
+            {
+                try
+                {
+                    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Flowtype", "errors.log");
+                    File.AppendAllText(path,
+                        DateTime.Now.ToString("o") + Environment.NewLine + "UnobservedTaskException" + Environment.NewLine
+                        + args.Exception + Environment.NewLine + Environment.NewLine, Encoding.UTF8);
+                    args.SetObserved();
+                }
+                catch { }
+            };
             bool created;
             using (Mutex mutex = new Mutex(true, MutexName, out created))
             {

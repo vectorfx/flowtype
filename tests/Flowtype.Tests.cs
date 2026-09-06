@@ -273,6 +273,12 @@ namespace Flowtype.Tests
             failures += AssertFalse(Hotkeys.IsModifierChord("F8"));
             failures += AssertEqual("default engine", "Local", AppSettings.Defaults().Engine);
             failures += AssertEqual("default cleanup", "BuiltIn", AppSettings.Defaults().CleanupProvider);
+            failures += AssertFalse(AppSettings.Defaults().MicBoostEnabled);
+            failures += AssertTrue("boost off is unity gain", Math.Abs(AppSettings.Defaults().EffectiveMicGain - 1f) < 0.001f);
+            AppSettings boostOn = AppSettings.Defaults();
+            boostOn.MicBoostEnabled = true;
+            boostOn.MicGain = 1.8f;
+            failures += AssertTrue("boost on uses slider", Math.Abs(boostOn.EffectiveMicGain - 1.8f) < 0.001f);
             AppSettings repaired = AppSettings.Defaults();
             repaired.CleanupProvider = "OpenRouter";
             repaired.OpenRouterModel = "openrouter/free";
@@ -397,9 +403,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.83"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.85"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.82", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.84", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));

@@ -39,6 +39,7 @@ Desktop.ini
 .DS_Store
 .vs/
 .idea/
+.cursor/
 *.swp
 *~
 

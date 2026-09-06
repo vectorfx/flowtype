@@ -18,6 +18,7 @@ import asyncio
 import binascii
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -321,6 +322,11 @@ def shape_reply(reply):
 
 
 EMPTY_CLI_REPLY = "The agent started but did not answer. Try again."
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text):
+    return ANSI_RE.sub("", text or "")
 
 
 def is_cli_noise(line):
@@ -340,11 +346,43 @@ def extract_cli_reply(text):
     Cold spawn used to take stdout's last line, so a banner after a real
     answer stole the HUD — and a banner-only spawn looked like Claude.
     """
-    if not (text or "").strip():
+    cleaned = strip_ansi(text).strip()
+    if not cleaned:
         return EMPTY_CLI_REPLY
-    kept = [line for line in text.splitlines() if not is_cli_noise(line)]
+    kept = [line for line in cleaned.splitlines() if not is_cli_noise(line)]
     out = "\n".join(kept).strip()
     return out if out else EMPTY_CLI_REPLY
+
+
+def summarize_cli_failure(stderr, returncode):
+    """Turn OpenCode/Claude stderr into one HUD line instead of a silent empty reply."""
+    text = strip_ansi(stderr).strip()
+    if not text:
+        return "OpenCode failed (exit " + str(returncode) + "). Check the model or try Connect again."
+    # OpenCode often prints: Error: { "name": "UnknownError", "data": { "message": "..." } }
+    brace = text.find("{")
+    if brace >= 0:
+        try:
+            payload = json.loads(text[brace:])
+            data = payload.get("data") if isinstance(payload, dict) else None
+            message = ""
+            if isinstance(data, dict):
+                message = str(data.get("message") or "").strip()
+            if not message and isinstance(payload, dict):
+                message = str(payload.get("message") or payload.get("name") or "").strip()
+            if message:
+                return message
+        except Exception:
+            pass
+    # First non-noise line, truncated for the HUD.
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or is_cli_noise(line):
+            continue
+        if line.lower().startswith("error:"):
+            line = line[6:].strip() or line
+        return line[:220]
+    return "OpenCode failed (exit " + str(returncode) + ")."
 
 
 def runtime_label(cli):
@@ -484,12 +522,23 @@ class ColdSpawner(object):
                 text=True,
                 timeout=600,
             )
-            out = (completed.stdout or "").strip()
-            if not out:
-                out = (completed.stderr or "").strip()
-            if completed.returncode and not out:
-                return "agent CLI failed (" + str(completed.returncode) + ")"
-            return extract_cli_reply(out)
+            stdout = strip_ansi(completed.stdout or "").strip()
+            stderr = strip_ansi(completed.stderr or "").strip()
+            # Prefer a cleaned stdout answer. Banner-only stdout used to hide the
+            # real failure sitting on stderr ("Unexpected server error…").
+            if stdout:
+                reply = extract_cli_reply(stdout)
+                if reply != EMPTY_CLI_REPLY:
+                    return reply
+            if stderr:
+                err_reply = extract_cli_reply(stderr)
+                if err_reply != EMPTY_CLI_REPLY:
+                    return err_reply
+            if completed.returncode:
+                return summarize_cli_failure(stderr, completed.returncode)
+            if stdout or stderr:
+                return EMPTY_CLI_REPLY
+            return "agent CLI returned no output"
 
     def abort(self):
         return False
@@ -513,7 +562,8 @@ def resolve_cli(name):
 def cli_command(cli, text, model=None):
     base = os.path.basename(cli).lower()
     if base.startswith("opencode"):
-        cmd = [cli, "run", "--auto"]
+        # --pure skips external plugins (claude-mem banners). --auto approves tools.
+        cmd = [cli, "run", "--pure", "--auto"]
         if model:
             cmd.extend(["-m", model])
         cmd.append(text)
