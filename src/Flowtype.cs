@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.81.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.81.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.82.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.82.0")]
 
 namespace Flowtype
 {
@@ -1734,16 +1734,28 @@ namespace Flowtype
         public static string Find(string name)
         {
             if (String.IsNullOrWhiteSpace(name)) return "";
+            // Prefer real Windows launchers. npm also drops an extensionless #!/bin/sh
+            // shim that File.Exists hits first and Process.Start cannot run.
+            string[] preferred = { ".cmd", ".exe", ".bat", ".COM" };
+            foreach (string folder in SearchFolders())
+            {
+                if (String.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) continue;
+                foreach (string ext in preferred)
+                {
+                    string candidate = Path.Combine(folder, name + ext);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                string direct = Path.Combine(folder, name);
+                if (File.Exists(direct)) return direct;
+            }
             string extList = Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT";
-            if (extList.IndexOf(".CMD", StringComparison.OrdinalIgnoreCase) < 0) extList += ";.CMD;.BAT;.EXE";
             string[] exts = extList.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (string folder in SearchFolders())
             {
                 if (String.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) continue;
-                string direct = Path.Combine(folder, name);
-                if (File.Exists(direct)) return direct;
                 foreach (string ext in exts)
                 {
+                    if (String.IsNullOrWhiteSpace(ext)) continue;
                     string candidate = Path.Combine(folder, name + ext);
                     if (File.Exists(candidate)) return candidate;
                 }
@@ -4348,13 +4360,25 @@ namespace Flowtype
                 try { File.Delete(rawPath); } catch { }
                 preroll.Clear();
                 ReleaseDevice();
-                if (keepWarm)
+                // Re-open off the UI thread. waveInOpen on the message pump freezes the
+                // voice pill mid-frame whenever a take ends (or the mic is toggled) while
+                // the overlay is still up.
+                if (keepWarm) QueueWarmOpen();
+                return wavePath;
+            }
+        }
+
+        private void QueueWarmOpen()
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                lock (micLock)
                 {
+                    if (takeActive || deviceOpen || !keepWarm) return;
                     try { OpenDevice(); }
                     catch { ReleaseDevice(); }
                 }
-                return wavePath;
-            }
+            });
         }
 
         private void DrainCallbacks()
@@ -7463,10 +7487,25 @@ namespace Flowtype
 
     public static class GlassChrome
     {
+        // A cleared layered window often BitBlts as near-black. A real black
+        // terminal looks the same, so callers must cap retries and then accept.
+        public const int MaxBackdropRecaptureAttempts = 3;
+
         public static bool BackdropReadsDark(int rgbSum, int sampleCount)
         {
             if (sampleCount <= 0) return false;
             return (rgbSum / sampleCount) < 270;
+        }
+
+        public static bool LooksLikeFailedGlassGrab(int nearBlackSamples, int sampleCount)
+        {
+            if (sampleCount <= 0) return true;
+            return nearBlackSamples * 4 >= sampleCount * 3;
+        }
+
+        public static bool ShouldRetryFailedGlassGrab(int attemptCount)
+        {
+            return attemptCount < MaxBackdropRecaptureAttempts;
         }
 
         public static Color Ink(bool onDark)
@@ -7549,6 +7588,8 @@ namespace Flowtype
         private Bitmap glassBackdrop;
         private Point glassBackdropOffset;
         private bool pendingGlassRecapture;
+        private int glassRecaptureAttempts;
+        private bool glassCapturing;
         private bool glassOnDark;
         private float revealProgress = 1f;
         private bool exiting;
@@ -7582,7 +7623,7 @@ namespace Flowtype
             {
                 UpdateRevealAnimation();
                 animationTick++;
-                if (pendingGlassRecapture && IsGlassTheme() && Visible && !exiting)
+                if (pendingGlassRecapture && IsGlassTheme() && Visible && !exiting && !glassCapturing)
                 {
                     pendingGlassRecapture = false;
                     CaptureGlassBackdrop();
@@ -7666,7 +7707,11 @@ namespace Flowtype
             revealClock.Restart();
             timer.Start();
             PositionOverlay();
-            if (IsGlassTheme()) CaptureGlassBackdrop();
+            if (IsGlassTheme())
+            {
+                glassRecaptureAttempts = 0;
+                CaptureGlassBackdrop();
+            }
             if (!Visible) Show();
             RenderLayered();
         }
@@ -7686,7 +7731,11 @@ namespace Flowtype
                 revealProgress = 0f;
                 revealClock.Restart();
                 PositionOverlay();
-                if (IsGlassTheme()) CaptureGlassBackdrop();
+                if (IsGlassTheme())
+                {
+                    glassRecaptureAttempts = 0;
+                    CaptureGlassBackdrop();
+                }
                 Show();
             }
             else if (revealProgress >= 1f)
@@ -7709,7 +7758,11 @@ namespace Flowtype
             {
                 Width = want;
                 PositionOverlay();
-                if (IsGlassTheme() && Visible && !exiting) CaptureGlassBackdrop();
+                if (IsGlassTheme() && Visible && !exiting)
+                {
+                    glassRecaptureAttempts = 0;
+                    CaptureGlassBackdrop();
+                }
             }
         }
 
@@ -7801,65 +7854,97 @@ namespace Flowtype
 
         private void ReleaseGlassBackdrop()
         {
-            if (glassBackdrop == null) return;
-            glassBackdrop.Dispose();
-            glassBackdrop = null;
+            if (glassBackdrop != null)
+            {
+                glassBackdrop.Dispose();
+                glassBackdrop = null;
+            }
             glassOnDark = false;
+            glassRecaptureAttempts = 0;
+            pendingGlassRecapture = false;
         }
 
         private void CaptureGlassBackdrop()
         {
-            ReleaseGlassBackdrop();
+            if (glassCapturing) return;
+            glassCapturing = true;
             bool firstHandle = !IsHandleCreated;
-            if (firstHandle) CreateHandle();
-            PositionOverlay();
-            ClearLayeredWindow();
-
-            RectangleF capsule = GetCapsuleBounds();
-            const int pad = 10;
-            int screenX = Left + (int)Math.Floor(capsule.X) - pad;
-            int screenY = Top + (int)Math.Floor(capsule.Y) - pad;
-            int captureWidth = (int)Math.Ceiling(capsule.Width) + pad * 2;
-            int captureHeight = (int)Math.Ceiling(capsule.Height) + pad * 2;
-            if (captureWidth < 2 || captureHeight < 2) return;
-
-            bool restoreVisible = Visible;
-            Hide();
-            Application.DoEvents();
-
-            Bitmap raw = null;
             try
             {
-                raw = new Bitmap(captureWidth, captureHeight, PixelFormat.Format32bppPArgb);
-                using (Graphics captureGraphics = Graphics.FromImage(raw))
-                    captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
+                if (firstHandle) CreateHandle();
+                PositionOverlay();
 
-                if (BackdropIsUnusable(raw))
+                RectangleF capsule = GetCapsuleBounds();
+                const int pad = 10;
+                int screenX = Left + (int)Math.Floor(capsule.X) - pad;
+                int screenY = Top + (int)Math.Floor(capsule.Y) - pad;
+                int captureWidth = (int)Math.Ceiling(capsule.Width) + pad * 2;
+                int captureHeight = (int)Math.Ceiling(capsule.Height) + pad * 2;
+                if (captureWidth < 2 || captureHeight < 2) return;
+
+                // Park the layered window off-screen and clear it so CopyFromScreen cannot
+                // sample the pill itself. Never Application.DoEvents here — that re-enters
+                // the 32ms timer and freezes/flashes the capsule while the mic is live.
+                Point savedLocation = Location;
+                Location = new Point(-32000, -32000);
+                ClearLayeredWindow();
+
+                Bitmap raw = null;
+                try
                 {
-                    pendingGlassRecapture = true;
-                    return;
-                }
+                    raw = new Bitmap(captureWidth, captureHeight, PixelFormat.Format32bppPArgb);
+                    using (Graphics captureGraphics = Graphics.FromImage(raw))
+                        captureGraphics.CopyFromScreen(screenX, screenY, 0, 0, new Size(captureWidth, captureHeight), CopyPixelOperation.SourceCopy);
 
-                using (Bitmap blurred = BlurBitmap(raw, 3))
-                    glassBackdrop = DistortLiquidGlass(blurred);
-                glassBackdropOffset = new Point(
-                    (int)Math.Floor(capsule.X) - pad,
-                    (int)Math.Floor(capsule.Y) - pad);
-                int rgbSum;
-                int sampleCount;
-                glassOnDark = TrySampleBackdrop(raw, out rgbSum, out sampleCount)
-                    && GlassChrome.BackdropReadsDark(rgbSum, sampleCount);
-                if (firstHandle) pendingGlassRecapture = true;
-            }
-            catch
-            {
-                ReleaseGlassBackdrop();
-                pendingGlassRecapture = true;
+                    // Near-black grabs are either a failed layered-window BitBlt or a
+                    // real black page. Retry a few times, then accept — never loop.
+                    if (BackdropIsUnusable(raw) && GlassChrome.ShouldRetryFailedGlassGrab(glassRecaptureAttempts))
+                    {
+                        glassRecaptureAttempts++;
+                        pendingGlassRecapture = true;
+                        return;
+                    }
+
+                    using (Bitmap blurred = BlurBitmap(raw, 3))
+                    {
+                        Bitmap next = DistortLiquidGlass(blurred);
+                        if (glassBackdrop != null) glassBackdrop.Dispose();
+                        glassBackdrop = next;
+                    }
+                    glassBackdropOffset = new Point(
+                        (int)Math.Floor(capsule.X) - pad,
+                        (int)Math.Floor(capsule.Y) - pad);
+                    int rgbSum;
+                    int sampleCount;
+                    glassOnDark = TrySampleBackdrop(raw, out rgbSum, out sampleCount)
+                        && GlassChrome.BackdropReadsDark(rgbSum, sampleCount);
+                    glassRecaptureAttempts = 0;
+                    // First handle often grabs before the desktop compositor settles — one
+                    // deferred retry is enough. Do not force a Hide/Show storm.
+                    pendingGlassRecapture = firstHandle;
+                }
+                catch
+                {
+                    if (GlassChrome.ShouldRetryFailedGlassGrab(glassRecaptureAttempts))
+                    {
+                        glassRecaptureAttempts++;
+                        pendingGlassRecapture = true;
+                    }
+                    else
+                    {
+                        glassRecaptureAttempts = 0;
+                        pendingGlassRecapture = false;
+                    }
+                }
+                finally
+                {
+                    if (raw != null) raw.Dispose();
+                    Location = savedLocation;
+                }
             }
             finally
             {
-                if (raw != null) raw.Dispose();
-                if (restoreVisible) Visible = true;
+                glassCapturing = false;
             }
         }
 
@@ -7890,7 +7975,7 @@ namespace Flowtype
                     if (pixel.R + pixel.G + pixel.B < 48) dark++;
                 }
             }
-            return dark * 4 >= sampleCount * 3;
+            return GlassChrome.LooksLikeFailedGlassGrab(dark, sampleCount);
         }
 
         private static bool TrySampleBackdrop(Bitmap source, out int rgbSum, out int sampleCount)
@@ -11561,7 +11646,9 @@ namespace Flowtype
                     catch (Exception exception)
                     {
                         lastMicError = exception;
-                        if (attempt < 3) Thread.Sleep(35 * (attempt + 1));
+                        // Never Thread.Sleep on the UI thread here — that freezes the
+                        // voice pill if it is already visible (hands-free / re-arm).
+                        if (attempt < 3) recorder.Prime();
                     }
                 }
                 if (lastMicError != null) throw lastMicError;

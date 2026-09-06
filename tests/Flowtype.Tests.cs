@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using Flowtype;
 
 namespace Flowtype.Tests
@@ -396,9 +397,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.82"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.83"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.81", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.82", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
@@ -414,6 +415,25 @@ namespace Flowtype.Tests
             failures += AssertTrue("glass bars on dark backdrop are light", GlassChrome.Bar(true, 0.7f).R > 180);
             failures += AssertTrue("vscode dark editor counts as dark glass", GlassChrome.BackdropReadsDark(90 * 25, 25));
             failures += AssertFalse(GlassChrome.BackdropReadsDark(720 * 25, 25));
+            failures += AssertTrue("pure black samples look like a failed glass grab", GlassChrome.LooksLikeFailedGlassGrab(25, 25));
+            failures += AssertTrue("mostly near-black samples look like a failed glass grab", GlassChrome.LooksLikeFailedGlassGrab(19, 25));
+            failures += AssertFalse(GlassChrome.LooksLikeFailedGlassGrab(10, 25));
+            failures += AssertTrue("failed glass grab retries while under the cap", GlassChrome.ShouldRetryFailedGlassGrab(0));
+            failures += AssertTrue("failed glass grab retries just under the cap", GlassChrome.ShouldRetryFailedGlassGrab(GlassChrome.MaxBackdropRecaptureAttempts - 1));
+            failures += AssertFalse(GlassChrome.ShouldRetryFailedGlassGrab(GlassChrome.MaxBackdropRecaptureAttempts));
+            failures += AssertFalse(GlassChrome.ShouldRetryFailedGlassGrab(GlassChrome.MaxBackdropRecaptureAttempts + 4));
+            string openCode = AgentPaths.Find("opencode");
+            if (openCode.Length > 0)
+            {
+                string openCodeName = Path.GetFileName(openCode);
+                failures += AssertFalse("opencode find must not return the extensionless npm sh shim",
+                    String.Equals(openCodeName, "opencode", StringComparison.OrdinalIgnoreCase));
+            }
+            string claude = AgentPaths.Find("claude");
+            if (claude.Length > 0)
+            {
+                failures += AssertTrue("claude find returns a real file", File.Exists(claude));
+            }
             AppSettings emberTheme = AppSettings.Defaults();
             emberTheme.OverlayTheme = "Ember";
             emberTheme.Repair();

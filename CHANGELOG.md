@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.82
+
+Voice capsule freeze / flash:
+- Ending a take no longer re-opens the microphone on the UI thread — that was freezing the pill mid-frame when the mic restarted while the overlay was still up
+- Liquid glass capture no longer calls `Application.DoEvents` or Hide/Show the pill (that re-entered the 32ms timer and strobed on dark backdrops)
+- Failed glass grabs still retry a few times, then accept a real black desktop instead of looping forever
+- Mic start retries no longer `Thread.Sleep` on the UI thread
+
+Agent connect:
+- PATH lookup prefers `opencode.cmd` / `.exe` over the extensionless npm `#!/bin/sh` shim, so Connect OpenCode does not false-pass on a script Windows cannot launch
+
+---
+
 ## 1.3.81
 
 Dictation cleanup no longer eats what you said:
