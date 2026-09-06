@@ -5,12 +5,14 @@
 <h1 align="center">Flowtype</h1>
 
 <p align="center">
-  <strong>System-wide push-to-talk dictation for Windows.</strong>
+  <strong>Hold a key. Speak. Text lands where you were typing.</strong><br>
+  System-wide push-to-talk dictation for Windows — offline by default, tray-resident, one EXE.
 </p>
 
 <p align="center">
-  Offline by default · tray-resident · single executable<br>
-  Local whisper.cpp · optional Groq/OpenAI · API keys stored with DPAPI
+  <a href="https://github.com/vectorfx/flowtype/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/vectorfx/flowtype?label=release&color=111827"></a>
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-111827"></a>
+  <a href="https://github.com/vectorfx/flowtype/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/vectorfx/flowtype/ci.yml?branch=main&label=CI&color=111827"></a>
 </p>
 
 <p align="center">
@@ -18,77 +20,63 @@
   ·
   <a href="#install">One-line install</a>
   ·
-  <a href="#quick-start">Quick start</a>
+  <a href="#why-flowtype">Why it feels different</a>
   ·
   <a href="#privacy">Privacy</a>
 </p>
 
 ---
 
-## Overview
+## What it does
 
-Flowtype is a tray-resident Windows app for push-to-talk dictation. Hold a hotkey, speak, release — the recording is transcribed, cleaned, and inserted into whatever field had focus when you started.
+Flowtype lives in the tray. Hold **Win + Ctrl**, talk, release. The take is transcribed, cleaned, and pasted into whatever field had focus — Cursor, Chrome, Slack, a terminal, Notepad — without stealing that focus.
 
-**Default stack:** local whisper.cpp (Instant model, ~60 MB), built-in rule cleanup, paste into the active control. No account, no telemetry, no cloud unless you enable it.
+No account. No telemetry. No Electron shell. Local whisper.cpp is the default. Cloud engines are opt-in.
 
-**Optional:** Groq or OpenAI for transcription; OpenRouter, OpenAI, or a local streaming model (Ollama / LM Studio / llama.cpp) for LLM cleanup. All cloud paths are off by default.
+---
 
-The experimental **agent chord** (voice → a local CLI you already trust) ships in the app, off by default. The loopback daemon is in the zip (`agent-bridge/`). Each person runs it on **their** PC — it does not bind the LAN.
+## Why Flowtype
 
-Implementation notes:
+Most “AI dictation” apps are a recorder bolted to a cloud API. Flowtype is built around the hard Windows parts:
 
-- Single-file C# app (`src/Flowtype.cs`) with a global hotkey hook and WAV capture at 16 kHz
-- whisper.cpp server kept warm between takes; Groq/OpenAI used when configured
-- Cleanup handles fillers, punctuation, spoken lists, dictionary replacements, and app-context hints from the foreground window title
-- Click-through recording overlay; clipboard restored after insert unless you opt to keep dictation on the clipboard
-- Mic level test reports raw, boosted, and estimated Whisper input levels
+| | |
+|---|---|
+| **First word stays** | Warm mic + 400&nbsp;ms pre-roll so the start of a take isn’t eaten by `waveInOpen` |
+| **Paste that sticks** | Batched `SendInput`, clipboard restore, Cursor / terminal heuristics, rescue-to-clipboard when focus races |
+| **Hotkey that survives** | Low-level keyboard hook + 20&nbsp;ms chord poller backup + auto-reinstall if Windows drops the hook |
+| **Cleanup that doesn’t invent** | Deep built-in polish offline — fillers, punctuation, spoken lists, exact dictionary — before any LLM |
+| **Voice capsule** | Click-through overlay (Dark / Glass / Ember…) that never steals focus |
+| **Optional agent chord** | Hold **Win + Alt** → loopback POST to OpenCode or Claude on *your* PC. Flowtype is a dumb pipe; it does not plan or execute |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline.
 
 ---
 
-## Specs
-
-| | |
-|---|---|
-| **Platform** | Windows 10 / 11 (x64) |
-| **Install** | User folder · no admin · Full zip includes the offline speech model |
-| **Capture** | Global push-to-talk · any focused field |
-| **Overlay** | Animated click-through capsule · no focus steal |
-| **Speech** | Local whisper.cpp · Groq / OpenAI optional |
-| **Output** | Paste into focused field · rule cleanup · optional LLM |
-| **Privacy** | No account · no telemetry · DPAPI keys |
-
----
-
 ## Install
-
-Open PowerShell and run:
 
 ```powershell
 irm https://raw.githubusercontent.com/vectorfx/flowtype/main/install.ps1 | iex
 ```
 
-Downloads the latest Full release (app + offline Instant model + agent bridge), installs to `%LOCALAPPDATA%\Flowtype`, adds shortcuts, and starts the app.
+Downloads the latest **Full** release (app + offline Instant model + agent bridge), installs to `%LOCALAPPDATA%\Flowtype`, adds shortcuts, and starts.
+
+**Manual:** grab the Full zip from [Releases](https://github.com/vectorfx/flowtype/releases/latest), extract somewhere normal (not loose in Downloads), run **`Install Flowtype.bat`**.
+
+| Package | |
+|---|---|
+| **Full** (~60&nbsp;MB) | Instant speech model bundled — offline immediately. This is the one you want. |
+| **Lite** (~15&nbsp;MB) | Same app; model downloads later if you use local Whisper |
 
 ---
 
 ## Quick start
 
-**One-line:** see [Install](#install) above.
+1. Install (above).
+2. Hold **Win + Ctrl**, speak, release — text appears in the focused field.
+3. Optional: Settings → **Cloud** → paste a free [Groq](https://console.groq.com) key for faster cloud ASR (cleanup stays local unless you choose otherwise).
+4. Optional: Settings → **Agent** → **Connect OpenCode** or **Connect Claude**, then hold **Win + Alt** to send a take to a local runtime you already trust.
 
-**Manual:**
-
-1. **Download** the latest ZIP from [Releases](https://github.com/vectorfx/flowtype/releases).
-   - **Full** (~60 MB) — Instant speech model bundled, offline immediately. This is the one you want.
-   - **Lite** (~15 MB) — same app, model downloaded later if you use local Whisper. Kept so older installs can auto-update.
-2. **Extract** to a normal folder (e.g. `Flowtype\`, not directly in `Downloads`).
-3. Run **`Install Flowtype.bat`**.
-4. Hold **`Win + Ctrl`**, speak, release.
-
-Optional agent chord: Settings → Agent → **Connect OpenCode** or **Connect Claude**. You do not launch those apps first. Hold the agent key (default **Win + Alt**), speak, release.
-
-> **First run:** Local mode needs no API key. For Groq, paste a free key under Settings → Cloud engines.
+Local mode needs no API key.
 
 ---
 
@@ -97,99 +85,79 @@ Optional agent chord: Settings → Agent → **Connect OpenCode** or **Connect C
 | Action | Result |
 |---|---|
 | Hold **Win + Ctrl** | Record — voice capsule appears |
-| Release either key | Transcribe → clean → paste (or copy if focus changed) |
+| Release | Transcribe → clean → paste (or keep on clipboard if focus changed) |
 | **Escape** while recording | Cancel |
-| Left-click tray icon | Open Settings |
-| Right-click tray | Settings, history, recovery, quit |
-| Right-click tray → **Fix "word" in dictionary…** | Add a spelling fix after a bad transcription |
+| Double-press (hands-free) | Latch recording without holding — optional in Settings |
+| Left-click tray | Settings |
+| Right-click tray | Dictionary fix, undo last, history, recovery, quit |
 
 ---
 
-## Voice capsule
+## Specs
 
-**Settings → General → Voice capsule**
-
-| Theme | |
+| | |
 |---|---|
-| **Dark** *(default)* | Matte near-black, zinc borders |
-| **Dark purple** | Matte purple |
-| **Light** | Clean white |
-| **Ember** | OLED black, copper-to-cream waveform |
-| **Liquid glass** | Frosted pane — the desktop behind it tints the glass |
-
-**Settings → General → Live mark**
-
-| Mark | |
-|---|---|
-| **Orb** *(default)* | Soft glowing sphere that blooms when you talk |
-| **Hex** | Seven-dot cluster |
-| **Iris** | Aperture that opens with your voice |
-| **Grid** | Circular equalizer dots |
-
-Optional embedded audio cues on start and finish.
-
----
-
-## Spoken lists
-
-**Settings → Personalization → Spoken lists**
-
-| Say | Result |
-|---|---|
-| **next point** *(default)* | New bullet |
-| **next number** *(default)* | New numbered item |
-
-Turn it off, or type a different phrase, in Settings. Extra phrases can be comma-separated.
+| **Platform** | Windows 10 / 11 (x64) |
+| **Install** | Per-user · no admin |
+| **Speech** | Local whisper.cpp (warm server) · Groq / OpenAI optional |
+| **Cleanup** | Built-in rules (default) · optional OpenAI / OpenRouter / Ollama |
+| **Output** | Paste into focused field · clipboard restore |
+| **Privacy** | No account · no telemetry · API keys via Windows DPAPI |
 
 ---
 
 ## Speech engines
 
-| Engine | | |
-|---|---|---|
-| **Local** *(default)* | Offline · warm server between takes |
-| **Groq** | Free tier · `whisper-large-v3-turbo` |
+| Engine | |
+|---|---|
+| **Local** *(default)* | Offline · Instant English model (~60&nbsp;MB) · warm between takes |
+| **Groq** | Free tier · `whisper-large-v3-turbo` · falls back to Local on hard failures |
 | **OpenAI** | Bring your own key |
 
 ### Groq setup
 
 1. [console.groq.com](https://console.groq.com) → **API Keys** → **Create API Key**
-2. Settings → **Groq** → paste key under **Cloud engines**
-3. Keep cleanup on **Built-in rules**
-
-Audio goes to Groq for transcription only unless you opt into cloud cleanup.
+2. Settings → **Cloud engines** → paste under Groq
+3. Keep cleanup on **Built-in rules** unless you want cloud polish
 
 ---
 
-## When is AI used?
+## Settings at a glance
 
-| Path | |
+| Tab | |
 |---|---|
-| Local + built-in cleanup **(default)** | ASR only |
-| Groq / OpenAI speech | Cloud transcription |
-| OpenRouter / OpenAI / local streaming model | Optional polish — off by default |
+| **General** | Hotkey · hands-free · engine · cleanup · voice capsule · input & performance |
+| **Cloud** | Groq · OpenAI · OpenRouter |
+| **Local** | whisper.cpp · Ollama / LM Studio URL |
+| **Personalization** | Spoken lists · dictionary · snippets |
+| **Agent** | Connect OpenCode / Claude · arm the agent key (last on purpose) |
+
+Microphone boost is **off by default** — toggle it on under Input & performance only if the mic is quiet.
+
+**Spoken lists:** say **next point** / **next number** (customizable) to force bullets or numbered items.
 
 ---
 
-## Settings
+## Voice capsule
 
-**General** — hotkey · hands-free mode · speech engine · cleanup · mic boost · mic test
+| Theme | |
+|---|---|
+| **Dark** *(default)* | Matte near-black |
+| **Dark purple** · **Light** · **Ember** | Alternate looks |
+| **Liquid glass** | Frosted blur of the desktop behind the pill |
 
-**Personalization** — spoken lists · dictionary · snippets
-
-**Cloud** — Groq · OpenAI · OpenRouter cleanup
-
-**Local** — whisper.cpp install · local streaming model (Ollama / LM Studio / llama.cpp)
+Live marks: **Orb**, **Hex**, **Iris**, **Grid**. Optional start/finish sound cues.
 
 ---
 
 ## Privacy
 
-- No Flowtype account or analytics server
-- API keys stored with Windows DPAPI (per user, per machine)
+- No Flowtype account or analytics
+- API keys encrypted with Windows DPAPI (per user, per machine)
 - Successful recordings deleted immediately
 - History off by default
-- Failed audio kept locally only if **Recovery** is enabled (`%APPDATA%\Flowtype\Recovery`)
+- Failed audio kept locally only if **Recovery** is on (`%APPDATA%\Flowtype\Recovery`)
+- Agent chord talks to **loopback only** — never binds the LAN
 
 ---
 
@@ -205,24 +173,18 @@ cd flowtype
 ./tests/Run-Tests.ps1
 ```
 
-Output: `Flowtype.exe` in the repo root. Audio cues and fonts are embedded at build time.
-
----
-
-## Project layout
+Output: `Flowtype.exe` in the repo root. Fonts and audio cues are embedded at build time.
 
 ```
 flowtype/
-├── src/Flowtype.cs          # Single-file app
-├── agent-bridge/            # Optional loopback daemon for the agent chord
-├── install.ps1              # One-line installer script
-├── assets/                  # Icon, fonts, audio cues
-├── tools/                   # Build, package, font fetch
-├── installer/               # Install-Flowtype.ps1
-└── tests/Run-Tests.ps1
+├── src/Flowtype.cs       # Single-file app
+├── agent-bridge/         # Optional loopback daemon for the agent chord
+├── install.ps1           # One-line installer
+├── assets/               # Icon, fonts, cues
+├── tools/                # Build, package, fonts
+├── installer/            # Install-Flowtype.ps1
+└── tests/
 ```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for internals.
 
 ---
 
@@ -230,7 +192,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for internals.
 
 Quit from the tray, then run **`Uninstall Flowtype.bat`**.
 
-Settings and keys in `%APPDATA%\Flowtype` are kept unless you delete that folder manually.
+`%APPDATA%\Flowtype` (settings / keys) is kept unless you delete it.
 
 ---
 
