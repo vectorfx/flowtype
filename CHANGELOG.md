@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.85
+
+Whisper hallucination on long hands-free takes:
+- Strip wrapped repetition loops ("Now, what is the plan? So, what is the plan? Anyway, what is the plan?" → one question). Exact-copy filters missed this shape.
+- Split long takes at interior silence before sending to Groq/Whisper, so a thinking pause cannot decode into invented lecture continuation
+- Groq now asks for segment timings (`verbose_json`) and drops thanks / runaway decoder tails when those fields are present
+
+Live captions:
+- Readable card above the voice capsule shows the last few seconds as you speak (not the old 8pt ticker inside the pill)
+- Draft only — the pasted take is still one full transcribe on release
+- Toggle in Settings → Dictation, on by default. Turns itself off for the rest of a take if Groq rate-limits
+- Releasing the chord cancels any in-flight live-caption upload so draft audio does not keep leaving the machine after you stop
+- Settings copy states that cloud engines send rolling audio while the card is on
+- Long takes may split at pauses and send each speech region to the same engine you already chose — still no new destination
+
+---
+
 ## 1.3.84
 
 Crash hardening (NullReference APPCRASH after dictation):

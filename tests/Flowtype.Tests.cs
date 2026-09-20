@@ -20,6 +20,48 @@ namespace Flowtype.Tests
                     AppSettings.Defaults(), null));
             failures += AssertEqual("whisper repeat", "The team shipped the feature yesterday.",
                 TextProcessor.Clean("The team shipped the feature yesterday. The team shipped the feature yesterday. The team shipped the feature yesterday.", AppSettings.Defaults()));
+            failures += AssertEqual("wrapped whisper loop",
+                "We should ship tomorrow. Now, what is the plan?",
+                TextProcessor.Clean("We should ship tomorrow. Now, what is the plan? So, what is the plan? Anyway, what is the plan?", AppSettings.Defaults()));
+            string lectureLoop = TextProcessor.Clean(
+                "So, what are they actually wanting to do here? And why did they reversal into the EPA? Remember, each reversal is also purposeful. These are liquid theory, market truth facts. Now, they're like, wow, what are the reversal? Now, what are the reversal? So, what are the reversal? And then, what do they really want to do here? They're just, what are the reversal?",
+                AppSettings.Defaults());
+            failures += AssertTrue("lecture loop keeps the real question",
+                lectureLoop.IndexOf("why did they reversal into the EPA", StringComparison.OrdinalIgnoreCase) >= 0);
+            failures += AssertTrue("lecture loop collapses wrapped reversal question",
+                CountPhrase(lectureLoop, "what are the reversal") <= 1);
+            failures += AssertEqual("spread topic repeats stay",
+                "The federal reserve raised rates. Later the federal reserve paused. Then the federal reserve cut.",
+                TextProcessor.Clean("The federal reserve raised rates. Later the federal reserve paused. Then the federal reserve cut.", AppSettings.Defaults()));
+            failures += AssertEqual("question asked twice with other words stays",
+                "Should we buy here? I think we should wait. Should we buy here.",
+                TextProcessor.Clean("Should we buy here? I think we should wait. Should we buy here.", AppSettings.Defaults()));
+            byte[] splitPcm = ConcatPcm(
+                MakePcmTone(8000, 0.40, 0, 0),
+                MakePcmTone(0, 1.20, 0, 0),
+                MakePcmTone(8000, 0.40, 0, 0));
+            List<WaveRecorder.SpeechRegion> splitRegions = WaveRecorder.FindSpeechRegions(splitPcm, 16000, 800, 250);
+            failures += AssertTrue("interior silence splits two phrases", splitRegions.Count == 2);
+            byte[] closePcm = ConcatPcm(
+                MakePcmTone(8000, 0.40, 0, 0),
+                MakePcmTone(0, 0.20, 0, 0),
+                MakePcmTone(8000, 0.40, 0, 0));
+            failures += AssertTrue("short gaps stay one phrase",
+                WaveRecorder.FindSpeechRegions(closePcm, 16000, 800, 250).Count == 1);
+            byte[] onePhrase = MakePcmTone(8000, 0.80, 0.10, 0.10);
+            failures += AssertTrue("single phrase is one region",
+                WaveRecorder.FindSpeechRegions(onePhrase, 16000, 800, 250).Count == 1);
+            SpeechTranscript runaway = new SpeechTranscript();
+            runaway.Text = "The team shipped the feature yesterday. Thank you.";
+            runaway.Segments.Add(MakeSegment("The team shipped the feature yesterday.", 0, 2.1));
+            runaway.Segments.Add(MakeSegment("Thank you.", 3.4, 3.9));
+            TranscriptionQuality.ApplySegmentFilters(runaway);
+            failures += AssertEqual("segment filter drops trailing thanks",
+                "The team shipped the feature yesterday.", runaway.Text);
+            failures += AssertTrue("decoder runaway high compression",
+                TranscriptionQuality.IsLikelyDecoderRunaway("what are the reversal? what are the reversal?", 2.6, 0.2));
+            failures += AssertFalse("normal segment is not runaway",
+                TranscriptionQuality.IsLikelyDecoderRunaway("The team shipped the feature yesterday.", 1.3, 0.05));
             failures += AssertFalse(TranscriptionQuality.ShouldReject("T", 500, 12000));
             failures += AssertFalse(TranscriptionQuality.ShouldReject("P.", 800, 20000));
             failures += AssertTrue(TranscriptionQuality.ShouldReject("~", 500, 12000));
@@ -403,9 +445,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.85"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.86"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.84", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.85", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
@@ -718,6 +760,44 @@ namespace Flowtype.Tests
             }
             Console.WriteLine("FAIL " + name + " expected=" + expectedSeconds + " actual=" + actualSeconds);
             return 1;
+        }
+
+        private static int CountPhrase(string text, string phrase)
+        {
+            if (String.IsNullOrEmpty(text) || String.IsNullOrEmpty(phrase)) return 0;
+            int count = 0;
+            int index = 0;
+            while (index < text.Length)
+            {
+                int found = text.IndexOf(phrase, index, StringComparison.OrdinalIgnoreCase);
+                if (found < 0) break;
+                count++;
+                index = found + phrase.Length;
+            }
+            return count;
+        }
+
+        private static byte[] ConcatPcm(params byte[][] parts)
+        {
+            int total = 0;
+            foreach (byte[] part in parts) total += part.Length;
+            byte[] pcm = new byte[total];
+            int offset = 0;
+            foreach (byte[] part in parts)
+            {
+                Buffer.BlockCopy(part, 0, pcm, offset, part.Length);
+                offset += part.Length;
+            }
+            return pcm;
+        }
+
+        private static SpeechSegment MakeSegment(string text, double start, double end)
+        {
+            SpeechSegment segment = new SpeechSegment();
+            segment.Text = text;
+            segment.Start = start;
+            segment.End = end;
+            return segment;
         }
 
         private static byte[] MakePcmTone(int amplitude, double toneSeconds, double leadSilenceSeconds, double trailSilenceSeconds)

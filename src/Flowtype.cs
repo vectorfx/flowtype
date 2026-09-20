@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.84.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.84.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.85.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.85.0")]
 
 namespace Flowtype
 {
@@ -62,6 +62,7 @@ namespace Flowtype
         public bool SuppressNonSpeech;
         public bool CompletionSound;
         public bool ShowInsertNotification;
+        public bool LiveCaptions;
         public bool AutoCheckUpdates;
         public string SkippedUpdateVersion;
         public string LastUpdateCheckUtc;
@@ -111,6 +112,7 @@ namespace Flowtype
             value.SuppressNonSpeech = false;
             value.CompletionSound = true;
             value.ShowInsertNotification = false;
+            value.LiveCaptions = true;
             value.AutoCheckUpdates = true;
             value.SkippedUpdateVersion = "";
             value.LastUpdateCheckUtc = "";
@@ -2699,6 +2701,7 @@ namespace Flowtype
                 if (raw.IndexOf("CompletionSound", StringComparison.OrdinalIgnoreCase) < 0) value.CompletionSound = true;
                 if (raw.IndexOf("HandsFreeDoubleTap", StringComparison.OrdinalIgnoreCase) < 0) value.HandsFreeDoubleTap = true;
                 if (raw.IndexOf("SpokenListsEnabled", StringComparison.OrdinalIgnoreCase) < 0) value.SpokenListsEnabled = true;
+                if (raw.IndexOf("LiveCaptions", StringComparison.OrdinalIgnoreCase) < 0) value.LiveCaptions = true;
                 string autoPasteMarker = Path.Combine(Root, "autopaste-default-v2.applied");
                 if (!File.Exists(autoPasteMarker))
                 {
@@ -4217,6 +4220,8 @@ namespace Flowtype
         private readonly object gate = new object();
         private readonly List<Buffer> buffers = new List<Buffer>();
         private readonly PcmRing preroll = new PcmRing(SampleRate * 2 * PrerollMs / 1000);
+        private const int LiveWindowMs = 12000;
+        private readonly PcmRing liveWindow = new PcmRing(SampleRate * 2 * LiveWindowMs / 1000);
         private readonly ManualResetEventSlim drained = new ManualResetEventSlim(true);
         private WaveCallback callback;
         private IntPtr input;
@@ -4288,7 +4293,12 @@ namespace Flowtype
                 {
                     byte[] lead = preroll.Snapshot();
                     preroll.Clear();
-                    if (lead.Length > 0) rawStream.Write(lead, 0, lead.Length);
+                    liveWindow.Clear();
+                    if (lead.Length > 0)
+                    {
+                        rawStream.Write(lead, 0, lead.Length);
+                        liveWindow.Write(lead);
+                    }
                     writingFile = true;
                     takeActive = true;
                 }
@@ -4361,7 +4371,11 @@ namespace Flowtype
                     lock (gate)
                     {
                         preroll.Write(data);
-                        if (writingFile && rawStream != null) rawStream.Write(data, 0, data.Length);
+                        if (writingFile && rawStream != null)
+                        {
+                            rawStream.Write(data, 0, data.Length);
+                            liveWindow.Write(data);
+                        }
                     }
                     if (takeActive)
                     {
@@ -4471,6 +4485,102 @@ namespace Flowtype
             return trimmed;
         }
 
+        public sealed class SpeechRegion
+        {
+            public int StartSample;
+            public int EndSample;
+        }
+
+        public static List<SpeechRegion> FindSpeechRegions(byte[] pcm, int sampleRate, int minGapMs, int minRegionMs)
+        {
+            List<SpeechRegion> regions = new List<SpeechRegion>();
+            if (pcm == null || pcm.Length < 4 || sampleRate <= 0) return regions;
+            int samples = pcm.Length / 2;
+            int peak = 1;
+            for (int index = 0; index < samples; index++)
+            {
+                int sample = AbsPcmSample((short)(pcm[index * 2] | (pcm[index * 2 + 1] << 8)));
+                if (sample > peak) peak = sample;
+            }
+            int speechFloor = Math.Max(350, peak / 20);
+            int minGap = Math.Max(1, (int)Math.Round(sampleRate * (minGapMs / 1000.0)));
+            int minRegion = Math.Max(1, (int)Math.Round(sampleRate * (minRegionMs / 1000.0)));
+            int runStart = -1;
+            int lastSpeech = -1;
+            for (int index = 0; index < samples; index++)
+            {
+                int sample = AbsPcmSample((short)(pcm[index * 2] | (pcm[index * 2 + 1] << 8)));
+                if (sample >= speechFloor)
+                {
+                    if (runStart < 0) runStart = index;
+                    lastSpeech = index;
+                    continue;
+                }
+                if (runStart >= 0 && lastSpeech >= 0 && (index - lastSpeech) >= minGap)
+                {
+                    if (lastSpeech - runStart + 1 >= minRegion)
+                    {
+                        SpeechRegion region = new SpeechRegion();
+                        region.StartSample = runStart;
+                        region.EndSample = lastSpeech;
+                        regions.Add(region);
+                    }
+                    runStart = -1;
+                    lastSpeech = -1;
+                }
+            }
+            if (runStart >= 0 && lastSpeech >= runStart && lastSpeech - runStart + 1 >= minRegion)
+            {
+                SpeechRegion region = new SpeechRegion();
+                region.StartSample = runStart;
+                region.EndSample = lastSpeech;
+                regions.Add(region);
+            }
+            return regions;
+        }
+
+        public static byte[] ExtractRegion(byte[] pcm, SpeechRegion region, int sampleRate, int padMs)
+        {
+            if (pcm == null || region == null || pcm.Length < 2) return pcm ?? new byte[0];
+            int samples = pcm.Length / 2;
+            int pad = Math.Max(0, (int)Math.Round(sampleRate * (padMs / 1000.0)));
+            int start = Math.Max(0, region.StartSample - pad);
+            int end = Math.Min(samples - 1, region.EndSample + pad);
+            if (end < start) return new byte[0];
+            byte[] slice = new byte[(end - start + 1) * 2];
+            System.Buffer.BlockCopy(pcm, start * 2, slice, 0, slice.Length);
+            return slice;
+        }
+
+        public static void WritePcmWave(byte[] pcm, string outputPath)
+        {
+            if (pcm == null) pcm = new byte[0];
+            string folder = Path.GetDirectoryName(outputPath);
+            if (!String.IsNullOrWhiteSpace(folder)) Directory.CreateDirectory(folder);
+            using (FileStream output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+            using (BinaryWriter writer = new BinaryWriter(output, Encoding.ASCII))
+            {
+                writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+                writer.Write((int)(36 + pcm.Length));
+                writer.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
+                writer.Write(16);
+                writer.Write((short)1);
+                writer.Write((short)1);
+                writer.Write(SampleRate);
+                writer.Write(SampleRate * 2);
+                writer.Write((short)2);
+                writer.Write((short)16);
+                writer.Write(Encoding.ASCII.GetBytes("data"));
+                writer.Write(pcm.Length);
+                writer.Write(pcm);
+            }
+        }
+
+        public byte[] SnapshotLiveWindow()
+        {
+            lock (gate) return liveWindow.Snapshot();
+        }
+
         public string Stop()
         {
             lock (micLock)
@@ -4491,6 +4601,7 @@ namespace Flowtype
                 WriteWave(rawPath, wavePath, MicGain);
                 try { File.Delete(rawPath); } catch { }
                 preroll.Clear();
+                liveWindow.Clear();
                 ReleaseDevice();
                 // Re-open off the UI thread. waveInOpen on the message pump freezes the
                 // voice pill mid-frame whenever a take ends (or the mic is toggled) while
@@ -4918,6 +5029,115 @@ namespace Flowtype
             if (!IsStandaloneThanksPhrase(segmentText)) return false;
             // Trailing/leading/isolated thanks after a thinking pause — not "thank you for coming".
             return gapBeforeSeconds >= 0.3 && gapAfterSeconds >= 0.25;
+        }
+
+        public static bool IsLikelyDecoderRunaway(string text, double compressionRatio, double noSpeechProb)
+        {
+            if (noSpeechProb >= 0.65 && compressionRatio >= 2.0) return true;
+            if (compressionRatio >= 2.4 && HasTightRepetition(text)) return true;
+            return false;
+        }
+
+        private static bool HasTightRepetition(string text)
+        {
+            MatchCollection matches = Regex.Matches(text ?? "", @"[A-Za-z0-9']+");
+            if (matches.Count < 8) return false;
+            Dictionary<string, int> counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int index = 0; index + 4 <= matches.Count; index++)
+            {
+                string gram = matches[index].Value + " " + matches[index + 1].Value + " " +
+                    matches[index + 2].Value + " " + matches[index + 3].Value;
+                int count;
+                counts.TryGetValue(gram, out count);
+                counts[gram] = count + 1;
+                if (count + 1 >= 2) return true;
+            }
+            return false;
+        }
+
+        public static void ApplySegmentFilters(SpeechTranscript transcript)
+        {
+            if (transcript == null || transcript.Segments == null || transcript.Segments.Count < 2) return;
+            List<SpeechSegment> kept = new List<SpeechSegment>();
+            for (int index = 0; index < transcript.Segments.Count; index++)
+            {
+                SpeechSegment segment = transcript.Segments[index];
+                SpeechSegment previous = index > 0 ? transcript.Segments[index - 1] : null;
+                SpeechSegment next = index + 1 < transcript.Segments.Count ? transcript.Segments[index + 1] : null;
+                double gapBefore = previous == null ? 0 : Math.Max(0, segment.Start - previous.End);
+                double gapAfter = next == null ? 9.0 : Math.Max(0, next.Start - segment.End);
+                double duration = Math.Max(0, segment.End - segment.Start);
+                bool cueBefore = previous != null && Regex.IsMatch(previous.Text ?? "",
+                    @"\b(?:letter|letters|press|type|typed|hit|key|option|plan|section|column|row|drive|vitamin|grade|as in|is)\s*[,.:;]?\s*$",
+                    RegexOptions.IgnoreCase);
+                if (!cueBefore && IsLikelyEmbeddedHallucination(segment.Text, duration, gapBefore, gapAfter)) continue;
+                double thanksGapBefore = previous == null ? Math.Max(0, segment.Start) : gapBefore;
+                if (IsLikelyThanksHallucination(segment.Text, thanksGapBefore, gapAfter)) continue;
+                if (segment.HasQuality && IsLikelyDecoderRunaway(segment.Text, segment.CompressionRatio, segment.NoSpeechProb)) continue;
+                kept.Add(segment);
+            }
+            if (kept.Count == 0 || kept.Count >= transcript.Segments.Count) return;
+            transcript.Segments = kept;
+            StringBuilder rebuilt = new StringBuilder();
+            foreach (SpeechSegment segment in kept)
+            {
+                if (segment == null || String.IsNullOrWhiteSpace(segment.Text)) continue;
+                if (rebuilt.Length > 0) rebuilt.Append(' ');
+                rebuilt.Append(segment.Text.Trim());
+            }
+            if (rebuilt.Length > 0) transcript.Text = rebuilt.ToString();
+        }
+
+        public static SpeechTranscript ReadApiTranscript(Dictionary<string, object> value)
+        {
+            if (value == null || !value.ContainsKey("text"))
+                throw new InvalidOperationException("The transcription response did not contain text.");
+            SpeechTranscript transcript = new SpeechTranscript();
+            transcript.Text = Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
+            object segmentValue;
+            IEnumerable segments = value.TryGetValue("segments", out segmentValue) ? segmentValue as IEnumerable : null;
+            if (segments != null)
+            {
+                foreach (object item in segments)
+                {
+                    Dictionary<string, object> segment = item as Dictionary<string, object>;
+                    if (segment == null || !segment.ContainsKey("text")) continue;
+                    SpeechSegment phrase = new SpeechSegment();
+                    phrase.Text = Convert.ToString(segment["text"], CultureInfo.InvariantCulture).Trim();
+                    phrase.Start = ReadJsonDouble(segment, "start", 0);
+                    phrase.End = ReadJsonDouble(segment, "end", phrase.Start);
+                    if (segment.ContainsKey("compression_ratio") || segment.ContainsKey("no_speech_prob"))
+                    {
+                        phrase.HasQuality = true;
+                        phrase.CompressionRatio = ReadJsonDouble(segment, "compression_ratio", 1);
+                        phrase.NoSpeechProb = ReadJsonDouble(segment, "no_speech_prob", 0);
+                    }
+                    if (phrase.Text.Length > 0) transcript.Segments.Add(phrase);
+                    object wordValue;
+                    IEnumerable words = segment.TryGetValue("words", out wordValue) ? wordValue as IEnumerable : null;
+                    if (words == null) continue;
+                    foreach (object wordItem in words)
+                    {
+                        Dictionary<string, object> word = wordItem as Dictionary<string, object>;
+                        if (word == null || !word.ContainsKey("word") || !word.ContainsKey("start") || !word.ContainsKey("end")) continue;
+                        SpeechWord spokenWord = new SpeechWord();
+                        spokenWord.Text = Convert.ToString(word["word"], CultureInfo.InvariantCulture);
+                        spokenWord.Start = ReadJsonDouble(word, "start", 0);
+                        spokenWord.End = ReadJsonDouble(word, "end", spokenWord.Start);
+                        if (!String.IsNullOrWhiteSpace(spokenWord.Text)) transcript.Words.Add(spokenWord);
+                    }
+                }
+            }
+            ApplySegmentFilters(transcript);
+            return transcript;
+        }
+
+        private static double ReadJsonDouble(Dictionary<string, object> source, string key, double fallback)
+        {
+            if (source == null || String.IsNullOrWhiteSpace(key) || !source.ContainsKey(key) || source[key] == null)
+                return fallback;
+            try { return Convert.ToDouble(source[key], CultureInfo.InvariantCulture); }
+            catch { return fallback; }
         }
     }
 
@@ -6336,7 +6556,115 @@ namespace Flowtype
                 if (String.Equals(next, text, StringComparison.Ordinal)) break;
                 text = next;
             }
-            return text;
+            return CollapseWrappedTerminalLoops(text);
+        }
+
+        private sealed class WordSpan
+        {
+            public string Norm;
+            public int Start;
+            public int End;
+            public bool Terminal;
+        }
+
+        private static string CollapseWrappedTerminalLoops(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text) || text.Length < 40) return text;
+            List<WordSpan> words = TokenizeWordSpans(text);
+            if (words.Count < 12) return text;
+
+            int bestCount = 0;
+            int bestN = 0;
+            int bestFirst = -1;
+            int bestLast = -1;
+            for (int n = 8; n >= 4; n--)
+            {
+                Dictionary<string, List<int>> hitsAt = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+                for (int index = 0; index + n <= words.Count; index++)
+                {
+                    if (!words[index + n - 1].Terminal) continue;
+                    StringBuilder key = new StringBuilder();
+                    for (int part = 0; part < n; part++)
+                    {
+                        if (part > 0) key.Append(' ');
+                        key.Append(words[index + part].Norm);
+                    }
+                    string gram = key.ToString();
+                    List<int> hits;
+                    if (!hitsAt.TryGetValue(gram, out hits))
+                    {
+                        hits = new List<int>();
+                        hitsAt[gram] = hits;
+                    }
+                    hits.Add(index);
+                }
+                foreach (KeyValuePair<string, List<int>> pair in hitsAt)
+                {
+                    List<int> clustered = LongestCloseCluster(pair.Value, n, 16);
+                    if (clustered.Count < 3) continue;
+                    if (clustered.Count > bestCount || (clustered.Count == bestCount && n > bestN))
+                    {
+                        bestCount = clustered.Count;
+                        bestN = n;
+                        bestFirst = clustered[0];
+                        bestLast = clustered[clustered.Count - 1];
+                    }
+                }
+            }
+            if (bestCount < 3 || bestFirst < 0 || bestN <= 0) return text;
+
+            int keepEnd = words[bestFirst + bestN - 1].End;
+            while (keepEnd < text.Length && (text[keepEnd] == '.' || text[keepEnd] == '?' || text[keepEnd] == '!' || text[keepEnd] == '"' || text[keepEnd] == '\''))
+                keepEnd++;
+            int dropEnd = words[bestLast + bestN - 1].End;
+            while (dropEnd < text.Length && (Char.IsWhiteSpace(text[dropEnd]) || text[dropEnd] == '.' || text[dropEnd] == '?' || text[dropEnd] == '!' || text[dropEnd] == '"' || text[dropEnd] == '\''))
+                dropEnd++;
+            string kept = text.Substring(0, keepEnd).TrimEnd();
+            string rest = dropEnd < text.Length ? text.Substring(dropEnd).Trim() : "";
+            if (rest.Length == 0) return kept;
+            return kept + " " + rest;
+        }
+
+        private static List<int> LongestCloseCluster(List<int> hits, int n, int maxGapWords)
+        {
+            List<int> best = new List<int>();
+            if (hits == null || hits.Count == 0) return best;
+            List<int> current = new List<int>();
+            current.Add(hits[0]);
+            for (int index = 1; index < hits.Count; index++)
+            {
+                int previous = current[current.Count - 1];
+                if (hits[index] - (previous + n) <= maxGapWords) current.Add(hits[index]);
+                else
+                {
+                    if (current.Count > best.Count) best = new List<int>(current);
+                    current.Clear();
+                    current.Add(hits[index]);
+                }
+            }
+            if (current.Count > best.Count) best = current;
+            return best;
+        }
+
+        private static List<WordSpan> TokenizeWordSpans(string text)
+        {
+            List<WordSpan> words = new List<WordSpan>();
+            MatchCollection matches = Regex.Matches(text ?? "", @"[A-Za-z0-9']+");
+            for (int index = 0; index < matches.Count; index++)
+            {
+                Match match = matches[index];
+                WordSpan word = new WordSpan();
+                word.Norm = match.Value.ToLowerInvariant();
+                word.Start = match.Index;
+                word.End = match.Index + match.Length;
+                int look = word.End;
+                while (look < text.Length && Char.IsWhiteSpace(text[look])) look++;
+                word.Terminal = look >= text.Length || text[look] == '.' || text[look] == '?' || text[look] == '!';
+                if (word.End < text.Length && (text[word.End] == '.' || text[word.End] == '?' || text[word.End] == '!'))
+                    word.Terminal = true;
+                words.Add(word);
+            }
+            return words;
         }
 
         private static string Paragraphize(string text, ForegroundInfo context)
@@ -6509,6 +6837,11 @@ namespace Flowtype
 
         public async Task<string> TranscribeAsync(string wavePath, AppSettings settings, string apiKey)
         {
+            return await TranscribeAsync(wavePath, settings, apiKey, CancellationToken.None);
+        }
+
+        public async Task<string> TranscribeAsync(string wavePath, AppSettings settings, string apiKey, CancellationToken cancel)
+        {
             if (String.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException("OpenAI speech mode needs an API key. Open Flowtype Settings from the tray icon.");
             string url = settings.ApiBaseUrl.TrimEnd('/') + "/audio/transcriptions";
             using (HttpClient client = Client(apiKey))
@@ -6520,7 +6853,7 @@ namespace Flowtype
                 form.Add(audio, "file", Path.GetFileName(wavePath));
                 form.Add(new StringContent(settings.TranscriptionModel), "model");
                 form.Add(new StringContent("json"), "response_format");
-                HttpResponseMessage response = await client.PostAsync(url, form);
+                HttpResponseMessage response = await client.PostAsync(url, form, cancel);
                 string body = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ApiHelpers.ErrorMessage(body, response.StatusCode));
                 Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
@@ -7042,34 +7375,55 @@ namespace Flowtype
 
         public async Task<SpeechTranscript> TranscribeAsync(string wavePath, AppSettings settings, string apiKey, ForegroundInfo context)
         {
+            return await TranscribeAsync(wavePath, settings, apiKey, context, false, CancellationToken.None);
+        }
+
+        public async Task<SpeechTranscript> TranscribeAsync(string wavePath, AppSettings settings, string apiKey, ForegroundInfo context, bool livePreview)
+        {
+            return await TranscribeAsync(wavePath, settings, apiKey, context, livePreview, CancellationToken.None);
+        }
+
+        public async Task<SpeechTranscript> TranscribeAsync(string wavePath, AppSettings settings, string apiKey, ForegroundInfo context, bool livePreview, CancellationToken cancel)
+        {
             if (String.IsNullOrWhiteSpace(apiKey))
                 throw new InvalidOperationException("Groq mode needs an API key. Get a free key at console.groq.com, then paste it in Settings.");
             string url = settings.GroqApiUrl.TrimEnd('/') + "/audio/transcriptions";
             string model = String.IsNullOrWhiteSpace(settings.GroqTranscriptionModel) ? "whisper-large-v3-turbo" : settings.GroqTranscriptionModel.Trim();
             HttpClient http = GetClient(apiKey);
-            string prompt = WhisperEngine.BuildPrompt(settings, context);
-            const int maxAttempts = 3;
+            string prompt = livePreview ? "" : WhisperEngine.BuildPrompt(settings, context);
+            string format = livePreview ? "json" : "verbose_json";
+            int maxAttempts = livePreview ? 1 : 3;
             Exception last = null;
             for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
+                cancel.ThrowIfCancellationRequested();
                 using (MultipartFormDataContent form = new MultipartFormDataContent())
                 using (FileStream stream = File.OpenRead(wavePath))
                 using (StreamContent audio = new StreamContent(stream))
-                using (CancellationTokenSource cts = new CancellationTokenSource(AudioTranscriptionTimeouts.ForWavFile(wavePath, false)))
+                using (CancellationTokenSource timeout = new CancellationTokenSource(
+                    livePreview ? TimeSpan.FromSeconds(18) : AudioTranscriptionTimeouts.ForWavFile(wavePath, true)))
+                using (CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancel))
                 {
                     audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
                     form.Add(audio, "file", Path.GetFileName(wavePath));
                     form.Add(new StringContent(model), "model");
-                    form.Add(new StringContent("json"), "response_format");
+                    form.Add(new StringContent(format), "response_format");
                     form.Add(new StringContent("en"), "language");
                     form.Add(new StringContent("0"), "temperature");
                     if (prompt.Length > 0) form.Add(new StringContent(prompt), "prompt");
                     try
                     {
-                        HttpResponseMessage response = await http.PostAsync(url, form, cts.Token);
+                        HttpResponseMessage response = await http.PostAsync(url, form, linked.Token);
                         string body = await response.Content.ReadAsStringAsync();
                         if (!response.IsSuccessStatusCode)
                         {
+                            if (!livePreview && String.Equals(format, "verbose_json", StringComparison.OrdinalIgnoreCase) &&
+                                (int)response.StatusCode == 400)
+                            {
+                                format = "json";
+                                last = new InvalidOperationException(ApiHelpers.TranscriptionFailure("Groq", body, response.StatusCode));
+                                continue;
+                            }
                             if (attempt < maxAttempts - 1 && ApiHelpers.IsTransient(response.StatusCode))
                             {
                                 Thread.Sleep(400 * (attempt + 1));
@@ -7078,15 +7432,14 @@ namespace Flowtype
                             throw new InvalidOperationException(ApiHelpers.TranscriptionFailure("Groq", body, response.StatusCode));
                         }
                         Dictionary<string, object> value = serializer.DeserializeObject(body) as Dictionary<string, object>;
-                        if (value == null || !value.ContainsKey("text"))
-                            throw new InvalidOperationException("Groq returned no transcription text.");
-                        SpeechTranscript transcript = new SpeechTranscript();
-                        transcript.Text = Convert.ToString(value["text"], CultureInfo.InvariantCulture).Trim();
+                        SpeechTranscript transcript = TranscriptionQuality.ReadApiTranscript(value);
                         if (String.IsNullOrWhiteSpace(transcript.Text)) throw new InvalidOperationException("No speech was detected.");
                         return transcript;
                     }
                     catch (Exception exception)
                     {
+                        if (cancel.IsCancellationRequested) throw;
+                        if (livePreview) throw;
                         if (attempt < maxAttempts - 1 && IsRetryableGroqError(exception))
                         {
                             last = exception;
@@ -7136,6 +7489,9 @@ namespace Flowtype
         public string Text = "";
         public double Start;
         public double End;
+        public double CompressionRatio;
+        public double NoSpeechProb;
+        public bool HasQuality;
     }
 
     public sealed class SpeechWord
@@ -7312,44 +7668,9 @@ namespace Flowtype
                         }
                     }
                 }
-                FilterEmbeddedHallucinationSegments(transcript);
+                TranscriptionQuality.ApplySegmentFilters(transcript);
                 return transcript;
             }
-        }
-
-        private static void FilterEmbeddedHallucinationSegments(SpeechTranscript transcript)
-        {
-            if (transcript == null || transcript.Segments == null || transcript.Segments.Count < 2) return;
-            List<SpeechSegment> kept = new List<SpeechSegment>();
-            for (int index = 0; index < transcript.Segments.Count; index++)
-            {
-                SpeechSegment segment = transcript.Segments[index];
-                SpeechSegment previous = index > 0 ? transcript.Segments[index - 1] : null;
-                SpeechSegment next = index + 1 < transcript.Segments.Count ? transcript.Segments[index + 1] : null;
-                double gapBefore = previous == null ? 0 : Math.Max(0, segment.Start - previous.End);
-                // End-of-recording is silence, not a zero gap — a trailing lone letter after a
-                // breath is Whisper's most common hallucination. A leading letter keeps gap 0 so
-                // deliberate spellings ("P as in Peter") are never eaten.
-                double gapAfter = next == null ? 9.0 : Math.Max(0, next.Start - segment.End);
-                double duration = Math.Max(0, segment.End - segment.Start);
-                bool cueBefore = previous != null && Regex.IsMatch(previous.Text ?? "",
-                    @"\b(?:letter|letters|press|type|typed|hit|key|option|plan|section|column|row|drive|vitamin|grade|as in|is)\s*[,.:;]?\s*$",
-                    RegexOptions.IgnoreCase);
-                if (!cueBefore && TranscriptionQuality.IsLikelyEmbeddedHallucination(segment.Text, duration, gapBefore, gapAfter)) continue;
-                double thanksGapBefore = previous == null ? Math.Max(0, segment.Start) : gapBefore;
-                if (TranscriptionQuality.IsLikelyThanksHallucination(segment.Text, thanksGapBefore, gapAfter)) continue;
-                kept.Add(segment);
-            }
-            if (kept.Count == 0 || kept.Count >= transcript.Segments.Count) return;
-            transcript.Segments = kept;
-            StringBuilder rebuilt = new StringBuilder();
-            foreach (SpeechSegment segment in kept)
-            {
-                if (segment == null || String.IsNullOrWhiteSpace(segment.Text)) continue;
-                if (rebuilt.Length > 0) rebuilt.Append(' ');
-                rebuilt.Append(segment.Text.Trim());
-            }
-            if (rebuilt.Length > 0) transcript.Text = rebuilt.ToString();
         }
 
         private static Task<SpeechTranscript> RunCliAsync(string wavePath, AppSettings settings, ForegroundInfo context)
@@ -7713,8 +8034,11 @@ namespace Flowtype
         private bool maxRaised;
         private bool processingMode;
         private string processingPreview = "";
+        private string liveCaption = "";
         private const int CompactOverlayWidth = 120;
+        private const int CompactOverlayHeight = 42;
         private const int StreamOverlayWidth = 304;
+        private const int CaptionOverlayWidth = 540;
         private string theme = "Dark";
         private string mark = "Orb";
         private Bitmap glassBackdrop;
@@ -7835,7 +8159,9 @@ namespace Flowtype
             SetMark(overlayMark);
             processingMode = false;
             processingPreview = "";
+            liveCaption = "";
             Width = CompactOverlayWidth;
+            Height = CompactOverlayHeight;
             level = 0;
             Array.Clear(bands, 0, bands.Length);
             animationTick = 0;
@@ -7860,7 +8186,7 @@ namespace Flowtype
             overlaySession++;
             processingMode = true;
             processingPreview = "";
-            Width = CompactOverlayWidth;
+            ApplyOverlayLayout();
             elapsed.Reset();
             maxRaised = false;
             exiting = false;
@@ -7892,10 +8218,63 @@ namespace Flowtype
                 return;
             }
             processingPreview = text ?? "";
-            int want = processingMode && processingPreview.Trim().Length > 0 ? StreamOverlayWidth : CompactOverlayWidth;
-            if (Width != want)
+            ApplyOverlayLayout();
+        }
+
+        public void SetLiveCaption(string text)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
             {
-                Width = want;
+                try { BeginInvoke(new Action<string>(SetLiveCaption), text ?? ""); }
+                catch { }
+                return;
+            }
+            liveCaption = text ?? "";
+            ApplyOverlayLayout();
+        }
+
+        private bool HasLiveCaption()
+        {
+            return !String.IsNullOrWhiteSpace(liveCaption);
+        }
+
+        private int MeasureCaptionCardHeight()
+        {
+            string text = (liveCaption ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (text.Length == 0) return 0;
+            try
+            {
+                using (Bitmap probe = new Bitmap(1, 1))
+                using (Graphics graphics = Graphics.FromImage(probe))
+                using (Font font = new Font("Segoe UI", 10.5f, FontStyle.Regular, GraphicsUnit.Point))
+                {
+                    SizeF size = graphics.MeasureString(text, font, CaptionOverlayWidth - 48);
+                    int height = (int)Math.Ceiling(size.Height) + 22;
+                    return Math.Max(52, Math.Min(124, height));
+                }
+            }
+            catch
+            {
+                return 72;
+            }
+        }
+
+        private void ApplyOverlayLayout()
+        {
+            int wantWidth = CompactOverlayWidth;
+            int wantHeight = CompactOverlayHeight;
+            if (HasLiveCaption())
+            {
+                wantWidth = CaptionOverlayWidth;
+                wantHeight = CompactOverlayHeight + MeasureCaptionCardHeight() + 8;
+            }
+            else if (processingMode && processingPreview.Trim().Length > 0)
+                wantWidth = StreamOverlayWidth;
+            if (Width != wantWidth || Height != wantHeight)
+            {
+                Width = wantWidth;
+                Height = wantHeight;
                 PositionOverlay();
                 if (IsGlassTheme() && Visible && !exiting)
                 {
@@ -7903,6 +8282,7 @@ namespace Flowtype
                     CaptureGlassBackdrop();
                 }
             }
+            RenderLayered();
         }
 
         public void ShowResult(bool pasted) { HideNow(); }
@@ -7973,17 +8353,20 @@ namespace Flowtype
             exiting = false;
             processingMode = false;
             processingPreview = "";
+            liveCaption = "";
             Width = CompactOverlayWidth;
+            Height = CompactOverlayHeight;
             revealProgress = 1f;
             Hide();
         }
 
         private RectangleF GetCapsuleBounds()
         {
-            float capsuleWidth = processingMode && processingPreview.Trim().Length > 0 ? 286f : 104f;
+            bool ticker = processingMode && processingPreview.Trim().Length > 0 && !HasLiveCaption();
+            float capsuleWidth = ticker ? 286f : 104f;
             const float capsuleHeight = 26f;
             float x = (Width - capsuleWidth) / 2f;
-            float y = (Height - capsuleHeight) / 2f;
+            float y = Height - CompactOverlayHeight + (CompactOverlayHeight - capsuleHeight) / 2f;
             return new RectangleF(
                 (float)Math.Floor(x) + 0.5f,
                 (float)Math.Floor(y) + 0.5f,
@@ -8233,6 +8616,7 @@ namespace Flowtype
                 DrawInstrumentChrome(graphics, capsule, cornerRadius);
                 DrawStatusMark(graphics, capsule);
                 DrawVoiceBands(graphics, capsule);
+                DrawLiveCaptionCard(graphics);
 
                 graphics.ResetTransform();
                 Present(bitmap);
@@ -8419,7 +8803,7 @@ namespace Flowtype
         {
             float left = capsule.X + 29f;
             float right = capsule.Right - 8f;
-            if (processingMode && processingPreview.Trim().Length > 0)
+            if (processingMode && processingPreview.Trim().Length > 0 && !HasLiveCaption())
             {
                 DrawProcessingPreview(graphics, left, right, capsule);
                 return;
@@ -8465,6 +8849,41 @@ namespace Flowtype
                     text = "…" + text;
                 }
                 graphics.DrawString(text, font, brush, left, y);
+            }
+        }
+
+        private void DrawLiveCaptionCard(Graphics graphics)
+        {
+            string text = (liveCaption ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (text.Length == 0) return;
+            float cardWidth = Width - 16f;
+            float cardHeight = Height - CompactOverlayHeight - 6f;
+            if (cardWidth < 80f || cardHeight < 36f) return;
+            RectangleF card = new RectangleF(8f, 4f, cardWidth, cardHeight);
+            Color top;
+            Color bottom;
+            Color borderColor;
+            GetThemeColors(out top, out bottom, out borderColor);
+            using (GraphicsPath path = RoundedRectangle(card, 14f))
+            using (LinearGradientBrush fill = new LinearGradientBrush(card, Color.FromArgb(Math.Min(255, top.A + 30), top), Color.FromArgb(Math.Min(255, bottom.A + 18), bottom), LinearGradientMode.Vertical))
+            using (Pen border = new Pen(Color.FromArgb(Math.Min(255, borderColor.A + 20), borderColor), 1f))
+            {
+                graphics.FillPath(fill, path);
+                graphics.DrawPath(border, path);
+            }
+            RectangleF bounds = new RectangleF(card.X + 14f, card.Y + 10f, card.Width - 28f, card.Height - 20f);
+            Color ink = GetChromeInk();
+            using (Font font = new Font("Segoe UI", 10.5f, FontStyle.Regular, GraphicsUnit.Point))
+            using (SolidBrush brush = new SolidBrush(Color.FromArgb(IsGlassTheme() ? (glassOnDark ? 230 : 190) : 220, ink)))
+            {
+                while (text.Length > 28 && graphics.MeasureString("…" + text, font, (int)Math.Max(8, bounds.Width)).Height > bounds.Height)
+                {
+                    int space = text.IndexOf(' ');
+                    if (space < 0 || space + 1 >= text.Length) break;
+                    text = text.Substring(space + 1);
+                }
+                if (text.Length > 0 && liveCaption.Trim().Length > text.Length) text = "…" + text;
+                graphics.DrawString(text, font, brush, bounds);
             }
         }
 
@@ -8689,6 +9108,7 @@ namespace Flowtype
         private readonly ThemedCheckBox suppressNonSpeechBox = new ThemedCheckBox();
         private readonly ThemedCheckBox completionSoundBox = new ThemedCheckBox();
         private readonly ThemedCheckBox insertNotifyBox = new ThemedCheckBox();
+        private readonly ThemedCheckBox liveCaptionsBox = new ThemedCheckBox();
         private readonly ThemedCheckBox autoUpdateBox = new ThemedCheckBox();
         private readonly ThemedComboBox overlayThemeBox = new ThemedComboBox();
         private readonly ThemedComboBox overlayMarkBox = new ThemedComboBox();
@@ -9164,6 +9584,7 @@ namespace Flowtype
             suppressNonSpeechBox.Text = "Filter non-speech sounds (may drop quiet words)";
             completionSoundBox.Text = "Sound effects on start and finish";
             insertNotifyBox.Text = "Tray toast after each dictation";
+            liveCaptionsBox.Text = "Show words while you speak";
             micBoostBox.Text = "Microphone boost — amplify quiet mics";
             micBoostBox.CheckedChanged += delegate { SyncMicBoostUi(); };
 
@@ -9177,6 +9598,8 @@ namespace Flowtype
             speak.Check(handsFreeBox);
             speak.Note("Press the same key again (or Escape) to finish and insert.", 18);
             speak.Triple("Writing style", styleBox, "Voice capsule", overlayThemeBox, "Live mark", overlayMarkBox);
+            speak.Check(liveCaptionsBox);
+            speak.Note("Shows a card above the capsule while you talk. Cloud engines send rolling audio to Groq or OpenAI every few seconds until you finish. The pasted take is still one transcribe on release.", 44);
             FinishCard(page, dictation, speak, x, y, width);
             y += dictation.Height + 12;
 
@@ -9714,6 +10137,7 @@ namespace Flowtype
             suppressNonSpeechBox.Checked = value.SuppressNonSpeech;
             completionSoundBox.Checked = value.CompletionSound;
             insertNotifyBox.Checked = value.ShowInsertNotification;
+            liveCaptionsBox.Checked = value.LiveCaptions;
             autoUpdateBox.Checked = value.AutoCheckUpdates;
             overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
             overlayMarkBox.SelectedIndex = OverlayMarkToIndex(value.OverlayMark);
@@ -9770,6 +10194,7 @@ namespace Flowtype
             value.SuppressNonSpeech = suppressNonSpeechBox.Checked;
             value.CompletionSound = completionSoundBox.Checked;
             value.ShowInsertNotification = insertNotifyBox.Checked;
+            value.LiveCaptions = liveCaptionsBox.Checked;
             value.AutoCheckUpdates = autoUpdateBox.Checked;
             value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
             value.OverlayMark = OverlayMarkFromIndex(overlayMarkBox.SelectedIndex);
@@ -10949,6 +11374,10 @@ namespace Flowtype
         private bool handsFreeStopPending;
         private bool notifyRecordingLimit;
         private System.Windows.Forms.Timer doubleTapTimer;
+        private System.Windows.Forms.Timer liveCaptionTimer;
+        private int liveCaptionGeneration;
+        private volatile bool liveCaptionInflight;
+        private CancellationTokenSource liveCaptionCancel;
         private const int DoubleTapWindowMs = 450;
         private const int ShortPressMs = 280;
         private SettingsForm settingsForm;
@@ -11739,6 +12168,7 @@ namespace Flowtype
 
         private void ResetRecordingMode()
         {
+            StopLiveCaptions();
             latchedRecording = false;
             awaitingDoubleTap = false;
             handsFreeStopPending = false;
@@ -11869,7 +12299,11 @@ namespace Flowtype
                     if (who.Length == 0) who = settings.AgentRuntime;
                     agentOverlay.ShowListening(settings.AgentHotkey, settings.AgentEndpoint, who);
                 }
-                else overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark);
+                else
+                {
+                    overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark);
+                    StartLiveCaptions();
+                }
                 if (settings.CompletionSound) RecordingCue.PlayStart();
                 UpdateRecordingStatus();
             }
@@ -11885,6 +12319,7 @@ namespace Flowtype
 
         private void StopRecording()
         {
+            StopLiveCaptions();
             CancelDoubleTapTimer();
             awaitingDoubleTap = false;
             if (!recorder.IsRecording)
@@ -11982,6 +12417,195 @@ namespace Flowtype
             throw groqError;
         }
 
+        private async Task<SpeechTranscript> TranscribeFile(string path, ForegroundInfo intended)
+        {
+            if (settings.Engine == "OpenAI")
+            {
+                SpeechTranscript transcript = new SpeechTranscript();
+                transcript.Text = await new OpenAiEngine().TranscribeAsync(path, settings, apiKey);
+                return transcript;
+            }
+            if (settings.Engine == "Groq")
+                return await TranscribeGroqWithLocalFallback(path, intended);
+            return await whisperEngine.TranscribeAsync(path, settings, intended);
+        }
+
+        private async Task<SpeechTranscript> TranscribeTake(string path, long recordMs, ForegroundInfo intended)
+        {
+            if (recordMs >= 20000)
+            {
+                try
+                {
+                    SpeechTranscript split = await TranscribeSilenceSplit(path, intended);
+                    if (split != null && !String.IsNullOrWhiteSpace(split.Text)) return split;
+                }
+                catch (Exception exception)
+                {
+                    AgentTrace.Log("silence split failed, using full take: " + exception.Message);
+                }
+            }
+            return await TranscribeFile(path, intended);
+        }
+
+        private async Task<SpeechTranscript> TranscribeSilenceSplit(string path, ForegroundInfo intended)
+        {
+            byte[] pcm = ReadWavPcm(path);
+            List<WaveRecorder.SpeechRegion> regions = WaveRecorder.FindSpeechRegions(pcm, 16000, 800, 400);
+            if (regions == null || regions.Count < 2 || regions.Count > 10) return null;
+            SpeechTranscript combined = new SpeechTranscript();
+            StringBuilder text = new StringBuilder();
+            string directory = Path.GetDirectoryName(path);
+            string stem = Path.GetFileNameWithoutExtension(path);
+            for (int index = 0; index < regions.Count; index++)
+            {
+                byte[] slice = WaveRecorder.ExtractRegion(pcm, regions[index], 16000, 160);
+                if (slice == null || slice.Length < 8000) continue;
+                string partPath = Path.Combine(directory ?? Path.GetTempPath(),
+                    stem + "-p" + index.ToString(CultureInfo.InvariantCulture) + ".wav");
+                WaveRecorder.WritePcmWave(slice, partPath);
+                try
+                {
+                    SpeechTranscript part = await TranscribeFile(partPath, intended);
+                    if (part == null || String.IsNullOrWhiteSpace(part.Text)) continue;
+                    if (text.Length > 0) text.Append(' ');
+                    text.Append(part.Text.Trim());
+                    double offset = regions[index].StartSample / 16000.0;
+                    if (part.Segments == null) continue;
+                    foreach (SpeechSegment segment in part.Segments)
+                    {
+                        if (segment == null) continue;
+                        segment.Start += offset;
+                        segment.End += offset;
+                        combined.Segments.Add(segment);
+                    }
+                }
+                finally { TryDelete(partPath); }
+            }
+            combined.Text = text.ToString().Trim();
+            if (String.IsNullOrWhiteSpace(combined.Text)) return null;
+            TranscriptionQuality.ApplySegmentFilters(combined);
+            return combined;
+        }
+
+        private static byte[] ReadWavPcm(string path)
+        {
+            byte[] wav = File.ReadAllBytes(path);
+            if (wav == null || wav.Length <= 44) return new byte[0];
+            byte[] pcm = new byte[wav.Length - 44];
+            System.Buffer.BlockCopy(wav, 44, pcm, 0, pcm.Length);
+            return pcm;
+        }
+
+        private void StartLiveCaptions()
+        {
+            StopLiveCaptions();
+            if (!settings.LiveCaptions || currentTakeIsAgent) return;
+            liveCaptionCancel = new CancellationTokenSource();
+            liveCaptionTimer = new System.Windows.Forms.Timer();
+            liveCaptionTimer.Interval = 3000;
+            liveCaptionTimer.Tick += delegate
+            {
+                try { QueueLiveCaption(); }
+                catch { }
+            };
+            liveCaptionTimer.Start();
+        }
+
+        private void StopLiveCaptions()
+        {
+            liveCaptionGeneration++;
+            liveCaptionInflight = false;
+            if (liveCaptionCancel != null)
+            {
+                try { liveCaptionCancel.Cancel(); } catch { }
+            }
+            if (liveCaptionTimer == null) return;
+            liveCaptionTimer.Stop();
+            liveCaptionTimer.Dispose();
+            liveCaptionTimer = null;
+        }
+
+        private void QueueLiveCaption()
+        {
+            if (shuttingDown || !recorder.IsRecording || liveCaptionInflight || currentTakeIsAgent) return;
+            CancellationTokenSource cancel = liveCaptionCancel;
+            if (cancel == null || cancel.IsCancellationRequested) return;
+            byte[] pcm = recorder.SnapshotLiveWindow();
+            if (pcm == null || pcm.Length < 51200) return;
+            liveCaptionInflight = true;
+            int generation = liveCaptionGeneration;
+            CancellationToken token = cancel.Token;
+            string temp = Path.Combine(Path.GetTempPath(), "flowtype-live-" + Guid.NewGuid().ToString("N") + ".wav");
+            try { WaveRecorder.WritePcmWave(pcm, temp); }
+            catch
+            {
+                liveCaptionInflight = false;
+                return;
+            }
+            ThreadPool.QueueUserWorkItem(delegate { PumpLiveCaption(temp, generation, token); });
+        }
+
+        private void PumpLiveCaption(string tempPath, int generation, CancellationToken cancel)
+        {
+            try
+            {
+                if (cancel.IsCancellationRequested || generation != liveCaptionGeneration) return;
+                Task<SpeechTranscript> task = TranscribeLiveDraft(tempPath, cancel);
+                task.Wait(cancel);
+                if (cancel.IsCancellationRequested || generation != liveCaptionGeneration) return;
+                SpeechTranscript draft = task.Result;
+                string text = draft == null ? "" : (draft.Text ?? "").Trim();
+                if (text.Length == 0) return;
+                text = TextProcessor.RemoveExactDuplicateBlocks(text);
+                try
+                {
+                    dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        if (generation != liveCaptionGeneration) return;
+                        overlay.SetLiveCaption(text);
+                    }));
+                }
+                catch { }
+            }
+            catch (Exception exception)
+            {
+                if (cancel.IsCancellationRequested) return;
+                Exception inner = exception;
+                AggregateException aggregate = exception as AggregateException;
+                if (aggregate != null && aggregate.InnerException != null) inner = aggregate.InnerException;
+                if (inner is OperationCanceledException || inner is TaskCanceledException) return;
+                string message = inner.Message ?? "";
+                if (message.IndexOf("temporarily unavailable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("429", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    try { dispatcher.BeginInvoke(new Action(StopLiveCaptions)); } catch { }
+                }
+            }
+            finally
+            {
+                TryDelete(tempPath);
+                liveCaptionInflight = false;
+            }
+        }
+
+        private Task<SpeechTranscript> TranscribeLiveDraft(string path, CancellationToken cancel)
+        {
+            if (settings.Engine == "Groq" && !String.IsNullOrWhiteSpace(groqKey))
+                return groqEngine.TranscribeAsync(path, settings, groqKey, null, true, cancel);
+            if (settings.Engine == "OpenAI" && !String.IsNullOrWhiteSpace(apiKey))
+            {
+                return Task.Run(delegate
+                {
+                    SpeechTranscript transcript = new SpeechTranscript();
+                    transcript.Text = new OpenAiEngine().TranscribeAsync(path, settings, apiKey, cancel).GetAwaiter().GetResult();
+                    return transcript;
+                }, cancel);
+            }
+            if (String.Equals(settings.Engine, "Local", StringComparison.OrdinalIgnoreCase) && WhisperEngine.IsInstalled(settings))
+                return whisperEngine.TranscribeAsync(path, settings, null);
+            return Task.FromResult<SpeechTranscript>(null);
+        }
+
         private async void ProcessRecording(string path, int sequence, long recordMs, ForegroundInfo intended, bool agentTake)
         {
             string raw = "";
@@ -11992,15 +12616,7 @@ namespace Flowtype
             try
             {
                 Stopwatch transcribeTimer = Stopwatch.StartNew();
-                SpeechTranscript transcript;
-                if (settings.Engine == "OpenAI")
-                {
-                    transcript = new SpeechTranscript();
-                    transcript.Text = await new OpenAiEngine().TranscribeAsync(path, settings, apiKey);
-                }
-                else if (settings.Engine == "Groq")
-                    transcript = await TranscribeGroqWithLocalFallback(path, intended);
-                else transcript = await whisperEngine.TranscribeAsync(path, settings, intended);
+                SpeechTranscript transcript = await TranscribeTake(path, recordMs, intended);
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
                 ForegroundInfo delivery = ForegroundContext.Capture(settings.ContextEnabled);
