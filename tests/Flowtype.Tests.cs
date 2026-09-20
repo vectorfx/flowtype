@@ -315,6 +315,10 @@ namespace Flowtype.Tests
             failures += AssertFalse(Hotkeys.IsModifierChord("F8"));
             failures += AssertEqual("default engine", "Local", AppSettings.Defaults().Engine);
             failures += AssertEqual("default cleanup", "BuiltIn", AppSettings.Defaults().CleanupProvider);
+            failures += AssertFalse("live captions start off", AppSettings.Defaults().LiveCaptions);
+            failures += AssertEqual("live thanks dropped", "", TextProcessor.PrepareLiveCaption("Thank you."));
+            failures += AssertTrue("live loop collapsed",
+                TextProcessor.PrepareLiveCaption("Now, what is the plan? So, what is the plan? Anyway, what is the plan.").IndexOf("So, what is the plan", StringComparison.OrdinalIgnoreCase) < 0);
             failures += AssertFalse(AppSettings.Defaults().MicBoostEnabled);
             failures += AssertTrue("boost off is unity gain", Math.Abs(AppSettings.Defaults().EffectiveMicGain - 1f) < 0.001f);
             AppSettings boostOn = AppSettings.Defaults();
@@ -445,9 +449,9 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.86"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.87"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.85", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.86", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));

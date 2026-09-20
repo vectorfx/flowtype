@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.85.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.85.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.86.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.86.0")]
 
 namespace Flowtype
 {
@@ -112,7 +112,7 @@ namespace Flowtype
             value.SuppressNonSpeech = false;
             value.CompletionSound = true;
             value.ShowInsertNotification = false;
-            value.LiveCaptions = true;
+            value.LiveCaptions = false;
             value.AutoCheckUpdates = true;
             value.SkippedUpdateVersion = "";
             value.LastUpdateCheckUtc = "";
@@ -2701,7 +2701,12 @@ namespace Flowtype
                 if (raw.IndexOf("CompletionSound", StringComparison.OrdinalIgnoreCase) < 0) value.CompletionSound = true;
                 if (raw.IndexOf("HandsFreeDoubleTap", StringComparison.OrdinalIgnoreCase) < 0) value.HandsFreeDoubleTap = true;
                 if (raw.IndexOf("SpokenListsEnabled", StringComparison.OrdinalIgnoreCase) < 0) value.SpokenListsEnabled = true;
-                if (raw.IndexOf("LiveCaptions", StringComparison.OrdinalIgnoreCase) < 0) value.LiveCaptions = true;
+                string liveOffMarker = Path.Combine(Root, "livecaptions-off-v1.applied");
+                if (!File.Exists(liveOffMarker))
+                {
+                    value.LiveCaptions = false;
+                    try { File.WriteAllText(liveOffMarker, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture), new UTF8Encoding(false)); } catch { }
+                }
                 string autoPasteMarker = Path.Combine(Root, "autopaste-default-v2.applied");
                 if (!File.Exists(autoPasteMarker))
                 {
@@ -4220,7 +4225,7 @@ namespace Flowtype
         private readonly object gate = new object();
         private readonly List<Buffer> buffers = new List<Buffer>();
         private readonly PcmRing preroll = new PcmRing(SampleRate * 2 * PrerollMs / 1000);
-        private const int LiveWindowMs = 12000;
+        private const int LiveWindowMs = 5000;
         private readonly PcmRing liveWindow = new PcmRing(SampleRate * 2 * LiveWindowMs / 1000);
         private readonly ManualResetEventSlim drained = new ManualResetEventSlim(true);
         private WaveCallback callback;
@@ -5627,6 +5632,15 @@ namespace Flowtype
         public static string ApplyAlwaysEdits(string text, AppSettings settings)
         {
             return FormatSpokenLists(ApplyDictionaryReplacements(ApplySnippets(text, settings), settings), settings);
+        }
+
+        public static string PrepareLiveCaption(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            string cleaned = RemoveExactDuplicateBlocks(text.Trim());
+            cleaned = RemoveWhisperRepetitions(cleaned);
+            if (TranscriptionQuality.IsStandaloneThanksPhrase(cleaned)) return "";
+            return cleaned.Trim();
         }
 
         public static string Clean(string input, AppSettings settings, ForegroundInfo context)
@@ -9599,7 +9613,7 @@ namespace Flowtype
             speak.Note("Press the same key again (or Escape) to finish and insert.", 18);
             speak.Triple("Writing style", styleBox, "Voice capsule", overlayThemeBox, "Live mark", overlayMarkBox);
             speak.Check(liveCaptionsBox);
-            speak.Note("Shows a card above the capsule while you talk. Cloud engines send rolling audio to Groq or OpenAI every few seconds until you finish. The pasted take is still one transcribe on release.", 44);
+            speak.Note("Off by default. Local engine is free. Groq or OpenAI bill their usual transcription usage for each live peek — Flowtype does not add a charge. Pasted text is still one transcribe on release.", 48);
             FinishCard(page, dictation, speak, x, y, width);
             y += dictation.Height + 12;
 
@@ -11378,6 +11392,7 @@ namespace Flowtype
         private int liveCaptionGeneration;
         private volatile bool liveCaptionInflight;
         private CancellationTokenSource liveCaptionCancel;
+        private string lastLiveCaption = "";
         private const int DoubleTapWindowMs = 450;
         private const int ShortPressMs = 280;
         private SettingsForm settingsForm;
@@ -12499,14 +12514,28 @@ namespace Flowtype
         private void StartLiveCaptions()
         {
             StopLiveCaptions();
+            lastLiveCaption = "";
             if (!settings.LiveCaptions || currentTakeIsAgent) return;
             liveCaptionCancel = new CancellationTokenSource();
+            bool localLive = WhisperEngine.IsInstalled(settings);
+            if (localLive)
+            {
+                AppSettings warm = settings;
+                Task.Run(delegate
+                {
+                    try { whisperEngine.WarmAsync(warm).Wait(); }
+                    catch { }
+                });
+            }
+            int followMs = localLive ? 850 : 2500;
             liveCaptionTimer = new System.Windows.Forms.Timer();
-            liveCaptionTimer.Interval = 3000;
+            liveCaptionTimer.Interval = localLive ? 450 : 1100;
             liveCaptionTimer.Tick += delegate
             {
                 try { QueueLiveCaption(); }
                 catch { }
+                if (liveCaptionTimer != null && liveCaptionTimer.Interval != followMs)
+                    liveCaptionTimer.Interval = followMs;
             };
             liveCaptionTimer.Start();
         }
@@ -12531,7 +12560,7 @@ namespace Flowtype
             CancellationTokenSource cancel = liveCaptionCancel;
             if (cancel == null || cancel.IsCancellationRequested) return;
             byte[] pcm = recorder.SnapshotLiveWindow();
-            if (pcm == null || pcm.Length < 51200) return;
+            if (pcm == null || pcm.Length < 25600) return;
             liveCaptionInflight = true;
             int generation = liveCaptionGeneration;
             CancellationToken token = cancel.Token;
@@ -12556,7 +12585,11 @@ namespace Flowtype
                 SpeechTranscript draft = task.Result;
                 string text = draft == null ? "" : (draft.Text ?? "").Trim();
                 if (text.Length == 0) return;
-                text = TextProcessor.RemoveExactDuplicateBlocks(text);
+                text = TextProcessor.PrepareLiveCaption(text);
+                if (text.Length == 0) return;
+                string previous = lastLiveCaption ?? "";
+                if (previous.Length >= 40 && text.Length * 3 < previous.Length) return;
+                lastLiveCaption = text;
                 try
                 {
                     dispatcher.BeginInvoke(new Action(delegate
@@ -12590,6 +12623,8 @@ namespace Flowtype
 
         private Task<SpeechTranscript> TranscribeLiveDraft(string path, CancellationToken cancel)
         {
+            if (WhisperEngine.IsInstalled(settings))
+                return whisperEngine.TranscribeAsync(path, settings, null);
             if (settings.Engine == "Groq" && !String.IsNullOrWhiteSpace(groqKey))
                 return groqEngine.TranscribeAsync(path, settings, groqKey, null, true, cancel);
             if (settings.Engine == "OpenAI" && !String.IsNullOrWhiteSpace(apiKey))
@@ -12601,8 +12636,6 @@ namespace Flowtype
                     return transcript;
                 }, cancel);
             }
-            if (String.Equals(settings.Engine, "Local", StringComparison.OrdinalIgnoreCase) && WhisperEngine.IsInstalled(settings))
-                return whisperEngine.TranscribeAsync(path, settings, null);
             return Task.FromResult<SpeechTranscript>(null);
         }
 

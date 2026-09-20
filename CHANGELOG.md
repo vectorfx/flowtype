@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.86
+
+Live captions:
+- Off by default, and existing installs are flipped off once
+- Local whisper is used for the live card when it is installed, so Groq users are not billed extra peeks
+- Updates about once a second from the last five seconds of audio (was a 3s / 12s Groq peek that felt five words behind)
+- Settings copy states Flowtype does not add a charge; Groq/OpenAI only bill if you turn the card on and have no local engine
+
+---
+
 ## 1.3.85
 
 Whisper hallucination on long hands-free takes:
