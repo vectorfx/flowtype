@@ -41,11 +41,12 @@ Most “AI dictation” apps are a recorder bolted to a cloud API. Flowtype is b
 
 | | |
 |---|---|
-| **First word stays** | Warm mic + 400&nbsp;ms pre-roll so the start of a take isn’t eaten by `waveInOpen` |
-| **Paste that sticks** | Batched `SendInput`, clipboard restore, Cursor / terminal heuristics, rescue-to-clipboard when focus races |
+| **First word stays** | Warm mic + 400&nbsp;ms pre-roll so the start of a take isn’t eaten by `waveInOpen`. Start cue waits until the mic is actually writing |
+| **Last word stays** | 450&nbsp;ms hangover after you release the chord, then silence trim (and a 60&nbsp;ms pad only if the tail is still loud) so the coda is not cut on key-up |
+| **Paste that sticks** | Batched `SendInput` after releasing leftover modifiers, clipboard restore, Cursor / terminal heuristics, rescue-to-clipboard when focus races. **Shift+Alt+Z** pastes the last take |
 | **Hotkey that survives** | Low-level keyboard hook + 20&nbsp;ms chord poller backup + auto-reinstall if Windows drops the hook |
 | **Cleanup that doesn’t invent** | Deep built-in polish offline — fillers, punctuation, spoken lists, exact dictionary — before any LLM |
-| **Voice capsule** | Click-through overlay (Dark / Glass / Ember…) that never steals focus |
+| **Voice capsule** | Click-through overlay (Dark / Glass / Ember…). On release the live mark keeps spinning until the words land, then the capsule fades so it cannot become the paste target |
 | **Optional agent chord** | Hold **Win + Alt** → loopback POST to OpenCode or Claude on *your* PC. Flowtype is a dumb pipe; it does not plan or execute |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline.
@@ -88,7 +89,7 @@ Local mode needs no API key.
 | Release | Transcribe → clean → paste (or keep on clipboard if focus changed) |
 | **Escape** while recording | Cancel |
 | Double-press (hands-free) | Latch recording without holding — optional in Settings |
-| Left-click tray | Settings |
+| Left-click tray | Settings — capsule size **Mini** is the same pill at 80% |
 | Right-click tray | Dictionary fix, undo last, history, recovery, quit |
 
 ---

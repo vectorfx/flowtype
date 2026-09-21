@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.86.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.86.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.94.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.94.0")]
 
 namespace Flowtype
 {
@@ -68,6 +68,7 @@ namespace Flowtype
         public string LastUpdateCheckUtc;
         public string OverlayTheme;
         public string OverlayMark;
+        public string OverlaySize;
         public string AppAppearance;
         public bool AgentModeEnabled;
         public string AgentHotkey;
@@ -118,6 +119,7 @@ namespace Flowtype
             value.LastUpdateCheckUtc = "";
             value.OverlayTheme = "Dark";
             value.OverlayMark = "Orb";
+            value.OverlaySize = "Normal";
             value.AppAppearance = "Dark";
             value.AgentModeEnabled = false;
             value.AgentHotkey = "Win + Alt";
@@ -173,6 +175,10 @@ namespace Flowtype
                 !String.Equals(OverlayMark, "Iris", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayMark, "Grid", StringComparison.OrdinalIgnoreCase)))
                 OverlayMark = "Orb";
+            if (String.Equals(OverlaySize, "Mini", StringComparison.OrdinalIgnoreCase))
+                OverlaySize = "Mini";
+            else
+                OverlaySize = "Normal";
             if (String.IsNullOrWhiteSpace(AppAppearance) ||
                 (!String.Equals(AppAppearance, "Dark", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(AppAppearance, "Light", StringComparison.OrdinalIgnoreCase) &&
@@ -202,6 +208,11 @@ namespace Flowtype
         public float EffectiveMicGain
         {
             get { return MicBoostEnabled ? MicGain : 1f; }
+        }
+
+        public static float OverlayScaleFromSize(string overlaySize)
+        {
+            return String.Equals(overlaySize, "Mini", StringComparison.OrdinalIgnoreCase) ? 0.8f : 1f;
         }
     }
 
@@ -2627,6 +2638,11 @@ namespace Flowtype
             return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
         }
 
+        public static bool IsVirtualKeyDown(int virtualKey)
+        {
+            return Down(virtualKey);
+        }
+
         private static bool WinDown()
         {
             return Down(0x5B) || Down(0x5C);
@@ -2664,6 +2680,29 @@ namespace Flowtype
         public static bool IsWinCtrlDown()
         {
             return IsHotkeyDown("Win + Ctrl");
+        }
+
+        // Wispr Flow's Windows paste-last chord. Shift+Alt+Z, no Win/Ctrl, so it
+        // cannot collide with Flowtype's Win+Ctrl dictation or Win+Alt agent.
+        public static bool MatchesPasteLastChord(uint vkCode, bool down, bool shift, bool alt, bool win, bool control)
+        {
+            return down && vkCode == 0x5A && shift && alt && !win && !control;
+        }
+
+        public static bool IsPasteLastDown(uint vkCode, bool down)
+        {
+            return MatchesPasteLastChord(vkCode, down, ShiftDown(), AltDown(), WinDown(), ControlDown());
+        }
+
+        // Wispr Flow's Windows copy-last chord.
+        public static bool MatchesCopyLastChord(uint vkCode, bool down, bool shift, bool alt, bool win, bool control)
+        {
+            return down && vkCode == 0x58 && shift && alt && !win && !control;
+        }
+
+        public static bool IsCopyLastDown(uint vkCode, bool down)
+        {
+            return MatchesCopyLastChord(vkCode, down, ShiftDown(), AltDown(), WinDown(), ControlDown());
         }
     }
 
@@ -2967,6 +3006,9 @@ namespace Flowtype
         private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
 
         [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int index);
+
+        [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
         [DllImport("user32.dll", SetLastError = true)]
@@ -3093,6 +3135,42 @@ namespace Flowtype
             return false;
         }
 
+        public const string PasteLastChord = "Shift + Alt + Z";
+        public const string CopyLastChord = "Shift + Alt + X";
+        public const int ClipboardRestoreMs = 200;
+        public const int TerminalClipboardRestoreMs = 550;
+
+        // Left/Right Shift, Ctrl, Alt, Win, plus the generic VK_SHIFT/CONTROL/MENU.
+        // OpenWhispr #450: a still-down PTT modifier contaminates the paste chord
+        // (terminals type a literal "v"). Release these immediately before Ctrl+V.
+        public static readonly int[] PasteModifierVirtualKeys = new int[]
+        {
+            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C, 0x10, 0x11, 0x12
+        };
+
+        public static bool StyleLooksLikePassword(int style)
+        {
+            const int EsPassword = 0x0020;
+            return (style & EsPassword) != 0;
+        }
+
+        public static bool LooksLikePasswordField(ForegroundInfo field)
+        {
+            if (field == null) return false;
+            IntPtr hwnd = field.FocusHandle != IntPtr.Zero ? field.FocusHandle : field.Handle;
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
+            try
+            {
+                if (StyleLooksLikePassword(GetWindowLong(hwnd, -16))) return true;
+                int passwordChar;
+                if (TrySendMessageTimeout(hwnd, 0x00D2, IntPtr.Zero, IntPtr.Zero, out passwordChar)
+                    && passwordChar != 0)
+                    return true;
+            }
+            catch { }
+            return false;
+        }
+
         public static bool LooksUnpasteableClass(string className)
         {
             string name = (className ?? "").Trim();
@@ -3186,6 +3264,7 @@ namespace Flowtype
             if (field.Handle == IntPtr.Zero) return true;
             if (!IsWindow(field.Handle)) return true;
             if (LooksUnpasteableClass(WindowClass(field.Handle))) return true;
+            if (LooksLikePasswordField(field)) return true;
             return IsGuiBlocked(field.Handle);
         }
 
@@ -3370,6 +3449,12 @@ namespace Flowtype
             clipboardRemembered = false;
         }
 
+        public static void ResetPasteDebounce()
+        {
+            lastPastePayload = "";
+            lastPasteUtc = DateTime.MinValue;
+        }
+
         public static void RestoreRememberedClipboard(string dictationPayload)
         {
             try
@@ -3393,11 +3478,17 @@ namespace Flowtype
 
         public static void ScheduleClipboardRestore(string dictationPayload)
         {
+            ScheduleClipboardRestore(dictationPayload, ClipboardRestoreMs);
+        }
+
+        public static void ScheduleClipboardRestore(string dictationPayload, int delayMs)
+        {
             string payload = dictationPayload;
             Control marshal = clipboardMarshal;
+            int wait = delayMs < 80 ? 80 : delayMs;
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Thread.Sleep(550);
+                Thread.Sleep(wait);
                 Action restore = delegate { RestoreRememberedClipboard(payload); };
                 try
                 {
@@ -3678,7 +3769,7 @@ namespace Flowtype
             if (keepOnClipboard)
                 ForgetClipboard();
             else
-                ScheduleClipboardRestore(payload);
+                ScheduleClipboardRestore(payload, shiftPaste ? TerminalClipboardRestoreMs : ClipboardRestoreMs);
             lastPastePayload = payload;
             lastPasteUtc = DateTime.UtcNow;
             NoteSuccessfulInsert(field, payload);
@@ -3691,9 +3782,21 @@ namespace Flowtype
             return IsCursorFamily(field) && FocusedPaneLooksLikeTerminal();
         }
 
+        public static void ReleaseHeldModifiers()
+        {
+            List<INPUT> ups = new List<INPUT>();
+            foreach (int vk in PasteModifierVirtualKeys)
+            {
+                if (NativeKeyState.IsVirtualKeyDown(vk))
+                    ups.Add(KeyEvent((byte)vk, false, vk == 0x5B || vk == 0x5C || vk == 0xA4 || vk == 0xA5));
+            }
+            if (ups.Count > 0) SendKeyEvents(ups.ToArray());
+        }
+
         private static void SendPasteChord(bool shiftPaste)
         {
             // One SendInput batch is more reliable than keybd_event under focus races.
+            ReleaseHeldModifiers();
             if (shiftPaste)
             {
                 SendKeyEvents(
@@ -3996,6 +4099,8 @@ namespace Flowtype
         public bool CaptureEscape { get; set; }
         public event Action<bool> HotkeyChanged;
         public event Action CancelPressed;
+        public event Action PasteLastPressed;
+        public event Action CopyLastPressed;
 
         public GlobalKeyHook(string hotkey)
         {
@@ -4042,6 +4147,24 @@ namespace Flowtype
                         Action handler = CancelPressed;
                         if (handler != null) handler();
                         return (IntPtr)1;
+                    }
+                    if (!injected && down && NativeKeyState.IsPasteLastDown(data.vkCode, down))
+                    {
+                        Action pasteLast = PasteLastPressed;
+                        if (pasteLast != null)
+                        {
+                            pasteLast();
+                            return (IntPtr)1;
+                        }
+                    }
+                    if (!injected && down && NativeKeyState.IsCopyLastDown(data.vkCode, down))
+                    {
+                        Action copyLast = CopyLastPressed;
+                        if (copyLast != null)
+                        {
+                            copyLast();
+                            return (IntPtr)1;
+                        }
                     }
                 }
                 catch
@@ -4222,6 +4345,16 @@ namespace Flowtype
         // updating in quarter-second jumps.
         private const int BufferSize = 2048;
         private const int PrerollMs = 400;
+        // Extra capture after key-up so the last syllable can finish landing in the file.
+        // TrimSilence then keeps 160ms after the last speech; PadClippedCoda adds 60ms
+        // more only if that tail is still loud.
+        public const int HangoverMs = 450;
+
+        public static bool ShouldAnnounceCapture(bool alreadyAnnounced, bool takeActive, int bytesRecorded)
+        {
+            return takeActive && !alreadyAnnounced && bytesRecorded > 0;
+        }
+
         private readonly object gate = new object();
         private readonly List<Buffer> buffers = new List<Buffer>();
         private readonly PcmRing preroll = new PcmRing(SampleRate * 2 * PrerollMs / 1000);
@@ -4240,9 +4373,11 @@ namespace Flowtype
         private volatile bool keepWarm = true;
         private int drainReturns;
         private int drainTarget;
+        private int captureAnnounced;
         private bool deviceOpen;
         public float MicGain { get; set; }
         public event Action<AudioMeterReading> LevelChanged;
+        public event Action CaptureStarted;
 
         public sealed class AudioMeterReading
         {
@@ -4306,6 +4441,7 @@ namespace Flowtype
                     }
                     writingFile = true;
                     takeActive = true;
+                    captureAnnounced = 0;
                 }
                 try
                 {
@@ -4394,6 +4530,16 @@ namespace Flowtype
                         {
                             try { levelHandler(reading); }
                             catch { }
+                        }
+                        if (ShouldAnnounceCapture(captureAnnounced != 0, true, data.Length)
+                            && Interlocked.CompareExchange(ref captureAnnounced, 1, 0) == 0)
+                        {
+                            Action started = CaptureStarted;
+                            if (started != null)
+                            {
+                                try { started(); }
+                                catch { }
+                            }
                         }
                     }
                 }
@@ -4490,58 +4636,131 @@ namespace Flowtype
             return trimmed;
         }
 
+        public static byte[] PadClippedCoda(byte[] pcm, int sampleRate, int padMs)
+        {
+            if (pcm == null || pcm.Length < 4 || sampleRate <= 0 || padMs <= 0) return pcm ?? new byte[0];
+            int samples = pcm.Length / 2;
+            int tail = Math.Max(1, sampleRate * 25 / 1000);
+            int from = Math.Max(0, samples - tail);
+            int peak = 1;
+            for (int index = from; index < samples; index++)
+            {
+                int sample = AbsPcmSample((short)(pcm[index * 2] | (pcm[index * 2 + 1] << 8)));
+                if (sample > peak) peak = sample;
+            }
+            if (peak < 800) return pcm;
+            int padBytes = sampleRate * 2 * padMs / 1000;
+            byte[] padded = new byte[pcm.Length + padBytes];
+            System.Buffer.BlockCopy(pcm, 0, padded, 0, pcm.Length);
+            return padded;
+        }
+
         public sealed class SpeechRegion
         {
             public int StartSample;
             public int EndSample;
         }
 
+        public static bool ShouldSplitTake(long recordMs, int regionCount)
+        {
+            return recordMs >= 20000 && regionCount >= 2 && regionCount <= 10;
+        }
+
         public static List<SpeechRegion> FindSpeechRegions(byte[] pcm, int sampleRate, int minGapMs, int minRegionMs)
+        {
+            return FindSpeechRegions(pcm, sampleRate, minGapMs, minRegionMs, 25000);
+        }
+
+        public static List<SpeechRegion> FindSpeechRegions(byte[] pcm, int sampleRate, int minGapMs, int minRegionMs, int maxRegionMs)
         {
             List<SpeechRegion> regions = new List<SpeechRegion>();
             if (pcm == null || pcm.Length < 4 || sampleRate <= 0) return regions;
             int samples = pcm.Length / 2;
-            int peak = 1;
-            for (int index = 0; index < samples; index++)
-            {
-                int sample = AbsPcmSample((short)(pcm[index * 2] | (pcm[index * 2 + 1] << 8)));
-                if (sample > peak) peak = sample;
-            }
-            int speechFloor = Math.Max(350, peak / 20);
-            int minGap = Math.Max(1, (int)Math.Round(sampleRate * (minGapMs / 1000.0)));
+            int frameSamples = Math.Max(1, sampleRate * 30 / 1000);
             int minRegion = Math.Max(1, (int)Math.Round(sampleRate * (minRegionMs / 1000.0)));
+            int frameCount = (samples + frameSamples - 1) / frameSamples;
+            double noise = 0.002;
+            const double thresholdMult = 3.5;
+            const double floorMin = 0.004;
+            bool inSpeech = false;
+            int loudRun = 0;
+            int silenceMs = 0;
             int runStart = -1;
             int lastSpeech = -1;
-            for (int index = 0; index < samples; index++)
+            for (int frame = 0; frame < frameCount; frame++)
             {
-                int sample = AbsPcmSample((short)(pcm[index * 2] | (pcm[index * 2 + 1] << 8)));
-                if (sample >= speechFloor)
+                int frameStart = frame * frameSamples;
+                int frameEnd = Math.Min(samples, frameStart + frameSamples);
+                double sum = 0;
+                int count = Math.Max(1, frameEnd - frameStart);
+                for (int index = frameStart; index < frameEnd; index++)
                 {
-                    if (runStart < 0) runStart = index;
-                    lastSpeech = index;
+                    double sample = ((short)(pcm[index * 2] | (pcm[index * 2 + 1] << 8))) / 32768.0;
+                    sum += sample * sample;
+                }
+                double rms = Math.Sqrt(sum / count) + 1e-9;
+                if (!inSpeech) noise = rms > noise ? noise * 0.98 + rms * 0.02 : noise * 0.9 + rms * 0.1;
+                bool loud = rms > Math.Max(floorMin, noise * thresholdMult);
+                int frameLast = frameEnd - 1;
+                if (!inSpeech)
+                {
+                    loudRun = loud ? loudRun + 1 : 0;
+                    if (loudRun >= 3)
+                    {
+                        inSpeech = true;
+                        runStart = Math.Max(0, (frame - 2) * frameSamples);
+                        lastSpeech = frameLast;
+                        silenceMs = 0;
+                    }
                     continue;
                 }
-                if (runStart >= 0 && lastSpeech >= 0 && (index - lastSpeech) >= minGap)
+                if (loud)
                 {
-                    if (lastSpeech - runStart + 1 >= minRegion)
-                    {
-                        SpeechRegion region = new SpeechRegion();
-                        region.StartSample = runStart;
-                        region.EndSample = lastSpeech;
-                        regions.Add(region);
-                    }
-                    runStart = -1;
-                    lastSpeech = -1;
+                    lastSpeech = frameLast;
+                    silenceMs = 0;
                 }
+                else silenceMs += 1000 * (frameEnd - frameStart) / sampleRate;
+                if (silenceMs < minGapMs) continue;
+                if (lastSpeech >= runStart && lastSpeech - runStart + 1 >= minRegion)
+                    regions.Add(MakeRegion(runStart, lastSpeech));
+                inSpeech = false;
+                loudRun = 0;
+                runStart = -1;
+                lastSpeech = -1;
+                silenceMs = 0;
             }
-            if (runStart >= 0 && lastSpeech >= runStart && lastSpeech - runStart + 1 >= minRegion)
+            if (inSpeech && lastSpeech >= runStart && lastSpeech - runStart + 1 >= minRegion)
+                regions.Add(MakeRegion(runStart, lastSpeech));
+            return CapRegionLength(regions, sampleRate, maxRegionMs, minRegion);
+        }
+
+        private static SpeechRegion MakeRegion(int startSample, int endSample)
+        {
+            SpeechRegion region = new SpeechRegion();
+            region.StartSample = startSample;
+            region.EndSample = endSample;
+            return region;
+        }
+
+        private static List<SpeechRegion> CapRegionLength(List<SpeechRegion> regions, int sampleRate, int maxRegionMs, int minRegion)
+        {
+            if (regions == null || regions.Count == 0 || maxRegionMs <= 0) return regions ?? new List<SpeechRegion>();
+            int maxSamples = Math.Max(minRegion, (int)Math.Round(sampleRate * (maxRegionMs / 1000.0)));
+            List<SpeechRegion> capped = new List<SpeechRegion>();
+            for (int index = 0; index < regions.Count; index++)
             {
-                SpeechRegion region = new SpeechRegion();
-                region.StartSample = runStart;
-                region.EndSample = lastSpeech;
-                regions.Add(region);
+                SpeechRegion region = regions[index];
+                if (region == null) continue;
+                int cursor = region.StartSample;
+                while (region.EndSample - cursor + 1 > maxSamples)
+                {
+                    capped.Add(MakeRegion(cursor, cursor + maxSamples - 1));
+                    cursor += maxSamples;
+                }
+                if (region.EndSample - cursor + 1 >= minRegion)
+                    capped.Add(MakeRegion(cursor, region.EndSample));
             }
-            return regions;
+            return capped;
         }
 
         public static byte[] ExtractRegion(byte[] pcm, SpeechRegion region, int sampleRate, int padMs)
@@ -4721,6 +4940,7 @@ namespace Flowtype
         {
             byte[] pcm = File.ReadAllBytes(pcmPath);
             pcm = TrimSilence(pcm, SampleRate, 160);
+            pcm = PadClippedCoda(pcm, SampleRate, 60);
             if (pcm.Length >= 2)
             {
                 int peak = 1;
@@ -5004,6 +5224,7 @@ namespace Flowtype
             // Whisper fills hold-to-talk silence with YouTube outros. A real "thank you" is
             // a short clip; several seconds of audio that decode to only thanks is silence.
             if (recordMs >= 4000 && IsStandaloneThanksPhrase(text)) return true;
+            if (recordMs >= 1200 && IsStandaloneNoiseMarker(text)) return true;
 
             return false;
         }
@@ -5011,9 +5232,29 @@ namespace Flowtype
         public static bool IsStandaloneThanksPhrase(string text)
         {
             if (String.IsNullOrWhiteSpace(text)) return false;
-            string core = Regex.Replace(text.Trim(), @"[.!?""']+$", "").Trim();
+            string core = NormalizeHallucinationCore(text);
             if (Regex.IsMatch(core, @"^(?:thank you|thanks)$", RegexOptions.IgnoreCase)) return true;
             return Regex.IsMatch(core, @"^(?:thank you|thanks)\s+for\s+(?:watching|listening|tuning in)$", RegexOptions.IgnoreCase);
+        }
+
+        public static bool IsStandaloneNoiseMarker(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return false;
+            string raw = text.Trim();
+            if (raw.Length > 0 && raw[0] == '♪') return true;
+            string core = NormalizeHallucinationCore(text);
+            if (core.Length == 0) return false;
+            return Regex.IsMatch(core,
+                @"^(?:blank audio|silence|no speech(?: detected)?)$",
+                RegexOptions.IgnoreCase);
+        }
+
+        private static string NormalizeHallucinationCore(string text)
+        {
+            string core = Regex.Replace((text ?? "").Trim(), @"[.!?""']+$", "").Trim();
+            core = core.Replace('_', ' ').Replace('-', ' ');
+            core = Regex.Replace(core, @"[\[\]\(\)]+", "");
+            return Regex.Replace(core, @"\s+", " ").Trim();
         }
 
         public static bool IsLikelyEmbeddedHallucination(string segmentText, double durationSeconds, double gapBeforeSeconds, double gapAfterSeconds)
@@ -5537,6 +5778,20 @@ namespace Flowtype
 
     public static class TextProcessor
     {
+        public static string JoinTranscriptChunks(IEnumerable<string> parts)
+        {
+            if (parts == null) return "";
+            StringBuilder text = new StringBuilder();
+            foreach (string part in parts)
+            {
+                string piece = (part ?? "").Trim();
+                if (piece.Length == 0) continue;
+                if (text.Length > 0) text.Append(' ');
+                text.Append(piece);
+            }
+            return text.ToString();
+        }
+
         public static string Clean(SpeechTranscript transcript, AppSettings settings, ForegroundInfo context)
         {
             if (transcript == null) return "";
@@ -5640,6 +5895,7 @@ namespace Flowtype
             string cleaned = RemoveExactDuplicateBlocks(text.Trim());
             cleaned = RemoveWhisperRepetitions(cleaned);
             if (TranscriptionQuality.IsStandaloneThanksPhrase(cleaned)) return "";
+            if (TranscriptionQuality.IsStandaloneNoiseMarker(cleaned)) return "";
             return cleaned.Trim();
         }
 
@@ -5667,7 +5923,7 @@ namespace Flowtype
             {
                 text = Regex.Replace(text, @"\b(?:um+|uh+|erm+|hmm+)\b[,.]?\s*", "", RegexOptions.IgnoreCase);
                 if (!keepDiscourse)
-                    text = Regex.Replace(text, @"(^|[,.!?]\s+)\s*(?:you know|I mean)\s*[,—-]?\s*", "$1", RegexOptions.IgnoreCase);
+                    text = Regex.Replace(text, @"(^|[,.!?]\s+)\s*(?:you know|I mean)\b\s*[,—-]?\s*", "$1", RegexOptions.IgnoreCase);
                 if (String.Equals(settings.Style, "Concise", StringComparison.OrdinalIgnoreCase))
                     text = Regex.Replace(text, @"\b(?:basically|literally|kind of|sort of)\b[,.]?\s*", "", RegexOptions.IgnoreCase);
                 if (!keepDiscourse)
@@ -5677,7 +5933,7 @@ namespace Flowtype
             if (!keepDiscourse) text = RemoveRepeatedPhrases(text);
             text = RemoveWhisperRepetitions(text);
             text = Regex.Replace(text,
-                @"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*,?\s*(?:no|sorry|actually|I mean)\s*,?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\b",
+                @"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*,?\s*(?:no|sorry|actually|I mean)\b\s*,?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\b",
                 "$2", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\b(?:new paragraph|start (?:a )?new paragraph|skip (?:a )?line)\b", "\n\n", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\b(?:new line|next line|line break)\b", "\n", RegexOptions.IgnoreCase);
@@ -5711,6 +5967,10 @@ namespace Flowtype
             text = Regex.Replace(text, @"\s+(?:equals sign|equal sign)\b", "=", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+open (?:parenthesis|paren)\s*", " (", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+close (?:parenthesis|paren)\b", ")", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+open (?:square )?bracket\s*", " [", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+close (?:square )?bracket\b", "]", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+open brace\s*", " {", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"\s+close brace\b", "}", RegexOptions.IgnoreCase);
             // Emails, URLs, filenames, and abbreviations ("user@example.com",
             // "github.com", "flowtype.cs", "e.g.") must not be split or re-capitalized by
             // the sentence-spacing passes below.
@@ -6305,10 +6565,10 @@ namespace Flowtype
         {
             string valuePattern = @"(?:\d{1,4}(?::\d{2})?(?:\s*(?:a\.?m\.?|p\.?m\.?))?|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|today|tomorrow|morning|afternoon|evening)";
             text = Regex.Replace(text,
-                @"\b(?<old>" + valuePattern + @")\s*(?:[,….—-]+\s*)?(?:no|sorry|actually|I mean|scratch that)\s*[,.:—-]?\s*(?<new>" + valuePattern + @")\b",
+                @"\b(?<old>" + valuePattern + @")\s*(?:[,….—-]+\s*)?(?:no|sorry|actually|I mean|scratch that)\b\s*[,.:—-]?\s*(?<new>" + valuePattern + @")\b",
                 "${new}", RegexOptions.IgnoreCase);
             text = Regex.Replace(text,
-                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*(?:sorry|I mean|scratch that)\s*[,.:—-]?\s*(?<new>[A-Za-z][A-Za-z'-]{1,})\b",
+                @"\b(?<old>[A-Za-z][A-Za-z'-]*)\s*[,….—-]+\s*(?:sorry|I mean|scratch that)\b\s*[,.:—-]?\s*(?<new>[A-Za-z][A-Za-z'-]{1,})\b",
                 "${new}", RegexOptions.IgnoreCase);
             // Corrective "no" needs punctuation on BOTH sides ("Tuesday, no, Wednesday") —
             // existential "no" ("the door, no answer") has none after and must survive.
@@ -6350,6 +6610,7 @@ namespace Flowtype
             text = Regex.Replace(text, @"[\s\-–—,]*\b(?:Target window|Outro to)\b.*$", "", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"[\s,]*(?:Camp\.\d|P\.\$[%&$#@]*).*$", "", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "");
+            text = Regex.Replace(text, @"[.!?]\s+(?:blank audio|no speech(?: detected)?)[.!?]*\s*$", ".", RegexOptions.IgnoreCase);
             return StripThanksHallucinations(RemoveEmbeddedGlitches(text.Trim()));
         }
 
@@ -6720,6 +6981,7 @@ namespace Flowtype
             if (!formal && text.EndsWith(".", StringComparison.Ordinal) && !text.Contains("\n") &&
                 ((messaging && sentenceCount <= 2) || (casual && sentenceCount <= 10)))
                 text = text.Substring(0, text.Length - 1);
+            if (messaging) text = text.TrimEnd('，', '。');
             return text;
         }
 
@@ -8055,6 +8317,7 @@ namespace Flowtype
         private const int CaptionOverlayWidth = 540;
         private string theme = "Dark";
         private string mark = "Orb";
+        private float overlayScale = 1f;
         private Bitmap glassBackdrop;
         private Point glassBackdropOffset;
         private bool pendingGlassRecapture;
@@ -8078,6 +8341,26 @@ namespace Flowtype
         public void SetMark(string value)
         {
             mark = String.IsNullOrWhiteSpace(value) ? "Orb" : value.Trim();
+        }
+
+        public void SetSize(string overlaySize)
+        {
+            overlayScale = AppSettings.OverlayScaleFromSize(overlaySize);
+        }
+
+        private int Scaled(int logical)
+        {
+            return Math.Max(1, (int)Math.Round(logical * overlayScale));
+        }
+
+        private float LogicalWidth
+        {
+            get { return overlayScale <= 0.01f ? Width : Width / overlayScale; }
+        }
+
+        private float LogicalHeight
+        {
+            get { return overlayScale <= 0.01f ? Height : Height / overlayScale; }
         }
 
         public RecordingOverlay()
@@ -8166,16 +8449,17 @@ namespace Flowtype
             return path;
         }
 
-        public void ShowRecording(string hotkey, string overlayTheme, string overlayMark)
+        public void ShowRecording(string hotkey, string overlayTheme, string overlayMark, string overlaySize)
         {
             overlaySession++;
             SetTheme(overlayTheme);
             SetMark(overlayMark);
+            SetSize(overlaySize);
             processingMode = false;
             processingPreview = "";
             liveCaption = "";
-            Width = CompactOverlayWidth;
-            Height = CompactOverlayHeight;
+            Width = Scaled(CompactOverlayWidth);
+            Height = Scaled(CompactOverlayHeight);
             level = 0;
             Array.Clear(bands, 0, bands.Length);
             animationTick = 0;
@@ -8195,12 +8479,16 @@ namespace Flowtype
             RenderLayered();
         }
 
+        public static bool ShouldKeepProcessingMark(bool agentTake)
+        {
+            return !agentTake;
+        }
+
         public void ShowProcessing()
         {
             overlaySession++;
             processingMode = true;
             processingPreview = "";
-            ApplyOverlayLayout();
             elapsed.Reset();
             maxRaised = false;
             exiting = false;
@@ -8219,6 +8507,8 @@ namespace Flowtype
             }
             else if (revealProgress >= 1f)
                 revealProgress = 1f;
+            // Keep the current layout (including a frozen live caption). Resizing here
+            // recaptures glass and is what used to flash the pill on release.
             RenderLayered();
         }
 
@@ -8276,15 +8566,15 @@ namespace Flowtype
 
         private void ApplyOverlayLayout()
         {
-            int wantWidth = CompactOverlayWidth;
-            int wantHeight = CompactOverlayHeight;
+            int wantWidth = Scaled(CompactOverlayWidth);
+            int wantHeight = Scaled(CompactOverlayHeight);
             if (HasLiveCaption())
             {
-                wantWidth = CaptionOverlayWidth;
-                wantHeight = CompactOverlayHeight + MeasureCaptionCardHeight() + 8;
+                wantWidth = Scaled(CaptionOverlayWidth);
+                wantHeight = Scaled(CompactOverlayHeight + MeasureCaptionCardHeight() + 8);
             }
             else if (processingMode && processingPreview.Trim().Length > 0)
-                wantWidth = StreamOverlayWidth;
+                wantWidth = Scaled(StreamOverlayWidth);
             if (Width != wantWidth || Height != wantHeight)
             {
                 Width = wantWidth;
@@ -8299,19 +8589,24 @@ namespace Flowtype
             RenderLayered();
         }
 
+        public static bool ShouldBeginHide(bool visible, bool alreadyExiting)
+        {
+            return visible && !alreadyExiting;
+        }
+
         public void ShowResult(bool pasted) { HideNow(); }
 
         public void ShowFailure(string message) { HideNow(); }
 
         public void HideNow()
         {
+            if (!ShouldBeginHide(Visible, exiting)) return;
             elapsed.Reset();
             maxRaised = false;
             pendingHideSession = overlaySession;
             exiting = true;
             revealClock.Restart();
             timer.Start();
-            if (!Visible) Visible = true;
             RenderLayered();
         }
 
@@ -8368,8 +8663,8 @@ namespace Flowtype
             processingMode = false;
             processingPreview = "";
             liveCaption = "";
-            Width = CompactOverlayWidth;
-            Height = CompactOverlayHeight;
+            Width = Scaled(CompactOverlayWidth);
+            Height = Scaled(CompactOverlayHeight);
             revealProgress = 1f;
             Hide();
         }
@@ -8379,8 +8674,8 @@ namespace Flowtype
             bool ticker = processingMode && processingPreview.Trim().Length > 0 && !HasLiveCaption();
             float capsuleWidth = ticker ? 286f : 104f;
             const float capsuleHeight = 26f;
-            float x = (Width - capsuleWidth) / 2f;
-            float y = Height - CompactOverlayHeight + (CompactOverlayHeight - capsuleHeight) / 2f;
+            float x = (LogicalWidth - capsuleWidth) / 2f;
+            float y = LogicalHeight - CompactOverlayHeight + (CompactOverlayHeight - capsuleHeight) / 2f;
             return new RectangleF(
                 (float)Math.Floor(x) + 0.5f,
                 (float)Math.Floor(y) + 0.5f,
@@ -8412,10 +8707,11 @@ namespace Flowtype
 
                 RectangleF capsule = GetCapsuleBounds();
                 const int pad = 10;
-                int screenX = Left + (int)Math.Floor(capsule.X) - pad;
-                int screenY = Top + (int)Math.Floor(capsule.Y) - pad;
-                int captureWidth = (int)Math.Ceiling(capsule.Width) + pad * 2;
-                int captureHeight = (int)Math.Ceiling(capsule.Height) + pad * 2;
+                float scale = overlayScale <= 0.01f ? 1f : overlayScale;
+                int screenX = Left + (int)Math.Floor(capsule.X * scale) - pad;
+                int screenY = Top + (int)Math.Floor(capsule.Y * scale) - pad;
+                int captureWidth = (int)Math.Ceiling(capsule.Width * scale) + pad * 2;
+                int captureHeight = (int)Math.Ceiling(capsule.Height * scale) + pad * 2;
                 if (captureWidth < 2 || captureHeight < 2) return;
 
                 // Park the layered window off-screen and clear it so CopyFromScreen cannot
@@ -8616,6 +8912,8 @@ namespace Flowtype
                 graphics.CompositingQuality = CompositingQuality.HighQuality;
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                if (overlayScale > 0.01f && overlayScale != 1f)
+                    graphics.ScaleTransform(overlayScale, overlayScale);
 
                 float slideY = (1f - revealProgress) * (exiting ? 4f : 5f);
                 graphics.TranslateTransform(0f, slideY);
@@ -8652,36 +8950,28 @@ namespace Flowtype
         {
             float cx = capsule.X + 12.2f;
             float cy = capsule.Y + capsule.Height / 2f;
-            Color ink = GetChromeInk();
-            if (processingMode)
-            {
-                if (String.Equals(mark, "Grid", StringComparison.OrdinalIgnoreCase))
-                {
-                    DrawLiveGrid(graphics, cx, cy, true);
-                    return;
-                }
-                using (Pen track = new Pen(Color.FromArgb(IsGlassTheme() ? 64 : 42, ink), 1f))
-                    graphics.DrawEllipse(track, cx - 5.4f, cy - 5.4f, 10.8f, 10.8f);
-                float start = (animationTick * 13f) % 360f;
-                using (Pen arc = new Pen(GetBarColor(0.92f), 1.55f))
-                {
-                    arc.StartCap = LineCap.Round;
-                    arc.EndCap = LineCap.Round;
-                    graphics.DrawArc(arc, cx - 5.4f, cy - 5.4f, 10.8f, 10.8f, start, 108f);
-                }
-                using (SolidBrush core = new SolidBrush(GetBarColor(0.7f)))
-                    graphics.FillEllipse(core, cx - 1.2f, cy - 1.2f, 2.4f, 2.4f);
-                return;
-            }
-
             if (String.Equals(mark, "Hex", StringComparison.OrdinalIgnoreCase))
-                DrawLiveHex(graphics, cx, cy);
+                DrawLiveHex(graphics, cx, cy, processingMode);
             else if (String.Equals(mark, "Iris", StringComparison.OrdinalIgnoreCase))
-                DrawLiveIris(graphics, cx, cy);
+                DrawLiveIris(graphics, cx, cy, processingMode);
             else if (String.Equals(mark, "Grid", StringComparison.OrdinalIgnoreCase))
-                DrawLiveGrid(graphics, cx, cy, false);
+                DrawLiveGrid(graphics, cx, cy, processingMode);
             else
-                DrawLiveOrb(graphics, cx, cy);
+                DrawLiveOrb(graphics, cx, cy, processingMode);
+        }
+
+        private void DrawMarkSweep(Graphics graphics, float cx, float cy, float radius)
+        {
+            Color ink = GetChromeInk();
+            using (Pen track = new Pen(Color.FromArgb(IsGlassTheme() ? 64 : 42, ink), 1f))
+                graphics.DrawEllipse(track, cx - radius, cy - radius, radius * 2f, radius * 2f);
+            float start = (animationTick * 13f) % 360f;
+            using (Pen arc = new Pen(GetBarColor(0.92f), 1.55f))
+            {
+                arc.StartCap = LineCap.Round;
+                arc.EndCap = LineCap.Round;
+                graphics.DrawArc(arc, cx - radius, cy - radius, radius * 2f, radius * 2f, start, 108f);
+            }
         }
 
         private void DrawLiveGrid(Graphics graphics, float cx, float cy, bool processing)
@@ -8721,26 +9011,38 @@ namespace Flowtype
             }
         }
 
-        private void DrawLiveHex(Graphics graphics, float cx, float cy)
+        private void DrawLiveHex(Graphics graphics, float cx, float cy, bool processing)
         {
             float live = Math.Max(0f, Math.Min(1f, level));
-            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * 0.085);
-            float pulse = 0.28f + 0.42f * live + 0.22f * breathe * (0.4f + 0.6f * live);
+            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * (processing ? 0.16 : 0.085));
+            float pulse = processing
+                ? 0.42f + 0.38f * breathe
+                : 0.28f + 0.42f * live + 0.22f * breathe * (0.4f + 0.6f * live);
             DrawLiveDot(graphics, cx, cy, 1.65f, Math.Min(1f, pulse + 0.12f));
+            float chase = processing ? ((animationTick * 0.085f) % 6f) : 0f;
             for (int spoke = 0; spoke < 6; spoke++)
             {
                 double angle = spoke * Math.PI / 3.0 - Math.PI / 2.0;
                 float x = cx + (float)Math.Cos(angle) * 4.7f;
                 float y = cy + (float)Math.Sin(angle) * 4.7f;
-                DrawLiveDot(graphics, x, y, 1.4f, pulse * 0.92f);
+                float amount = pulse * 0.92f;
+                if (processing)
+                {
+                    float dist = Math.Abs(spoke - chase);
+                    if (dist > 3f) dist = 6f - dist;
+                    amount = 0.16f + 0.84f * Math.Max(0f, 1f - dist * 0.85f);
+                }
+                DrawLiveDot(graphics, x, y, 1.4f, amount);
             }
         }
 
-        private void DrawLiveIris(Graphics graphics, float cx, float cy)
+        private void DrawLiveIris(Graphics graphics, float cx, float cy, bool processing)
         {
-            float live = Math.Max(0f, Math.Min(1f, level));
-            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * 0.085);
-            float pulse = 0.18f + 0.62f * live + 0.16f * breathe * (0.3f + 0.7f * live);
+            float live = processing ? 0.55f : Math.Max(0f, Math.Min(1f, level));
+            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * (processing ? 0.16 : 0.085));
+            float pulse = processing
+                ? 0.38f + 0.42f * breathe
+                : 0.18f + 0.62f * live + 0.16f * breathe * (0.3f + 0.7f * live);
             Color ink = GetBarColor(Math.Min(1f, 0.55f + pulse));
             float ringR = 6.15f;
             using (Pen track = new Pen(Color.FromArgb((int)(40 + 70 * pulse), ink), 1.15f))
@@ -8759,6 +9061,7 @@ namespace Flowtype
             }
             using (SolidBrush core = new SolidBrush(Color.FromArgb((int)(220 + 35 * pulse), GetBarColor(1f))))
                 graphics.FillEllipse(core, cx - 1.15f, cy - 1.15f, 2.3f, 2.3f);
+            if (processing) DrawMarkSweep(graphics, cx, cy, 6.15f);
         }
 
         private void DrawLiveDot(Graphics graphics, float x, float y, float radius, float amount)
@@ -8770,11 +9073,13 @@ namespace Flowtype
                 graphics.FillEllipse(fill, x - radius, y - radius, radius * 2f, radius * 2f);
         }
 
-        private void DrawLiveOrb(Graphics graphics, float cx, float cy)
+        private void DrawLiveOrb(Graphics graphics, float cx, float cy, bool processing)
         {
-            float live = Math.Max(0f, Math.Min(1f, level));
-            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * 0.085);
-            float pulse = 0.22f + 0.58f * live + 0.18f * breathe * (0.35f + 0.65f * live);
+            float live = processing ? 0.48f : Math.Max(0f, Math.Min(1f, level));
+            float breathe = 0.5f + 0.5f * (float)Math.Sin(animationTick * (processing ? 0.16 : 0.085));
+            float pulse = processing
+                ? 0.40f + 0.38f * breathe
+                : 0.22f + 0.58f * live + 0.18f * breathe * (0.35f + 0.65f * live);
             Color ink = GetBarColor(Math.Min(1f, 0.5f + pulse));
             Color peak = GetBarColor(Math.Min(1f, pulse + 0.25f));
             float haloR = 7.0f + 1.6f * live;
@@ -8811,6 +9116,7 @@ namespace Flowtype
                 graphics.FillEllipse(spec, specX - 1.15f, specY - 0.9f, 2.3f, 1.8f);
             using (SolidBrush core = new SolidBrush(Color.FromArgb((int)(205 + 50 * pulse), peak)))
                 graphics.FillEllipse(core, cx - coreR, cy - coreR, coreR * 2f, coreR * 2f);
+            if (processing) DrawMarkSweep(graphics, cx, cy, 7.15f);
         }
 
         private void DrawVoiceBands(Graphics graphics, RectangleF capsule)
@@ -8870,8 +9176,8 @@ namespace Flowtype
         {
             string text = (liveCaption ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
             if (text.Length == 0) return;
-            float cardWidth = Width - 16f;
-            float cardHeight = Height - CompactOverlayHeight - 6f;
+            float cardWidth = LogicalWidth - 16f;
+            float cardHeight = LogicalHeight - CompactOverlayHeight - 6f;
             if (cardWidth < 80f || cardHeight < 36f) return;
             RectangleF card = new RectangleF(8f, 4f, cardWidth, cardHeight);
             Color top;
@@ -8967,7 +9273,14 @@ namespace Flowtype
                 graphics.SetClip(capsulePath);
 
                 if (glassBackdrop != null)
-                    graphics.DrawImage(glassBackdrop, glassBackdropOffset.X, glassBackdropOffset.Y);
+                {
+                    float scale = overlayScale <= 0.01f ? 1f : overlayScale;
+                    graphics.DrawImage(glassBackdrop, new RectangleF(
+                        glassBackdropOffset.X,
+                        glassBackdropOffset.Y,
+                        glassBackdrop.Width / scale,
+                        glassBackdrop.Height / scale));
+                }
                 else
                 {
                     using (SolidBrush fallback = new SolidBrush(Color.FromArgb(200, 236, 240, 246)))
@@ -9126,6 +9439,7 @@ namespace Flowtype
         private readonly ThemedCheckBox autoUpdateBox = new ThemedCheckBox();
         private readonly ThemedComboBox overlayThemeBox = new ThemedComboBox();
         private readonly ThemedComboBox overlayMarkBox = new ThemedComboBox();
+        private readonly ThemedComboBox overlaySizeBox = new ThemedComboBox();
         private readonly ThemedComboBox appearanceBox = new ThemedComboBox();
         private readonly TextBox dictionaryBox = new TextBox();
         private readonly TextBox snippetsBox = new TextBox();
@@ -9579,6 +9893,7 @@ namespace Flowtype
             styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
             overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Ember", "Liquid glass" });
             overlayMarkBox.Items.AddRange(new object[] { "Orb", "Hex", "Iris", "Grid" });
+            overlaySizeBox.Items.AddRange(new object[] { "Normal", "Mini" });
             cleanupProviderBox.Items.AddRange(new object[]
             {
                 "Built-in — free, offline",
@@ -9612,6 +9927,8 @@ namespace Flowtype
             speak.Check(handsFreeBox);
             speak.Note("Press the same key again (or Escape) to finish and insert.", 18);
             speak.Triple("Writing style", styleBox, "Voice capsule", overlayThemeBox, "Live mark", overlayMarkBox);
+            speak.Caption("Capsule size");
+            speak.Combo(overlaySizeBox);
             speak.Check(liveCaptionsBox);
             speak.Note("Off by default. Local engine is free. Groq or OpenAI bill their usual transcription usage for each live peek — Flowtype does not add a charge. Pasted text is still one transcribe on release.", 48);
             FinishCard(page, dictation, speak, x, y, width);
@@ -10155,6 +10472,7 @@ namespace Flowtype
             autoUpdateBox.Checked = value.AutoCheckUpdates;
             overlayThemeBox.SelectedIndex = OverlayThemeToIndex(value.OverlayTheme);
             overlayMarkBox.SelectedIndex = OverlayMarkToIndex(value.OverlayMark);
+            overlaySizeBox.SelectedIndex = OverlaySizeToIndex(value.OverlaySize);
             appearanceBox.SelectedIndexChanged -= AppearanceChanged;
             appearanceBox.SelectedIndex = AppearanceToIndex(value.AppAppearance);
             appearanceBox.SelectedIndexChanged += AppearanceChanged;
@@ -10212,6 +10530,7 @@ namespace Flowtype
             value.AutoCheckUpdates = autoUpdateBox.Checked;
             value.OverlayTheme = OverlayThemeFromIndex(overlayThemeBox.SelectedIndex);
             value.OverlayMark = OverlayMarkFromIndex(overlayMarkBox.SelectedIndex);
+            value.OverlaySize = OverlaySizeFromIndex(overlaySizeBox.SelectedIndex);
             value.AppAppearance = AppearanceFromIndex(appearanceBox.SelectedIndex);
             value.MicGain = micGainBar.Value / 10f;
             value.MicBoostEnabled = micBoostBox.Checked;
@@ -10621,6 +10940,16 @@ namespace Flowtype
             return "Orb";
         }
 
+        private static int OverlaySizeToIndex(string overlaySize)
+        {
+            return String.Equals(overlaySize, "Mini", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        }
+
+        private static string OverlaySizeFromIndex(int index)
+        {
+            return index == 1 ? "Mini" : "Normal";
+        }
+
         private static int AppearanceToIndex(string appearance)
         {
             if (String.Equals(appearance, "Light", StringComparison.OrdinalIgnoreCase)) return 1;
@@ -10726,7 +11055,9 @@ namespace Flowtype
     // to wonder which chord you are holding.
     public sealed class AgentOverlay : Form
     {
-        public enum Stage { Listening, Working, Done, Failed }
+        public enum Stage { Listening, Heard, Thinking, Done, Failed }
+        public const int MaxHoldMs = 12000;
+        public event Action MaximumHoldReached;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct NativePoint
@@ -10775,6 +11106,7 @@ namespace Flowtype
         private static readonly Color Accent = Color.FromArgb(255, 88, 214, 141);
         private static readonly Color AccentDim = Color.FromArgb(255, 46, 122, 82);
         private static readonly Color Amber = Color.FromArgb(255, 233, 179, 74);
+        private static readonly Color Think = Color.FromArgb(255, 89, 153, 255);
         private static readonly Color Danger = Color.FromArgb(255, 232, 105, 96);
         private static readonly Color Ink = Color.FromArgb(255, 226, 232, 240);
         private static readonly Color InkDim = Color.FromArgb(255, 122, 134, 154);
@@ -10798,6 +11130,7 @@ namespace Flowtype
         private long finishedMs;
         private bool isQuestion;
         private bool isNotice;
+        private bool maxHoldRaised;
         private System.Windows.Forms.Timer autoHide;
 
         private const int CompactWidth = 470;
@@ -10833,6 +11166,12 @@ namespace Flowtype
                     for (int index = bars.Length - 1; index > 0; index--) bars[index] = bars[index - 1];
                     bars[0] = level;
                     level *= 0.86f;
+                    if (!maxHoldRaised && clock.ElapsedMilliseconds >= MaxHoldMs)
+                    {
+                        maxHoldRaised = true;
+                        Action handler = MaximumHoldReached;
+                        if (handler != null) handler();
+                    }
                 }
                 Render();
             };
@@ -10872,6 +11211,19 @@ namespace Flowtype
             level = Math.Max(level, Math.Max(0f, Math.Min(1f, value)));
         }
 
+        public static string StatusWord(Stage stage)
+        {
+            switch (stage)
+            {
+                case Stage.Listening: return "listening";
+                case Stage.Heard: return "heard";
+                case Stage.Thinking: return "thinking";
+                case Stage.Done: return "done";
+                case Stage.Failed: return "failed";
+                default: return "";
+            }
+        }
+
         public void ShowListening(string chord, string endpoint)
         {
             ShowListening(chord, endpoint, "");
@@ -10888,6 +11240,7 @@ namespace Flowtype
             askLine = "";
             replyLines = new string[0];
             stage = Stage.Listening;
+            maxHoldRaised = false;
             Array.Clear(bars, 0, bars.Length);
             level = 0f;
             clock.Restart();
@@ -10898,10 +11251,24 @@ namespace Flowtype
             Render();
         }
 
-        public void ShowWorking(string ask)
+        public void ShowHeard(string transcript)
         {
             CancelAutoHide();
-            stage = Stage.Working;
+            stage = Stage.Heard;
+            message = (transcript ?? "").Trim();
+            if (message.Length > 0) askLine = message;
+            clock.Restart();
+            timer.Start();
+            SetPanelSize(CompactWidth, CompactHeight);
+            Position();
+            if (!Visible) Show();
+            Render();
+        }
+
+        public void ShowThinking(string ask)
+        {
+            CancelAutoHide();
+            stage = Stage.Thinking;
             message = (ask ?? "").Trim();
             if (message.Length > 0) askLine = message;
             clock.Restart();
@@ -10910,6 +11277,11 @@ namespace Flowtype
             Position();
             if (!Visible) Show();
             Render();
+        }
+
+        public void ShowWorking(string ask)
+        {
+            ShowThinking(ask);
         }
 
         public void ShowDone(string reply, long ms)
@@ -11105,8 +11477,9 @@ namespace Flowtype
             if (stage == Stage.Done && isQuestion) return Amber;
             if (stage == Stage.Done) return Accent;
             if (stage == Stage.Failed) return Danger;
-            if (stage == Stage.Working) return Amber;
-            return Accent;
+            if (stage == Stage.Heard) return Amber;
+            if (stage == Stage.Thinking) return Think;
+            return Danger;
         }
 
         private void Render()
@@ -11162,14 +11535,15 @@ namespace Flowtype
             float textX = promptX + 16f;
 
             if (stage == Stage.Listening) PaintListening(canvas, textX, lineY, shell);
-            else if (stage == Stage.Working) PaintWorking(canvas, textX, lineY, shell);
+            else if (stage == Stage.Heard) PaintHeard(canvas, textX, lineY, shell);
+            else if (stage == Stage.Thinking) PaintWorking(canvas, textX, lineY, shell);
             else PaintFinished(canvas, textX, lineY, shell, edge);
         }
 
         private void PaintListening(Graphics canvas, float textX, float lineY, RectangleF shell)
         {
             using (SolidBrush ink = new SolidBrush(Ink))
-                canvas.DrawString("listening", mono, ink, textX, lineY);
+                canvas.DrawString(StatusWord(Stage.Listening), mono, ink, textX, lineY);
             // Live level trace — the agent panel's own signal, not the capsule's orb.
             float baseX = textX + 96f;
             float mid = lineY + 11f;
@@ -11189,10 +11563,18 @@ namespace Flowtype
                 canvas.FillEllipse(rec, shell.Right - 26f, lineY + 6f, 9f, 9f);
         }
 
+        private void PaintHeard(Graphics canvas, float textX, float lineY, RectangleF shell)
+        {
+            using (SolidBrush hot = new SolidBrush(Amber))
+                canvas.DrawString(StatusWord(Stage.Heard), mono, hot, textX, lineY);
+            using (SolidBrush ink = new SolidBrush(Ink))
+                canvas.DrawString(Ellipsize(canvas, message, mono, shell.Width - 90f), mono, ink, textX, lineY + 26f);
+        }
+
         private void PaintWorking(Graphics canvas, float textX, float lineY, RectangleF shell)
         {
             string frame = SpinnerFrames[(tick / 2) % SpinnerFrames.Length];
-            using (SolidBrush hot = new SolidBrush(Amber))
+            using (SolidBrush hot = new SolidBrush(Think))
                 canvas.DrawString(frame, monoBold, hot, textX, lineY);
             using (SolidBrush ink = new SolidBrush(Ink))
                 canvas.DrawString(Ellipsize(canvas, message, mono, shell.Width - 130f), mono, ink, textX + 18f, lineY);
@@ -11201,16 +11583,15 @@ namespace Flowtype
             {
                 SizeF size = canvas.MeasureString(elapsed, monoSmall);
                 canvas.DrawString(elapsed, monoSmall, dim, shell.Right - 16f - size.Width, lineY + 3f);
-                canvas.DrawString("agent working", monoSmall, dim, textX, lineY + 26f);
+                canvas.DrawString(StatusWord(Stage.Thinking), monoSmall, dim, textX, lineY + 26f);
             }
-            // Progress shuttle: motion without a fake percentage.
             float trackY = lineY + 44f;
             float trackLeft = textX;
             float trackWidth = shell.Right - 16f - trackLeft;
             using (SolidBrush track = new SolidBrush(Color.FromArgb(60, 120, 140, 160)))
                 canvas.FillRectangle(track, trackLeft, trackY, trackWidth, 2f);
             float shuttle = (float)((Math.Sin(tick * 0.09) + 1.0) / 2.0) * (trackWidth - 58f);
-            using (SolidBrush hot = new SolidBrush(Amber))
+            using (SolidBrush hot = new SolidBrush(Think))
                 canvas.FillRectangle(hot, trackLeft + shuttle, trackY, 58f, 2f);
         }
 
@@ -11343,6 +11724,7 @@ namespace Flowtype
         private readonly ToolStripMenuItem toggleItem;
         private readonly ToolStripMenuItem dictionaryFixItem;
         private readonly ToolStripMenuItem copyLastItem;
+        private readonly ToolStripMenuItem pasteLastItem;
         private readonly ToolStripMenuItem undoLastItem;
         private readonly RecordingOverlay overlay;
         private readonly WaveRecorder recorder;
@@ -11379,14 +11761,13 @@ namespace Flowtype
         private System.Windows.Forms.Timer pendingStopTimer;
         private int chordReleaseStreak;
         private const int MinChordHoldMs = 45;
-        // Extra audio after key-up. DrainCallbacks now keeps the last in-flight buffers, so
-        // this grace actually lands in the file instead of being eaten on stop. Too high is
-        // lag plus Whisper "thank you" dead-air.
-        private const int ReleaseGraceMs = 150;
+        // Same window as WaveRecorder.HangoverMs — keep these coupled.
+        private const int ReleaseGraceMs = WaveRecorder.HangoverMs;
         private bool latchedRecording;
         private bool awaitingDoubleTap;
         private bool handsFreeStopPending;
         private bool notifyRecordingLimit;
+        private bool notifyAgentHoldLimit;
         private System.Windows.Forms.Timer doubleTapTimer;
         private System.Windows.Forms.Timer liveCaptionTimer;
         private int liveCaptionGeneration;
@@ -11434,6 +11815,7 @@ namespace Flowtype
             overlay = new RecordingOverlay();
             overlay.SetTheme(settings.OverlayTheme);
             overlay.SetMark(settings.OverlayMark);
+            overlay.SetSize(settings.OverlaySize);
             recorder = new WaveRecorder();
             RecordingCue.Preload();
             recorder.MicGain = settings.EffectiveMicGain;
@@ -11450,6 +11832,9 @@ namespace Flowtype
             // callback — a slow callback gets the hook silently removed by Windows and the
             // hotkey dies until restart. Defer to the UI thread like the hotkey path does.
             hook.CancelPressed += delegate { try { dispatcher.BeginInvoke(new Action(CancelRecording)); } catch { } };
+            hook.PasteLastPressed += delegate { try { dispatcher.BeginInvoke(new Action(PasteLastDictation)); } catch { } };
+            hook.CopyLastPressed += delegate { try { dispatcher.BeginInvoke(new Action(CopyLastDictation)); } catch { } };
+            recorder.CaptureStarted += OnCaptureStarted;
             if (settings.AgentModeEnabled) EnableAgentHook();
             AgentTrace.Log("startup: AgentModeEnabled=" + settings.AgentModeEnabled
                 + " hook=" + (agentHook != null ? "armed(" + settings.AgentHotkey + ")" : "null"));
@@ -11459,6 +11844,7 @@ namespace Flowtype
                 if (currentTakeIsAgent && reading != null) agentOverlay.SetLevel(reading.Boosted);
             };
             overlay.MaximumDurationReached += OnMaximumDurationReached;
+            agentOverlay.MaximumHoldReached += OnAgentHoldCap;
             chordPoller = new System.Windows.Forms.Timer();
             chordPoller.Interval = 20;
             chordPoller.Tick += delegate
@@ -11513,6 +11899,9 @@ namespace Flowtype
             activationPoller.Start();
 
             ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Font = AppFonts.Ui(9.25f, FontStyle.Regular);
+            menu.ShowImageMargin = true;
+            UiTheme.Paint(menu);
             statusItem = new ToolStripMenuItem("Ready — hold " + settings.Hotkey);
             statusItem.Enabled = false;
             toggleItem = new ToolStripMenuItem("Start dictating");
@@ -11525,12 +11914,17 @@ namespace Flowtype
             settingsItem.Click += delegate { ShowSettings(); };
             ToolStripMenuItem historyItem = new ToolStripMenuItem("History…");
             historyItem.Click += delegate { ShowHistory(); };
-            dictionaryFixItem = new ToolStripMenuItem("Add last word to dictionary…");
+            dictionaryFixItem = new ToolStripMenuItem("Fix last word in dictionary…");
             dictionaryFixItem.Enabled = false;
             dictionaryFixItem.Click += delegate { AddLastWordToDictionary(); };
             copyLastItem = new ToolStripMenuItem("Copy last dictation");
+            copyLastItem.ShortcutKeyDisplayString = "Shift+Alt+X";
             copyLastItem.Enabled = false;
             copyLastItem.Click += delegate { CopyLastDictation(); };
+            pasteLastItem = new ToolStripMenuItem("Paste last dictation");
+            pasteLastItem.ShortcutKeyDisplayString = "Shift+Alt+Z";
+            pasteLastItem.Enabled = false;
+            pasteLastItem.Click += delegate { PasteLastDictation(); };
             undoLastItem = new ToolStripMenuItem("Undo last dictation");
             undoLastItem.Enabled = false;
             undoLastItem.Click += delegate { UndoLastDictation(lastInsertTarget); };
@@ -11548,9 +11942,12 @@ namespace Flowtype
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(settingsItem);
             menu.Items.Add(historyItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(pasteLastItem);
             menu.Items.Add(copyLastItem);
             menu.Items.Add(undoLastItem);
             menu.Items.Add(dictionaryFixItem);
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(agentLogItem);
             menu.Items.Add(recoveryItem);
             menu.Items.Add(updateItem);
@@ -11765,6 +12162,13 @@ namespace Flowtype
             StopRecording();
         }
 
+        private void OnAgentHoldCap()
+        {
+            if (!currentTakeIsAgent || !recorder.IsRecording) return;
+            notifyAgentHoldLimit = true;
+            StopRecording();
+        }
+
         private void ReconcileAfterForegroundChange()
         {
             IntPtr foreground = ForegroundContext.Capture(false).Handle;
@@ -11805,7 +12209,7 @@ namespace Flowtype
                     handsFreeStopPending = true;
                     hotkeyDown = true;
                     CancelPendingStop();
-                    try { dispatcher.BeginInvoke(new Action(StopRecording)); } catch { }
+                    ScheduleStopRecording();
                     return;
                 }
 
@@ -12053,7 +12457,7 @@ namespace Flowtype
             string preview = ask.Length > 90 ? ask.Substring(0, 90) + "..." : ask;
             ForegroundInfo seat = agentSeat;
             agentInFlight = true;
-            try { dispatcher.BeginInvoke(new Action(delegate { agentOverlay.ShowWorking(preview); SetTrayAgentState(true); })); }
+            try { dispatcher.BeginInvoke(new Action(delegate { agentOverlay.ShowThinking(preview); SetTrayAgentState(true); })); }
             catch { }
             AgentBridge.Send(ask, endpoint, seat,
                 delegate(AgentBridge.Result result)
@@ -12247,7 +12651,7 @@ namespace Flowtype
                 latchedRecording = false;
                 awaitingDoubleTap = false;
                 CancelDoubleTapTimer();
-                StopRecording();
+                ScheduleStopRecording();
             }
             else StartRecording();
         }
@@ -12316,10 +12720,9 @@ namespace Flowtype
                 }
                 else
                 {
-                    overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark);
+                    overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark, settings.OverlaySize);
                     StartLiveCaptions();
                 }
-                if (settings.CompletionSound) RecordingCue.PlayStart();
                 UpdateRecordingStatus();
             }
             catch (Exception exception)
@@ -12346,9 +12749,12 @@ namespace Flowtype
             latchedRecording = false;
             try
             {
-                // An agent take never borrows the dictation capsule — the HUD owns its whole life.
-                if (currentTakeIsAgent) overlay.EnsureHidden();
-                else overlay.ShowProcessing();
+                // Dictation stays up so the live mark can spin while words land.
+                // Agent never borrows that capsule — the HUD owns its whole life.
+                if (RecordingOverlay.ShouldKeepProcessingMark(currentTakeIsAgent))
+                    overlay.ShowProcessing();
+                else
+                    overlay.EnsureHidden();
                 hook.CaptureEscape = false;
                 long recordMs = recordTimer != null ? recordTimer.ElapsedMilliseconds : 0;
                 recordTimer = null;
@@ -12445,13 +12851,13 @@ namespace Flowtype
             return await whisperEngine.TranscribeAsync(path, settings, intended);
         }
 
-        private async Task<SpeechTranscript> TranscribeTake(string path, long recordMs, ForegroundInfo intended)
+        private async Task<SpeechTranscript> TranscribeTake(string path, long recordMs, ForegroundInfo intended, bool agentTake)
         {
-            if (recordMs >= 20000)
+            if (!agentTake && recordMs >= 20000)
             {
                 try
                 {
-                    SpeechTranscript split = await TranscribeSilenceSplit(path, intended);
+                    SpeechTranscript split = await TranscribeSilenceSplit(path, intended, recordMs);
                     if (split != null && !String.IsNullOrWhiteSpace(split.Text)) return split;
                 }
                 catch (Exception exception)
@@ -12462,13 +12868,13 @@ namespace Flowtype
             return await TranscribeFile(path, intended);
         }
 
-        private async Task<SpeechTranscript> TranscribeSilenceSplit(string path, ForegroundInfo intended)
+        private async Task<SpeechTranscript> TranscribeSilenceSplit(string path, ForegroundInfo intended, long recordMs)
         {
             byte[] pcm = ReadWavPcm(path);
             List<WaveRecorder.SpeechRegion> regions = WaveRecorder.FindSpeechRegions(pcm, 16000, 800, 400);
-            if (regions == null || regions.Count < 2 || regions.Count > 10) return null;
+            if (!WaveRecorder.ShouldSplitTake(recordMs, regions == null ? 0 : regions.Count)) return null;
             SpeechTranscript combined = new SpeechTranscript();
-            StringBuilder text = new StringBuilder();
+            List<string> chunks = new List<string>();
             string directory = Path.GetDirectoryName(path);
             string stem = Path.GetFileNameWithoutExtension(path);
             for (int index = 0; index < regions.Count; index++)
@@ -12482,8 +12888,7 @@ namespace Flowtype
                 {
                     SpeechTranscript part = await TranscribeFile(partPath, intended);
                     if (part == null || String.IsNullOrWhiteSpace(part.Text)) continue;
-                    if (text.Length > 0) text.Append(' ');
-                    text.Append(part.Text.Trim());
+                    chunks.Add(part.Text);
                     double offset = regions[index].StartSample / 16000.0;
                     if (part.Segments == null) continue;
                     foreach (SpeechSegment segment in part.Segments)
@@ -12496,7 +12901,7 @@ namespace Flowtype
                 }
                 finally { TryDelete(partPath); }
             }
-            combined.Text = text.ToString().Trim();
+            combined.Text = TextProcessor.JoinTranscriptChunks(chunks);
             if (String.IsNullOrWhiteSpace(combined.Text)) return null;
             TranscriptionQuality.ApplySegmentFilters(combined);
             return combined;
@@ -12649,7 +13054,7 @@ namespace Flowtype
             try
             {
                 Stopwatch transcribeTimer = Stopwatch.StartNew();
-                SpeechTranscript transcript = await TranscribeTake(path, recordMs, intended);
+                SpeechTranscript transcript = await TranscribeTake(path, recordMs, intended, agentTake);
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
                 ForegroundInfo delivery = ForegroundContext.Capture(settings.ContextEnabled);
@@ -12674,6 +13079,8 @@ namespace Flowtype
                         agentOverlay.ShowFailed("no speech detected");
                         throw new InvalidOperationException("No speech was detected.");
                     }
+                    try { dispatcher.Invoke(new Action(delegate { agentOverlay.ShowHeard(ask); })); }
+                    catch { }
                     SendToAgent(ask);
                     if (settings.SaveHistory)
                     {
@@ -12783,6 +13190,11 @@ namespace Flowtype
                 {
                     notifyRecordingLimit = false;
                     Notify("Recording limit", "Dictation stopped at the 10-minute limit.", ToolTipIcon.Info);
+                }
+                if (notifyAgentHoldLimit)
+                {
+                    notifyAgentHoldLimit = false;
+                    Notify("Agent listen cap", "Agent listen stopped at 12 seconds.", ToolTipIcon.Info);
                 }
                 if (idle)
                 {
@@ -12952,6 +13364,12 @@ namespace Flowtype
             lastRememberedGeneration = sequence;
             lastDictationText = text;
             if (copyLastItem != null) copyLastItem.Enabled = true;
+            if (pasteLastItem != null) pasteLastItem.Enabled = true;
+        }
+
+        private void OnCaptureStarted()
+        {
+            if (settings != null && settings.CompletionSound) RecordingCue.PlayStart();
         }
 
         private void CopyLastDictation()
@@ -12965,12 +13383,46 @@ namespace Flowtype
             catch (Exception exception) { store.LogError(exception); }
         }
 
+        private void PasteLastDictation()
+        {
+            if (recorder.IsRecording || processing) return;
+            if (String.IsNullOrWhiteSpace(lastDictationText)) return;
+            try
+            {
+                overlay.EnsureHidden();
+                ForegroundContext.ResetPasteDebounce();
+                ForegroundInfo seat = ForegroundContext.Capture(false);
+                bool inserted = ForegroundContext.DeliverDictation(lastDictationText, seat, settings.AutoPaste, -1);
+                if (inserted && !ForegroundContext.LastDeliverySuppressed)
+                {
+                    lastInsertTarget = seat;
+                    canUndoInsert = true;
+                    if (undoLastItem != null) undoLastItem.Enabled = true;
+                    statusItem.Text = "Pasted last dictation";
+                }
+                else if (!inserted)
+                {
+                    if (ForegroundContext.LastDeliveryNeedsShiftPaste)
+                    {
+                        statusItem.Text = "Copied — click your field and press Ctrl+Shift+V";
+                        Notify("Kept on clipboard", "This field wants Ctrl+Shift+V. Last take is on the clipboard.", ToolTipIcon.Info);
+                    }
+                    else
+                    {
+                        statusItem.Text = "Copied — click your field and press Ctrl+V";
+                        Notify("Kept on clipboard", "Couldn't drop it in, so last take is on your clipboard. Click the field and press Ctrl+V.", ToolTipIcon.Info);
+                    }
+                }
+            }
+            catch (Exception exception) { store.LogError(exception); }
+        }
+
         private void UpdateDictionaryFixItem()
         {
             if (String.IsNullOrWhiteSpace(lastDictationWord))
             {
                 dictionaryFixItem.Enabled = false;
-                dictionaryFixItem.Text = "Add last word to dictionary…";
+                dictionaryFixItem.Text = "Fix last word in dictionary…";
                 return;
             }
             dictionaryFixItem.Enabled = true;
@@ -13090,6 +13542,7 @@ namespace Flowtype
                 }
                 overlay.SetTheme(settings.OverlayTheme);
                 overlay.SetMark(settings.OverlayMark);
+                overlay.SetSize(settings.OverlaySize);
                 UiTheme.Apply(settings.AppAppearance);
                 SetReady();
                 if (settings.Engine == "Local") WarmLocalEngine();

@@ -51,6 +51,26 @@ namespace Flowtype.Tests
             byte[] onePhrase = MakePcmTone(8000, 0.80, 0.10, 0.10);
             failures += AssertTrue("single phrase is one region",
                 WaveRecorder.FindSpeechRegions(onePhrase, 16000, 800, 250).Count == 1);
+            byte[] quietThenLoud = ConcatPcm(
+                MakePcmTone(600, 0.50, 0, 0),
+                MakePcmTone(0, 1.20, 0, 0),
+                MakePcmTone(20000, 0.50, 0, 0));
+            failures += AssertTrue("quiet phrase before a loud one still splits",
+                WaveRecorder.FindSpeechRegions(quietThenLoud, 16000, 800, 250).Count == 2);
+            byte[] longIsland = MakePcmTone(8000, 40.0, 0, 0);
+            failures += AssertTrue("continuous speech longer than 25s is force-split",
+                WaveRecorder.FindSpeechRegions(longIsland, 16000, 800, 250).Count >= 2);
+            failures += AssertEqual("join transcript chunks", "Hello world.",
+                TextProcessor.JoinTranscriptChunks(new[] { "Hello", "world." }));
+            failures += AssertEqual("join skips blank chunks", "Hello world.",
+                TextProcessor.JoinTranscriptChunks(new[] { "Hello", "", "  ", "world." }));
+            failures += AssertFalse("short take is not silence-split", WaveRecorder.ShouldSplitTake(8000, 3));
+            failures += AssertTrue("long take with pauses is silence-split", WaveRecorder.ShouldSplitTake(25000, 2));
+            failures += AssertFalse("one long island is not silence-split", WaveRecorder.ShouldSplitTake(25000, 1));
+            failures += AssertFalse("too many islands skip the split", WaveRecorder.ShouldSplitTake(25000, 11));
+            failures += AssertEqual("agent heard label", "heard", AgentOverlay.StatusWord(AgentOverlay.Stage.Heard));
+            failures += AssertEqual("agent thinking label", "thinking", AgentOverlay.StatusWord(AgentOverlay.Stage.Thinking));
+            failures += AssertTrue("agent hold cap is 12 seconds", AgentOverlay.MaxHoldMs == 12000);
             SpeechTranscript runaway = new SpeechTranscript();
             runaway.Text = "The team shipped the feature yesterday. Thank you.";
             runaway.Segments.Add(MakeSegment("The team shipped the feature yesterday.", 0, 2.1));
@@ -73,6 +93,16 @@ namespace Flowtype.Tests
             failures += AssertFalse(TranscriptionQuality.ShouldReject("Thank you.", 900, 20000));
             failures += AssertTrue(TranscriptionQuality.ShouldReject("Thank you.", 4500, 140000));
             failures += AssertTrue(TranscriptionQuality.ShouldReject("Thanks for watching.", 4000, 120000));
+            failures += AssertTrue("hyprwhspr blank-audio marker",
+                TranscriptionQuality.ShouldReject("Blank audio.", 1500, 40000));
+            failures += AssertTrue("hyprwhspr silence marker",
+                TranscriptionQuality.ShouldReject("[Silence]", 1500, 40000));
+            failures += AssertTrue("hyprwhspr no-speech marker",
+                TranscriptionQuality.ShouldReject("no speech detected", 1500, 40000));
+            failures += AssertFalse("the word silence in a real sentence is kept",
+                TranscriptionQuality.ShouldReject("There was silence in the room.", 1500, 40000));
+            failures += AssertFalse("short thanks still kept",
+                TranscriptionQuality.ShouldReject("Thank you.", 900, 20000));
             failures += AssertEqual("trailing thanks hallucination",
                 "Yo bro, this shit keeps saying thank you.",
                 TextProcessor.Clean("Yo bro, this shit keeps saying thank you. Thank you.", AppSettings.Defaults()));
@@ -296,6 +326,10 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("hey pinbal", AppSettings.Defaults(), DiscordContext("PinBal")));
             failures += AssertEqual("spoken period", "Hello.", TextProcessor.Clean("hello period", AppSettings.Defaults()));
             failures += AssertEqual("spoken question", "Ready?", TextProcessor.Clean("ready question mark", AppSettings.Defaults()));
+            failures += AssertEqual("spoken open bracket", "Use [this]",
+                TextProcessor.Clean("use open bracket this close bracket", AppSettings.Defaults()));
+            failures += AssertEqual("spoken braces", "Map {key}.",
+                TextProcessor.Clean("map open brace key close brace", AppSettings.Defaults()));
             failures += AssertEqual("you know kept when whole take", "You know.",
                 TextProcessor.Clean("you know", AppSettings.Defaults()));
             failures += AssertEqual("you know question kept", "You know?",
@@ -305,6 +339,31 @@ namespace Flowtype.Tests
             failures += AssertEqual("mid sentence you know still stripped",
                 "Something else.",
                 TextProcessor.Clean("something else, you know", AppSettings.Defaults()));
+            failures += AssertEqual("i meant is not i mean plus t", "I meant.",
+                TextProcessor.Clean("I meant", AppSettings.Defaults()));
+            failures += AssertEqual("i meant to go stays", "I meant to go there.",
+                TextProcessor.Clean("I meant to go there", AppSettings.Defaults()));
+            failures += AssertEqual("i meant mid sentence stays", "That is what I meant.",
+                TextProcessor.Clean("that is what I meant", AppSettings.Defaults()));
+            failures += AssertEqual("i mean whole take still kept", "I mean.",
+                TextProcessor.Clean("I mean", AppSettings.Defaults()));
+            failures += AssertEqual("trailing i mean filler still stripped",
+                "Something else.",
+                TextProcessor.Clean("something else, I mean", AppSettings.Defaults()));
+            failures += AssertEqual("hello does not lose the first syllable", "Hello.",
+                TextProcessor.Clean("hello", AppSettings.Defaults()));
+            failures += AssertEqual("the stays the", "The.",
+                TextProcessor.Clean("the", AppSettings.Defaults()));
+            failures += AssertTrue("hidden overlay does not restart a hide",
+                !RecordingOverlay.ShouldBeginHide(false, false));
+            failures += AssertFalse("in-progress fade does not restart",
+                RecordingOverlay.ShouldBeginHide(true, true));
+            failures += AssertTrue("visible pill can fade out once",
+                RecordingOverlay.ShouldBeginHide(true, false));
+            failures += AssertTrue("dictation release keeps the processing mark",
+                RecordingOverlay.ShouldKeepProcessingMark(false));
+            failures += AssertFalse("agent release does not borrow the dictation mark",
+                RecordingOverlay.ShouldKeepProcessingMark(true));
             failures += AssertFalse(TextProcessor.IsMeaningfulInsert("?"));
             failures += AssertFalse(TextProcessor.IsMeaningfulInsert("."));
             failures += AssertTrue(TextProcessor.IsMeaningfulInsert("Her?"));
@@ -317,6 +376,7 @@ namespace Flowtype.Tests
             failures += AssertEqual("default cleanup", "BuiltIn", AppSettings.Defaults().CleanupProvider);
             failures += AssertFalse("live captions start off", AppSettings.Defaults().LiveCaptions);
             failures += AssertEqual("live thanks dropped", "", TextProcessor.PrepareLiveCaption("Thank you."));
+            failures += AssertEqual("live blank audio dropped", "", TextProcessor.PrepareLiveCaption("Blank audio."));
             failures += AssertTrue("live loop collapsed",
                 TextProcessor.PrepareLiveCaption("Now, what is the plan? So, what is the plan? Anyway, what is the plan.").IndexOf("So, what is the plan", StringComparison.OrdinalIgnoreCase) < 0);
             failures += AssertFalse(AppSettings.Defaults().MicBoostEnabled);
@@ -449,9 +509,39 @@ namespace Flowtype.Tests
             ForegroundInfo cursorFamily = new ForegroundInfo();
             cursorFamily.ProcessName = "Cursor";
             failures += AssertTrue(ForegroundContext.IsCursorFamily(cursorFamily));
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.87"));
+            failures += AssertTrue("ptt hangover keeps the last word", WaveRecorder.HangoverMs == 450);
+            byte[] clippedCoda = MakePcmTone(8000, 0.20, 0, 0);
+            byte[] paddedCoda = WaveRecorder.PadClippedCoda(clippedCoda, 16000, 60);
+            failures += AssertTrue("clipped coda gets a silence pad", paddedCoda.Length > clippedCoda.Length);
+            byte[] quietCoda = MakePcmTone(8000, 0.20, 0, 0.20);
+            failures += AssertTrue("quiet coda is not padded again",
+                WaveRecorder.PadClippedCoda(quietCoda, 16000, 60).Length == quietCoda.Length);
+            failures += AssertTrue("start cue waits for first live buffer",
+                WaveRecorder.ShouldAnnounceCapture(false, true, 64));
+            failures += AssertFalse("start cue does not fire twice",
+                WaveRecorder.ShouldAnnounceCapture(true, true, 64));
+            failures += AssertFalse("start cue waits until the take is live",
+                WaveRecorder.ShouldAnnounceCapture(false, false, 64));
+            failures += AssertTrue("password edit style is unpasteable",
+                ForegroundContext.StyleLooksLikePassword(0x00C0 | 0x0020));
+            failures += AssertFalse("normal edit style is pasteable",
+                ForegroundContext.StyleLooksLikePassword(0x00C0));
+            failures += AssertEqual("paste-last chord", "Shift + Alt + Z", ForegroundContext.PasteLastChord);
+            failures += AssertEqual("copy-last chord", "Shift + Alt + X", ForegroundContext.CopyLastChord);
+            failures += AssertTrue("paste-last matches Shift+Alt+Z",
+                NativeKeyState.MatchesPasteLastChord(0x5A, true, true, true, false, false));
+            failures += AssertFalse("paste-last ignores Win+Shift+Alt+Z",
+                NativeKeyState.MatchesPasteLastChord(0x5A, true, true, true, true, false));
+            failures += AssertTrue("copy-last matches Shift+Alt+X",
+                NativeKeyState.MatchesCopyLastChord(0x58, true, true, true, false, false));
+            failures += AssertTrue("clipboard restore is faster than a second",
+                ForegroundContext.ClipboardRestoreMs == 200 && ForegroundContext.TerminalClipboardRestoreMs == 550);
+            failures += AssertTrue("paste releases Win and Ctrl leftovers",
+                Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0x5B) >= 0
+                && Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0xA2) >= 0);
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.95"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.86", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.94", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
@@ -502,6 +592,19 @@ namespace Flowtype.Tests
             badMark.OverlayMark = "Spinner";
             badMark.Repair();
             failures += AssertEqual("unknown mark becomes orb", "Orb", badMark.OverlayMark);
+            failures += AssertEqual("default capsule is normal", "Normal", AppSettings.Defaults().OverlaySize);
+            failures += AssertTrue("mini capsule is 80 percent",
+                Math.Abs(AppSettings.OverlayScaleFromSize("Mini") - 0.8f) < 0.001f);
+            failures += AssertTrue("normal capsule is full size",
+                Math.Abs(AppSettings.OverlayScaleFromSize("Normal") - 1f) < 0.001f);
+            AppSettings junkSize = AppSettings.Defaults();
+            junkSize.OverlaySize = "Huge";
+            junkSize.Repair();
+            failures += AssertEqual("unknown capsule size becomes normal", "Normal", junkSize.OverlaySize);
+            AppSettings miniSize = AppSettings.Defaults();
+            miniSize.OverlaySize = "Mini";
+            miniSize.Repair();
+            failures += AssertEqual("mini capsule kept", "Mini", miniSize.OverlaySize);
             failures += AssertEqual("default appearance", "Dark", AppSettings.Defaults().AppAppearance);
             AppSettings junkAppearance = AppSettings.Defaults();
             junkAppearance.AppAppearance = "Midnight";

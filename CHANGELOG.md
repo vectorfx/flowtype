@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.3.94
+
+Mini voice capsule: Settings → Capsule size → **Mini** is the same pill at 80% size (theme, mark, and loading motion unchanged). Default stays **Normal**.
+
+---
+
+## 1.3.93
+
+Hangover after key-up is **450ms** again. 1.3.92's 150ms cut was unproven; leave this until a real A/B says otherwise.
+
+---
+
+## 1.3.92
+
+Hangover after key-up is **150ms** again (1.3.86). 450ms was feeding Whisper a dead-air tail, which shows up as swapped words and odd punctuation. Last-syllable protection stays: TrimSilence still keeps 160ms after speech, and PadClippedCoda still appends 60ms only when the tail is still loud.
+
+---
+
+## 1.3.91
+
+Release keeps the voice capsule up while Whisper is getting the words in. The live mark (Orb / Hex / Iris / Grid) runs its own loading motion, then the pill fades once after insert. HideNow still refuses to re-show a hidden capsule, so the 1.3.89 flash stays gone.
+
+Checked and left alone:
+- **whisper.cpp** — already the local engine (warm `whisper-server`, Instant ggml)
+- **FluidAudio** — Swift / CoreML / Apple Neural Engine only; no Windows path
+- **TranscribeCpp** — SwiftPM wrap of transcribe.cpp for Apple GGUF; same job whisper.cpp already does here
+- **SenseVoice Small** — FunAudioLLM / Alibaba, Chinese-first, extra license + extra binary. Not 10× for this English PTT app
+
+Parakeet (via FluidAudio or parakeet.cpp) stays skipped: second engine family, new failure modes, no proof it beats Instant whisper.cpp on this box.
+
+---
+
+## 1.3.90
+
+Second gold-standard pass (more GitHub repos, only cheap steals):
+- hyprwhspr hallucination markers: whole-take `blank audio` / `silence` / `no speech` / `♪` is discarded (not the word "silence" in a real sentence)
+- Wispr copy-last chord **Shift+Alt+X**
+- whisper.cpp speech pad: if the take still ends on speech after trim, append 60ms of silence so the last phoneme is not cut. Quiet tails are left alone
+- Handy-style clipboard restore: 200ms for normal paste (was 550ms everywhere), terminals stay 550ms
+- Spoken `open/close bracket` and `open/close brace`
+- CapsWriter trailing fullwidth `，。` stripped in chat apps
+
+Skipped on purpose (glitch or cost): Silero ONNX, Parakeet, Electron/Tauri, Handy WM_RENDERFORMAT clipboard, hyprwhspr eating the word "you"
+
+---
+
+## 1.3.89
+
+Glitch scan after the gold-standard pass:
+- "I meant" no longer becomes "T." — filler cleanup was matching `I mean` as a prefix of `meant`. Same word-boundary fix on `you know` / backtrack `I mean`
+- Pill on release: fade out once and stay gone. HideNow no longer re-shows a hidden capsule (that was the flash), and release no longer morphs into a processing layout
+- Tray menu grouped (dictate / settings / last take / files / quit), themed, Shift+Alt+Z shown as a shortcut
+
+---
+
+## 1.3.88
+
+Gold-standard PTT steal list (Wispr Flow / Handy / OpenWhispr / nerd-dictation / jev — mechanisms only):
+- Last-word hangover is 450ms after key-up (was 150ms), matching nerd-dictation `--delay-exit` and OpenAI `silence_duration_ms=500`. TrimSilence still keeps 160ms of that tail
+- Start cue plays only after the first live PCM buffer, so the chime cannot lie that capture has started (Superwhisper / VoiceInk first-word bug)
+- Paste releases leftover Win/Ctrl/Alt/Shift before Ctrl+V so a still-down PTT modifier cannot type a literal `v` in terminals (OpenWhispr #450)
+- Password fields are unpasteable — transcript stays on the clipboard instead (Windows Voice Access Fluid Dictation)
+- Processing capsule hides immediately before paste so the overlay cannot steal the insert (Handy #1225)
+- **Shift+Alt+Z** pastes the last take (Wispr Flow's Windows paste-last chord), also on the tray menu
+
+Skipped on purpose: Wispr screenshot context, wake-word, Silero-as-decoder, Electron/Tauri stacks, OS automation inside the EXE.
+
+---
+
+## 1.3.87
+
+Jev Voice steals (command-loop ideas, still a dumb pipe):
+- Adaptive energy VAD for long dictation splits — a quiet phrase before a loud one is no longer dropped; islands longer than 25s are force-cut so Whisper never sees a 40s window
+- Agent HUD now has heard (yellow transcript) → thinking (blue) → done/error, matching the listen/decide/result sequence
+- Agent chord auto-stops at 12 seconds (commands, not lectures). Dictation 10-minute cap is unchanged
+
+---
+
 ## 1.3.86
 
 Live captions:
