@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.96
+
+Liquid glass no longer double-tints under **f.lux** / Night Light: the captured desktop is inverse-gamma'd before blur, so the overlay is warmed once like every other window. Frost, blur, and click-through are unchanged. If Windows Night Light is using a DWM color filter instead of a gamma ramp, the OS may still warm the grab — there is no second matrix to invert without breaking glass.
+
+**Grid** is the default live mark (saved Orb / Hex / Iris stay). New **Titanium** capsule: machined graphite fill, champagne rim, steel bars.
+
+---
+
+## 1.3.95
+
+Whisper's YouTube-lecture leftover: invented speaker slates like **H.J. Flinkes M.D.** (initials + surname + M.D./Ph.D.) and "Subtitles by …" are stripped. A real "Dr. Smith" without that slate is kept. Same filter on live captions and on Groq/local segments.
+
+---
+
 ## 1.3.94
 
 Mini voice capsule: Settings → Capsule size → **Mini** is the same pill at 80% size (theme, mark, and loading motion unchanged). Default stays **Normal**.

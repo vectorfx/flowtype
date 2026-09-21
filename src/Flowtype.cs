@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.94.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.94.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.96.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.96.0")]
 
 namespace Flowtype
 {
@@ -118,7 +118,7 @@ namespace Flowtype
             value.SkippedUpdateVersion = "";
             value.LastUpdateCheckUtc = "";
             value.OverlayTheme = "Dark";
-            value.OverlayMark = "Orb";
+            value.OverlayMark = "Grid";
             value.OverlaySize = "Normal";
             value.AppAppearance = "Dark";
             value.AgentModeEnabled = false;
@@ -167,14 +167,15 @@ namespace Flowtype
                 !String.Equals(OverlayTheme, "Dark", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayTheme, "Purple", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayTheme, "Light", StringComparison.OrdinalIgnoreCase) &&
-                !String.Equals(OverlayTheme, "Ember", StringComparison.OrdinalIgnoreCase))
+                !String.Equals(OverlayTheme, "Ember", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(OverlayTheme, "Titanium", StringComparison.OrdinalIgnoreCase))
                 OverlayTheme = "Dark";
             if (String.IsNullOrWhiteSpace(OverlayMark) ||
                 (!String.Equals(OverlayMark, "Orb", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayMark, "Hex", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayMark, "Iris", StringComparison.OrdinalIgnoreCase) &&
                 !String.Equals(OverlayMark, "Grid", StringComparison.OrdinalIgnoreCase)))
-                OverlayMark = "Orb";
+                OverlayMark = "Grid";
             if (String.Equals(OverlaySize, "Mini", StringComparison.OrdinalIgnoreCase))
                 OverlaySize = "Mini";
             else
@@ -5225,6 +5226,7 @@ namespace Flowtype
             // a short clip; several seconds of audio that decode to only thanks is silence.
             if (recordMs >= 4000 && IsStandaloneThanksPhrase(text)) return true;
             if (recordMs >= 1200 && IsStandaloneNoiseMarker(text)) return true;
+            if (IsSpeakerCreditHallucination(text)) return true;
 
             return false;
         }
@@ -5247,6 +5249,41 @@ namespace Flowtype
             return Regex.IsMatch(core,
                 @"^(?:blank audio|silence|no speech(?: detected)?)$",
                 RegexOptions.IgnoreCase);
+        }
+
+        // Whisper was trained on YouTube lectures. In a pause it will invent a
+        // speaker slate like "H.J. Flinkes M.D." — initials + surname + degree.
+        // A real "Dr. Smith" without that slate shape is left alone.
+        private static readonly Regex SpeakerCreditPattern = new Regex(
+            @"(?:Dr\.?\s+)?(?=[A-Z]\.)(?:[A-Z]\.?\s*){1,3}[A-Z][a-z]{2,}(?:[\s-][A-Z][a-z]{2,}){0,2},?\s+(?:M\.?D\.?|Ph\.?D\.?)\b",
+            RegexOptions.Compiled);
+
+        private static readonly Regex YoutubeCreditPattern = new Regex(
+            @"(?:[Ss]ubtitles|[Tt]ranscribed)\s+[Bb]y\s+(?:[Tt]he\s+)?[A-Za-z0-9][A-Za-z0-9._\-]*(?:\.org|\.com|\.net)?(?:\s+[a-z][A-Za-z0-9._\-]*){0,6}",
+            RegexOptions.Compiled);
+
+        public static bool IsSpeakerCreditHallucination(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return false;
+            string core = NormalizeHallucinationCore(text);
+            core = Regex.Replace(core, @"^(?:(?:hi|hello)[,.]?\s+)?(?:i am|i'm|this is)\s+", "", RegexOptions.IgnoreCase).Trim();
+            if (core.Length == 0) return false;
+            if (YoutubeCreditPattern.IsMatch(core) && YoutubeCreditPattern.Replace(core, "").Trim().Length == 0)
+                return true;
+            Match credit = SpeakerCreditPattern.Match(core);
+            return credit.Success && SpeakerCreditPattern.Replace(core, "").Trim().Length == 0;
+        }
+
+        public static string StripSpeakerCreditHallucinations(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return text ?? "";
+            text = SpeakerCreditPattern.Replace(text, "");
+            text = YoutubeCreditPattern.Replace(text, "");
+            text = Regex.Replace(text, @"[ \t]{2,}", " ");
+            text = Regex.Replace(text, @"\s+([,;:])", "$1");
+            text = Regex.Replace(text, @"([.!?])\s*\1+", "$1");
+            text = Regex.Replace(text, @"\s+([.!?])", "$1");
+            return text.Trim(' ', '\t', ',', ';', '—', '-');
         }
 
         private static string NormalizeHallucinationCore(string text)
@@ -5319,6 +5356,7 @@ namespace Flowtype
                 if (!cueBefore && IsLikelyEmbeddedHallucination(segment.Text, duration, gapBefore, gapAfter)) continue;
                 double thanksGapBefore = previous == null ? Math.Max(0, segment.Start) : gapBefore;
                 if (IsLikelyThanksHallucination(segment.Text, thanksGapBefore, gapAfter)) continue;
+                if (IsSpeakerCreditHallucination(segment.Text)) continue;
                 if (segment.HasQuality && IsLikelyDecoderRunaway(segment.Text, segment.CompressionRatio, segment.NoSpeechProb)) continue;
                 kept.Add(segment);
             }
@@ -5896,6 +5934,8 @@ namespace Flowtype
             cleaned = RemoveWhisperRepetitions(cleaned);
             if (TranscriptionQuality.IsStandaloneThanksPhrase(cleaned)) return "";
             if (TranscriptionQuality.IsStandaloneNoiseMarker(cleaned)) return "";
+            if (TranscriptionQuality.IsSpeakerCreditHallucination(cleaned)) return "";
+            cleaned = TranscriptionQuality.StripSpeakerCreditHallucinations(cleaned);
             return cleaned.Trim();
         }
 
@@ -6611,6 +6651,7 @@ namespace Flowtype
             text = Regex.Replace(text, @"[\s,]*(?:Camp\.\d|P\.\$[%&$#@]*).*$", "", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "");
             text = Regex.Replace(text, @"[.!?]\s+(?:blank audio|no speech(?: detected)?)[.!?]*\s*$", ".", RegexOptions.IgnoreCase);
+            text = TranscriptionQuality.StripSpeakerCreditHallucinations(text);
             return StripThanksHallucinations(RemoveEmbeddedGlitches(text.Trim()));
         }
 
@@ -8257,6 +8298,129 @@ namespace Flowtype
         }
     }
 
+    // f.lux / Night Light set a display gamma ramp. CopyFromScreen already includes
+    // that tint; the layered overlay then gets the ramp again. Invert the ramp on
+    // the captured backdrop so glass is tinted once, like every other window.
+    public static class DisplayTint
+    {
+        [DllImport("gdi32.dll")]
+        private static extern bool GetDeviceGammaRamp(IntPtr hdc, IntPtr ramp);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr window);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr window, IntPtr dc);
+
+        public static bool RampIsIdentity(ushort[] ramp, int offset)
+        {
+            if (ramp == null || offset < 0 || offset + 255 >= ramp.Length) return true;
+            for (int index = 0; index < 256; index += 8)
+            {
+                int expected = index * 257;
+                if (Math.Abs(ramp[offset + index] - expected) > 1400) return false;
+            }
+            return true;
+        }
+
+        public static void BuildInverse(ushort[] ramp, int offset, byte[] inverse)
+        {
+            if (inverse == null || inverse.Length < 256) return;
+            for (int output = 0; output < 256; output++)
+            {
+                int target = output * 257;
+                int best = output;
+                int bestError = int.MaxValue;
+                if (ramp == null || offset < 0 || offset + 255 >= ramp.Length)
+                {
+                    inverse[output] = (byte)output;
+                    continue;
+                }
+                for (int input = 0; input < 256; input++)
+                {
+                    int error = Math.Abs(ramp[offset + input] - target);
+                    if (error >= bestError) continue;
+                    bestError = error;
+                    best = input;
+                    if (error == 0) break;
+                }
+                inverse[output] = (byte)best;
+            }
+        }
+
+        public static bool TryNeutralizeCapturedBitmap(Bitmap bitmap)
+        {
+            if (bitmap == null || bitmap.Width < 1 || bitmap.Height < 1) return false;
+            ushort[] ramp = new ushort[768];
+            if (!TryReadGamma(ramp)) return false;
+            if (RampIsIdentity(ramp, 0) && RampIsIdentity(ramp, 256) && RampIsIdentity(ramp, 512))
+                return false;
+            byte[] inverseRed = new byte[256];
+            byte[] inverseGreen = new byte[256];
+            byte[] inverseBlue = new byte[256];
+            BuildInverse(ramp, 0, inverseRed);
+            BuildInverse(ramp, 256, inverseGreen);
+            BuildInverse(ramp, 512, inverseBlue);
+            ApplyInverse(bitmap, inverseRed, inverseGreen, inverseBlue);
+            return true;
+        }
+
+        private static bool TryReadGamma(ushort[] ramp)
+        {
+            IntPtr dc = GetDC(IntPtr.Zero);
+            if (dc == IntPtr.Zero) return false;
+            GCHandle handle = GCHandle.Alloc(ramp, GCHandleType.Pinned);
+            try
+            {
+                return GetDeviceGammaRamp(dc, handle.AddrOfPinnedObject());
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                handle.Free();
+                ReleaseDC(IntPtr.Zero, dc);
+            }
+        }
+
+        public static void ApplyInverse(Bitmap bitmap, byte[] inverseRed, byte[] inverseGreen, byte[] inverseBlue)
+        {
+            if (bitmap == null || inverseRed == null || inverseGreen == null || inverseBlue == null) return;
+            if (inverseRed.Length < 256 || inverseGreen.Length < 256 || inverseBlue.Length < 256) return;
+            BitmapData data = bitmap.LockBits(
+                new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                ImageLockMode.ReadWrite,
+                PixelFormat.Format32bppPArgb);
+            try
+            {
+                int stride = data.Stride;
+                if (stride <= 0) return;
+                byte[] buffer = new byte[stride * bitmap.Height];
+                Marshal.Copy(data.Scan0, buffer, 0, buffer.Length);
+                int width = bitmap.Width;
+                int height = bitmap.Height;
+                for (int row = 0; row < height; row++)
+                {
+                    int start = row * stride;
+                    for (int column = 0; column < width; column++)
+                    {
+                        int index = start + column * 4;
+                        buffer[index] = inverseBlue[buffer[index]];
+                        buffer[index + 1] = inverseGreen[buffer[index + 1]];
+                        buffer[index + 2] = inverseRed[buffer[index + 2]];
+                    }
+                }
+                Marshal.Copy(buffer, 0, data.Scan0, buffer.Length);
+            }
+            finally
+            {
+                bitmap.UnlockBits(data);
+            }
+        }
+    }
+
     public sealed class RecordingOverlay : Form
     {
         [StructLayout(LayoutKind.Sequential)]
@@ -8316,7 +8480,7 @@ namespace Flowtype
         private const int StreamOverlayWidth = 304;
         private const int CaptionOverlayWidth = 540;
         private string theme = "Dark";
-        private string mark = "Orb";
+        private string mark = "Grid";
         private float overlayScale = 1f;
         private Bitmap glassBackdrop;
         private Point glassBackdropOffset;
@@ -8340,7 +8504,7 @@ namespace Flowtype
 
         public void SetMark(string value)
         {
-            mark = String.IsNullOrWhiteSpace(value) ? "Orb" : value.Trim();
+            mark = String.IsNullOrWhiteSpace(value) ? "Grid" : value.Trim();
         }
 
         public void SetSize(string overlaySize)
@@ -8736,6 +8900,12 @@ namespace Flowtype
                         pendingGlassRecapture = true;
                         return;
                     }
+
+                    // CopyFromScreen already includes f.lux / Night Light. The layered
+                    // overlay then gets the same ramp again. Undo it on the capture so
+                    // glass is tinted once, like every other window. Frost/shine stay
+                    // authored, so the pill still reads as glass.
+                    DisplayTint.TryNeutralizeCapturedBitmap(raw);
 
                     using (Bitmap blurred = BlurBitmap(raw, 3))
                     {
@@ -9216,6 +9386,8 @@ namespace Flowtype
                 return Color.FromArgb(255, 196, 184, 255);
             if (String.Equals(theme, "Ember", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(255, 236, 196, 148);
+            if (IsTitaniumTheme())
+                return Color.FromArgb(255, 236, 228, 214);
             return Color.FromArgb(255, 228, 228, 232);
         }
 
@@ -9237,8 +9409,13 @@ namespace Flowtype
             GetThemeColors(out top, out bottom, out borderColor);
             using (GraphicsPath capsulePath = RoundedRectangle(capsule, cornerRadius))
             {
-                using (LinearGradientBrush surface = new LinearGradientBrush(capsule, top, bottom, LinearGradientMode.Vertical))
-                    graphics.FillPath(surface, capsulePath);
+                if (IsTitaniumTheme())
+                    DrawTitaniumSkin(graphics, capsule, cornerRadius, capsulePath);
+                else
+                {
+                    using (LinearGradientBrush surface = new LinearGradientBrush(capsule, top, bottom, LinearGradientMode.Vertical))
+                        graphics.FillPath(surface, capsulePath);
+                }
                 DrawMatteBorder(graphics, capsule, cornerRadius, capsulePath, borderColor);
             }
         }
@@ -9254,9 +9431,58 @@ namespace Flowtype
                 outer = Color.FromArgb(255, 168, 92, 42);
             else if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 outer = Color.FromArgb(255, 148, 148, 156);
+            else if (IsTitaniumTheme())
+                outer = Color.FromArgb(255, 198, 190, 176);
 
             using (Pen rim = new Pen(outer, 1f))
                 graphics.DrawPath(rim, capsulePath);
+        }
+
+        private void DrawTitaniumSkin(Graphics graphics, RectangleF capsule, float cornerRadius, GraphicsPath capsulePath)
+        {
+            ColorBlend blend = new ColorBlend(4);
+            blend.Positions = new float[] { 0f, 0.18f, 0.58f, 1f };
+            blend.Colors = new Color[]
+            {
+                Color.FromArgb(255, 72, 68, 64),
+                Color.FromArgb(255, 38, 36, 34),
+                Color.FromArgb(255, 20, 19, 18),
+                Color.FromArgb(255, 10, 9, 9)
+            };
+            using (LinearGradientBrush surface = new LinearGradientBrush(capsule, Color.Black, Color.Black, LinearGradientMode.Vertical))
+            {
+                surface.InterpolationColors = blend;
+                graphics.FillPath(surface, capsulePath);
+            }
+
+            GraphicsState clipState = graphics.Save();
+            graphics.SetClip(capsulePath);
+
+            RectangleF sheen = new RectangleF(capsule.X + 1.1f, capsule.Y + 0.7f, capsule.Width - 2.2f, capsule.Height * 0.36f);
+            using (GraphicsPath sheenPath = RoundedRectangle(sheen, Math.Max(1f, cornerRadius - 1.4f)))
+            using (LinearGradientBrush gloss = new LinearGradientBrush(
+                sheen, Color.FromArgb(58, 255, 248, 236), Color.FromArgb(0, 255, 248, 236), LinearGradientMode.Vertical))
+                graphics.FillPath(gloss, sheenPath);
+
+            using (LinearGradientBrush edge = new LinearGradientBrush(
+                new RectangleF(capsule.X, capsule.Y, 6.5f, capsule.Height),
+                Color.FromArgb(40, 255, 252, 246),
+                Color.FromArgb(0, 255, 252, 246),
+                LinearGradientMode.Horizontal))
+                graphics.FillRectangle(edge, capsule.X, capsule.Y + 1.6f, 3.4f, capsule.Height - 3.2f);
+
+            RectangleF recess = new RectangleF(capsule.X, capsule.Bottom - capsule.Height * 0.28f, capsule.Width, capsule.Height * 0.28f);
+            using (LinearGradientBrush shade = new LinearGradientBrush(
+                recess, Color.FromArgb(0, 0, 0, 0), Color.FromArgb(52, 0, 0, 0), LinearGradientMode.Vertical))
+                graphics.FillRectangle(shade, recess);
+
+            graphics.Restore(clipState);
+
+            RectangleF inner = capsule;
+            inner.Inflate(-1.15f, -1.15f);
+            using (GraphicsPath innerPath = RoundedRectangle(inner, Math.Max(1f, cornerRadius - 1.15f)))
+            using (Pen hairline = new Pen(Color.FromArgb(58, 255, 246, 232), 0.9f))
+                graphics.DrawPath(hairline, innerPath);
         }
 
         private void DrawLiquidGlassCapsule(Graphics graphics, RectangleF capsule, float cornerRadius)
@@ -9308,6 +9534,11 @@ namespace Flowtype
             return String.Equals(theme, "Glass", StringComparison.OrdinalIgnoreCase);
         }
 
+        private bool IsTitaniumTheme()
+        {
+            return String.Equals(theme, "Titanium", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void GetThemeColors(out Color top, out Color bottom, out Color borderColor)
         {
             if (IsGlassTheme())
@@ -9338,6 +9569,13 @@ namespace Flowtype
                 borderColor = Color.FromArgb(255, 92, 82, 122);
                 return;
             }
+            if (IsTitaniumTheme())
+            {
+                top = Color.FromArgb(255, 72, 68, 64);
+                bottom = Color.FromArgb(255, 10, 9, 9);
+                borderColor = Color.FromArgb(255, 198, 190, 176);
+                return;
+            }
             top = Color.FromArgb(255, 26, 26, 28);
             bottom = Color.FromArgb(255, 9, 9, 11);
             borderColor = Color.FromArgb(255, 86, 86, 94);
@@ -9362,6 +9600,11 @@ namespace Flowtype
                 int red = 168 + (int)(48 * sample);
                 int green = 148 + (int)(50 * sample);
                 return Color.FromArgb(255, red, green, 255);
+            }
+            if (IsTitaniumTheme())
+            {
+                int tone = 176 + (int)(72 * sample);
+                return Color.FromArgb(255, tone, Math.Min(255, tone + 2), Math.Min(255, tone + 10));
             }
             int zinc = 168 + (int)(80 * sample);
             return Color.FromArgb(Math.Min(255, alpha), zinc, zinc, Math.Min(255, zinc + 6));
@@ -9891,8 +10134,8 @@ namespace Flowtype
             });
             hotkeyBox.Items.AddRange(Hotkeys.Names.Cast<object>().ToArray());
             styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
-            overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Ember", "Liquid glass" });
-            overlayMarkBox.Items.AddRange(new object[] { "Orb", "Hex", "Iris", "Grid" });
+            overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Ember", "Titanium", "Liquid glass" });
+            overlayMarkBox.Items.AddRange(new object[] { "Grid", "Orb", "Hex", "Iris" });
             overlaySizeBox.Items.AddRange(new object[] { "Normal", "Mini" });
             cleanupProviderBox.Items.AddRange(new object[]
             {
@@ -10911,7 +11154,8 @@ namespace Flowtype
             if (String.Equals(overlayTheme, "Purple", StringComparison.OrdinalIgnoreCase)) return 1;
             if (String.Equals(overlayTheme, "Light", StringComparison.OrdinalIgnoreCase)) return 2;
             if (String.Equals(overlayTheme, "Ember", StringComparison.OrdinalIgnoreCase)) return 3;
-            if (String.Equals(overlayTheme, "Glass", StringComparison.OrdinalIgnoreCase)) return 4;
+            if (String.Equals(overlayTheme, "Titanium", StringComparison.OrdinalIgnoreCase)) return 4;
+            if (String.Equals(overlayTheme, "Glass", StringComparison.OrdinalIgnoreCase)) return 5;
             return 0;
         }
 
@@ -10920,24 +11164,25 @@ namespace Flowtype
             if (index == 1) return "Purple";
             if (index == 2) return "Light";
             if (index == 3) return "Ember";
-            if (index == 4) return "Glass";
+            if (index == 4) return "Titanium";
+            if (index == 5) return "Glass";
             return "Dark";
         }
 
         private static int OverlayMarkToIndex(string overlayMark)
         {
-            if (String.Equals(overlayMark, "Hex", StringComparison.OrdinalIgnoreCase)) return 1;
-            if (String.Equals(overlayMark, "Iris", StringComparison.OrdinalIgnoreCase)) return 2;
-            if (String.Equals(overlayMark, "Grid", StringComparison.OrdinalIgnoreCase)) return 3;
+            if (String.Equals(overlayMark, "Orb", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (String.Equals(overlayMark, "Hex", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (String.Equals(overlayMark, "Iris", StringComparison.OrdinalIgnoreCase)) return 3;
             return 0;
         }
 
         private static string OverlayMarkFromIndex(int index)
         {
-            if (index == 1) return "Hex";
-            if (index == 2) return "Iris";
-            if (index == 3) return "Grid";
-            return "Orb";
+            if (index == 1) return "Orb";
+            if (index == 2) return "Hex";
+            if (index == 3) return "Iris";
+            return "Grid";
         }
 
         private static int OverlaySizeToIndex(string overlaySize)

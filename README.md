@@ -46,7 +46,7 @@ Most “AI dictation” apps are a recorder bolted to a cloud API. Flowtype is b
 | **Paste that sticks** | Batched `SendInput` after releasing leftover modifiers, clipboard restore, Cursor / terminal heuristics, rescue-to-clipboard when focus races. **Shift+Alt+Z** pastes the last take |
 | **Hotkey that survives** | Low-level keyboard hook + 20&nbsp;ms chord poller backup + auto-reinstall if Windows drops the hook |
 | **Cleanup that doesn’t invent** | Deep built-in polish offline — fillers, punctuation, spoken lists, exact dictionary — before any LLM |
-| **Voice capsule** | Click-through overlay (Dark / Glass / Ember…). On release the live mark keeps spinning until the words land, then the capsule fades so it cannot become the paste target |
+| **Voice capsule** | Click-through overlay (Dark / Titanium / Glass / Ember…). On release the live mark keeps spinning until the words land, then the capsule fades so it cannot become the paste target |
 | **Optional agent chord** | Hold **Win + Alt** → loopback POST to OpenCode or Claude on *your* PC. Flowtype is a dumb pipe; it does not plan or execute |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline.
@@ -144,10 +144,11 @@ Microphone boost is **off by default** — toggle it on under Input & performanc
 | Theme | |
 |---|---|
 | **Dark** *(default)* | Matte near-black |
+| **Titanium** | Machined graphite, champagne rim, steel bars |
 | **Dark purple** · **Light** · **Ember** | Alternate looks |
-| **Liquid glass** | Frosted blur of the desktop behind the pill |
+| **Liquid glass** | Frosted blur of the desktop behind the pill. f.lux / Night Light gamma is undone on the capture so the pill is not double-yellow |
 
-Live marks: **Orb**, **Hex**, **Iris**, **Grid**. Optional start/finish sound cues.
+Live marks: **Grid** *(default)*, **Orb**, **Hex**, **Iris**. Optional start/finish sound cues.
 
 ---
 

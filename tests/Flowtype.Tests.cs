@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using Flowtype;
 
@@ -112,6 +113,25 @@ namespace Flowtype.Tests
             failures += AssertEqual("thanks for watching hallucination",
                 "The team shipped the feature yesterday.",
                 TextProcessor.Clean("The team shipped the feature yesterday. Thanks for watching.", AppSettings.Defaults()));
+            failures += AssertTrue("invented doctor slate is rejected",
+                TranscriptionQuality.ShouldReject("H.J Flinkes M.D.", 1800, 40000));
+            failures += AssertTrue("invented doctor slate with periods",
+                TranscriptionQuality.IsSpeakerCreditHallucination("H.J. Flinkes, M.D."));
+            failures += AssertFalse("ordinary doctor mention is kept",
+                TranscriptionQuality.IsSpeakerCreditHallucination("I saw Dr. Smith yesterday."));
+            failures += AssertEqual("inline doctor slate stripped",
+                "The plan is ready. Next we ship.",
+                TextProcessor.StripPromptHallucinations(
+                    "The plan is ready. H.J Flinkes M.D. Next we ship.",
+                    AppSettings.Defaults(), null));
+            failures += AssertEqual("subtitles-by slate stripped",
+                "The plan is ready. Next we ship.",
+                TextProcessor.StripPromptHallucinations(
+                    "The plan is ready. Subtitles by the Amara.org community Next we ship.",
+                    AppSettings.Defaults(), null));
+            failures += AssertEqual("live caption drops doctor slate",
+                "",
+                TextProcessor.PrepareLiveCaption("H.J. Flinkes M.D."));
             failures += AssertEqual("genuine short thanks kept", "Thank you.", TextProcessor.Clean("thank you", AppSettings.Defaults()));
             failures += AssertEqual("short closer thanks kept",
                 "Let me know. Thanks.",
@@ -539,9 +559,9 @@ namespace Flowtype.Tests
             failures += AssertTrue("paste releases Win and Ctrl leftovers",
                 Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0x5B) >= 0
                 && Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0xA2) >= 0);
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.95"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.97"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.94", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.96", FlowtypeVersion.CurrentLabel);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
@@ -580,10 +600,19 @@ namespace Flowtype.Tests
             emberTheme.OverlayTheme = "Ember";
             emberTheme.Repair();
             failures += AssertEqual("ember theme kept", "Ember", emberTheme.OverlayTheme);
+            AppSettings titaniumTheme = AppSettings.Defaults();
+            titaniumTheme.OverlayTheme = "Titanium";
+            titaniumTheme.Repair();
+            failures += AssertEqual("titanium theme kept", "Titanium", titaniumTheme.OverlayTheme);
+            failures += AssertEqual("default live mark is grid", "Grid", AppSettings.Defaults().OverlayMark);
             AppSettings hexMark = AppSettings.Defaults();
             hexMark.OverlayMark = "Hex";
             hexMark.Repair();
             failures += AssertEqual("hex mark kept", "Hex", hexMark.OverlayMark);
+            AppSettings orbMark = AppSettings.Defaults();
+            orbMark.OverlayMark = "Orb";
+            orbMark.Repair();
+            failures += AssertEqual("orb mark kept", "Orb", orbMark.OverlayMark);
             AppSettings gridMark = AppSettings.Defaults();
             gridMark.OverlayMark = "Grid";
             gridMark.Repair();
@@ -591,7 +620,46 @@ namespace Flowtype.Tests
             AppSettings badMark = AppSettings.Defaults();
             badMark.OverlayMark = "Spinner";
             badMark.Repair();
-            failures += AssertEqual("unknown mark becomes orb", "Orb", badMark.OverlayMark);
+            failures += AssertEqual("unknown mark becomes grid", "Grid", badMark.OverlayMark);
+            ushort[] identityRamp = new ushort[768];
+            for (int index = 0; index < 256; index++)
+            {
+                ushort value = (ushort)(index * 257);
+                identityRamp[index] = value;
+                identityRamp[256 + index] = value;
+                identityRamp[512 + index] = value;
+            }
+            failures += AssertTrue("identity gamma is identity", DisplayTint.RampIsIdentity(identityRamp, 0));
+            byte[] identityInverse = new byte[256];
+            DisplayTint.BuildInverse(identityRamp, 0, identityInverse);
+            failures += AssertEqual("identity inverse 0", "0", identityInverse[0].ToString());
+            failures += AssertEqual("identity inverse 128", "128", identityInverse[128].ToString());
+            failures += AssertEqual("identity inverse 255", "255", identityInverse[255].ToString());
+            ushort[] warmRamp = new ushort[768];
+            for (int index = 0; index < 256; index++)
+            {
+                int boosted = index * 257 + 8000;
+                if (boosted > 65535) boosted = 65535;
+                int cooled = index * 257 - 6000;
+                if (cooled < 0) cooled = 0;
+                warmRamp[index] = (ushort)boosted;
+                warmRamp[256 + index] = (ushort)(index * 257);
+                warmRamp[512 + index] = (ushort)cooled;
+            }
+            failures += AssertFalse("warm red ramp is not identity", DisplayTint.RampIsIdentity(warmRamp, 0));
+            byte[] warmInverse = new byte[256];
+            DisplayTint.BuildInverse(warmRamp, 0, warmInverse);
+            failures += AssertTrue("inverse of boosted red maps a mid value down", warmInverse[180] < 180);
+            using (Bitmap tintProbe = new Bitmap(2, 2, PixelFormat.Format32bppPArgb))
+            {
+                tintProbe.SetPixel(0, 0, Color.FromArgb(255, 200, 100, 40));
+                byte[] passthrough = new byte[256];
+                for (int index = 0; index < 256; index++) passthrough[index] = (byte)index;
+                DisplayTint.ApplyInverse(tintProbe, passthrough, passthrough, passthrough);
+                Color pixel = tintProbe.GetPixel(0, 0);
+                failures += AssertTrue("identity LUT leaves captured pixels",
+                    pixel.R == 200 && pixel.G == 100 && pixel.B == 40);
+            }
             failures += AssertEqual("default capsule is normal", "Normal", AppSettings.Defaults().OverlaySize);
             failures += AssertTrue("mini capsule is 80 percent",
                 Math.Abs(AppSettings.OverlayScaleFromSize("Mini") - 0.8f) < 0.001f);
