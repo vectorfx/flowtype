@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.96.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.96.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.103.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.103.0")]
 
 namespace Flowtype
 {
@@ -87,7 +87,7 @@ namespace Flowtype
             value.CleanupProvider = "BuiltIn";
             value.Hotkey = "Win + Ctrl";
             value.HandsFreeDoubleTap = true;
-            value.Style = "Natural";
+            value.Style = "Neutral";
             value.CleanupEnabled = true;
             value.ContextEnabled = true;
             value.AutoPaste = false;
@@ -140,7 +140,15 @@ namespace Flowtype
             if (String.Equals(Engine, "Windows", StringComparison.OrdinalIgnoreCase)) Engine = "Local";
             if (String.IsNullOrWhiteSpace(CleanupProvider)) CleanupProvider = Engine == "OpenAI" ? "OpenAI" : "BuiltIn";
             if (String.IsNullOrWhiteSpace(Hotkey)) Hotkey = "Win + Ctrl";
-            if (String.IsNullOrWhiteSpace(Style)) Style = "Natural";
+            if (String.IsNullOrWhiteSpace(Style) ||
+                String.Equals(Style, "Concise", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(Style, "Formal", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(Style, "Casual", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(Style, "Verbatim", StringComparison.OrdinalIgnoreCase))
+                Style = "Neutral";
+            if (!String.Equals(Style, "Neutral", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(Style, "Natural", StringComparison.OrdinalIgnoreCase))
+                Style = "Neutral";
             if (String.IsNullOrWhiteSpace(ApiBaseUrl)) ApiBaseUrl = "https://api.openai.com/v1";
             if (String.IsNullOrWhiteSpace(TranscriptionModel)) TranscriptionModel = "gpt-4o-mini-transcribe";
             if (String.IsNullOrWhiteSpace(CleanupModel)) CleanupModel = "gpt-4o-mini";
@@ -4220,6 +4228,88 @@ namespace Flowtype
         }
     }
 
+    // While Win+Ctrl is held, apps treat the wheel as zoom. Eat the wheel for that
+    // hold only. Do not inject keys and do not synthesize a scroll. That path stuck
+    // modifiers and took the hotkey down.
+    public static class WheelGuard
+    {
+        private const int WheelMessage = 0x020A;
+        private const int HorizontalWheelMessage = 0x020E;
+
+        private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int hookId, HookProc callback, IntPtr module, uint threadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string moduleName);
+
+        private static readonly HookProc Callback = OnMouse;
+        private static readonly object Gate = new object();
+        private static IntPtr handle;
+        private static int dictationHeld;
+        private static int agentHeld;
+
+        public static bool ShouldSwallow(bool chordHeld, int message)
+        {
+            if (!chordHeld) return false;
+            return message == WheelMessage || message == HorizontalWheelMessage;
+        }
+
+        public static void SetDictation(bool held)
+        {
+            dictationHeld = held ? 1 : 0;
+        }
+
+        public static void SetAgent(bool held)
+        {
+            agentHeld = held ? 1 : 0;
+        }
+
+        public static void Install()
+        {
+            lock (Gate)
+            {
+                if (handle != IntPtr.Zero) return;
+                handle = SetWindowsHookEx(14, Callback, GetModuleHandle(null), 0);
+            }
+        }
+
+        public static void Remove()
+        {
+            lock (Gate)
+            {
+                if (handle == IntPtr.Zero) return;
+                try { UnhookWindowsHookEx(handle); } catch { }
+                handle = IntPtr.Zero;
+            }
+            dictationHeld = 0;
+            agentHeld = 0;
+        }
+
+        private static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam)
+        {
+            IntPtr current;
+            lock (Gate) current = handle;
+            if (code < 0 || current == IntPtr.Zero) return CallNextHookEx(current, code, wParam, lParam);
+            try
+            {
+                if (ShouldSwallow(dictationHeld != 0 || agentHeld != 0, wParam.ToInt32()))
+                    return (IntPtr)1;
+            }
+            catch
+            {
+            }
+            return CallNextHookEx(current, code, wParam, lParam);
+        }
+    }
+
     public sealed class PcmRing
     {
         private readonly byte[] data;
@@ -4664,7 +4754,52 @@ namespace Flowtype
 
         public static bool ShouldSplitTake(long recordMs, int regionCount)
         {
-            return recordMs >= 20000 && regionCount >= 2 && regionCount <= 10;
+            // A long note with many pauses used to skip the split once it passed 10
+            // islands, and the single Groq request then dropped the ending. Keep
+            // splitting. Callers pack the islands so this is not one request per pause.
+            return recordMs >= 20000 && regionCount >= 2;
+        }
+
+        // Pack pause-separated islands into spans the recognizer can finish, and
+        // keep every sample through the end of the file. The last words are often
+        // quieter than the body; leaving them outside the last island drops them.
+        public static List<SpeechRegion> CoverTake(List<SpeechRegion> regions, int sampleRate, int totalSamples, int maxSpanMs)
+        {
+            List<SpeechRegion> packed = new List<SpeechRegion>();
+            if (regions == null || regions.Count == 0 || totalSamples <= 1 || sampleRate <= 0)
+                return packed;
+            int maxSamples = Math.Max(sampleRate / 2, (int)Math.Round(sampleRate * (maxSpanMs / 1000.0)));
+            int start = 0;
+            int end = Math.Max(0, regions[0].EndSample);
+            for (int index = 1; index < regions.Count; index++)
+            {
+                SpeechRegion next = regions[index];
+                if (next == null) continue;
+                int candidateEnd = Math.Max(end, next.EndSample);
+                if (candidateEnd - start + 1 > maxSamples && end >= start)
+                {
+                    int close = Math.Min(totalSamples - 1, Math.Max(end, next.StartSample - 1));
+                    if (close >= start) packed.Add(MakeRegion(start, close));
+                    start = Math.Max(0, Math.Min(totalSamples - 1, next.StartSample));
+                    end = next.EndSample;
+                }
+                else end = candidateEnd;
+            }
+            if (end < start) end = start;
+            int uncovered = totalSamples - 1 - end;
+            if (uncovered > sampleRate * 2 && (end - start) + uncovered > maxSamples)
+            {
+                packed.Add(MakeRegion(start, Math.Min(totalSamples - 1, end)));
+                int cursor = Math.Min(totalSamples - 1, end + 1);
+                while (totalSamples - cursor > maxSamples)
+                {
+                    packed.Add(MakeRegion(cursor, cursor + maxSamples - 1));
+                    cursor += maxSamples;
+                }
+                if (cursor <= totalSamples - 1) packed.Add(MakeRegion(cursor, totalSamples - 1));
+            }
+            else packed.Add(MakeRegion(Math.Min(start, totalSamples - 1), totalSamples - 1));
+            return packed;
         }
 
         public static List<SpeechRegion> FindSpeechRegions(byte[] pcm, int sampleRate, int minGapMs, int minRegionMs)
@@ -5959,7 +6094,8 @@ namespace Flowtype
             text = ApplyBacktrack(text);
 
             bool keepDiscourse = IsIntentionalDiscoursePhrase(text);
-            if (!String.Equals(settings.Style, "Verbatim", StringComparison.OrdinalIgnoreCase))
+            bool neutral = IsNeutralStyle(settings);
+            if (!neutral && !String.Equals(settings.Style, "Verbatim", StringComparison.OrdinalIgnoreCase))
             {
                 text = Regex.Replace(text, @"\b(?:um+|uh+|erm+|hmm+)\b[,.]?\s*", "", RegexOptions.IgnoreCase);
                 if (!keepDiscourse)
@@ -5969,8 +6105,11 @@ namespace Flowtype
                 if (!keepDiscourse)
                     text = Regex.Replace(text, @",\s*$", "").Trim();
             }
-            text = Regex.Replace(text, @"\b(\w+)\s+\1\b", "$1", RegexOptions.IgnoreCase);
-            if (!keepDiscourse) text = RemoveRepeatedPhrases(text);
+            if (!neutral)
+            {
+                text = Regex.Replace(text, @"\b(\w+)\s+\1\b", "$1", RegexOptions.IgnoreCase);
+                if (!keepDiscourse) text = RemoveRepeatedPhrases(text);
+            }
             text = RemoveWhisperRepetitions(text);
             text = Regex.Replace(text,
                 @"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*,?\s*(?:no|sorry|actually|I mean)\b\s*,?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\b",
@@ -5983,9 +6122,12 @@ namespace Flowtype
             text = Regex.Replace(text, @"\s*close quote\b", "\"", RegexOptions.IgnoreCase);
             text = text.Replace(" -- ", " — ");
 
-            text = FormatSpokenLists(text, settings);
-            text = FormatNumbered(text);
-            if (!light) text = FormatInferredList(text);
+            if (!IsNeutralStyle(settings))
+            {
+                text = FormatSpokenLists(text, settings);
+                text = FormatNumbered(text);
+                if (!light) text = FormatInferredList(text);
+            }
 
             // Guards keep the words usable as ordinary nouns ("a long period of time",
             // "the Oxford comma", "his colon") — only command usage converts.
@@ -6267,9 +6409,10 @@ namespace Flowtype
                 }
             }
             if (markers.Count < 2) return FormatCardinalList(text);
-            // A two-item list needs two explicit ordinals ("first X second Y"); an anchor plus a
-            // single "then" is normal prose ("first let me check, then we can decide").
-            if (markers.Count == 2 && ordinalCount < 2) return FormatCardinalList(text);
+            // "then" and "finally" only extend a list that already has two real ordinals
+            // ("first … second … then"). One "first" plus ordinary "then"s is prose:
+            // "First I thought it was broken, then I realized, then it worked."
+            if (ordinalCount < 2) return FormatCardinalList(text);
 
             string prefix = text.Substring(0, markers[0].Index).Trim();
             List<string> items = new List<string>();
@@ -6652,7 +6795,9 @@ namespace Flowtype
             text = Regex.Replace(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "");
             text = Regex.Replace(text, @"[.!?]\s+(?:blank audio|no speech(?: detected)?)[.!?]*\s*$", ".", RegexOptions.IgnoreCase);
             text = TranscriptionQuality.StripSpeakerCreditHallucinations(text);
-            return StripThanksHallucinations(RemoveEmbeddedGlitches(text.Trim()));
+            text = text.Trim();
+            if (IsNeutralStyle(settings)) return StripThanksHallucinations(text);
+            return StripThanksHallucinations(RemoveEmbeddedGlitches(text));
         }
 
         public static string StripThanksHallucinations(string text)
@@ -6712,6 +6857,11 @@ namespace Flowtype
             text = Regex.Replace(text, @"\s+\bOutro to\b[^.!?]{0,80}(?=\s+and\s+(?:we|I|they|it|the|then|also)\b)", " ", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, @"\s+\b(?:Camp\.\d|P\.\$[%&$#@]+)[^.!?]{0,80}(?=\s+and\s+(?:we|I|they|it|the|then|also)\b)", " ", RegexOptions.IgnoreCase);
             return Regex.Replace(text, @"[ \t]{2,}", " ").Trim();
+        }
+
+        private static bool IsNeutralStyle(AppSettings settings)
+        {
+            return settings != null && String.Equals(settings.Style, "Neutral", StringComparison.OrdinalIgnoreCase);
         }
 
         public static string RemoveEmbeddedGlitches(string text)
@@ -7188,7 +7338,7 @@ namespace Flowtype
                 "Apply spoken self-corrections using the final intended wording. Add punctuation and paragraph breaks. " +
                 "Infer structure from speech patterns: when ideas are enumerated or delivered as distinct points, format them as Markdown bullets or numbers even if the speaker did not literally say 'bullet point'. " +
                 TextProcessor.SpokenListCleanupHint(settings) +
-                "When the speaker counts steps aloud (first, second, then, finally), keep that exact spoken order as one numbered list. Never emit a list item that is only a connector word such as 'And', 'And then', or 'Then' — fold connectors into the next item's content or drop them. If the speaker dictates a lone letter, output just that letter. " +
+                "When the speaker counts at least two ordinals aloud (first and second, or number one and number two), keep that spoken order as one numbered list. A sentence that only starts with 'first' and continues with 'then' is ordinary prose, not a list. Never emit a list item that is only a connector word such as 'And', 'And then', or 'Then' — fold connectors into the next item's content or drop them. If the speaker dictates a lone letter, output just that letter. " +
                 "Use natural em dashes for genuine asides or sharp pivots, but do not overuse them. Match the target app: short conversational text in chat, polished prose in documents/email, and exact tokens in developer tools. " +
                 "Expand configured snippets. Do not invent information. Do not answer the dictated text. " +
                 "For code, commands, URLs, identifiers, or quoted wording, preserve exact tokens. Style: " + settings.Style + ".";
@@ -7264,7 +7414,7 @@ namespace Flowtype
                 "Clean the following voice dictation for insertion into " + (context == null ? "an app" : context.AppLabel) + ". " +
                 "Return only the cleaned text. Preserve meaning and tone; remove fillers and false starts; honor corrections; add punctuation; " +
                 "drop a leading or trailing standalone 'Thank you'/'Thanks'/'thanks for watching' after other speech (silence hallucination); " +
-                "infer lists from the way points are spoken and format them as bullets or numbers; number spoken step sequences (first, second, then) in their spoken order and never emit a bullet that is only a connector word like 'and' or 'then'; keep a deliberately dictated single letter as-is; use em dashes for natural asides; adapt to the target app; " +
+                "number a sequence only when the speaker uses at least two ordinals (first and second); a lone 'first' followed by 'then' stays prose; never emit a bullet that is only a connector word like 'and' or 'then'; keep a deliberately dictated single letter as-is; use em dashes for natural asides; adapt to the target app; " +
                 TextProcessor.SpokenListCleanupHint(settings) +
                 "never answer or comment on the dictation. Style: " + settings.Style + ".";
 
@@ -7568,7 +7718,7 @@ namespace Flowtype
                 "Drop a leading or trailing standalone 'Thank you'/'Thanks'/'thanks for watching' after other speech — that is a common silence hallucination, not dictated gratitude. " +
                 "Infer lists from rhythm and enumerated ideas even when the speaker does not literally say 'bullet point'. " +
                 TextProcessor.SpokenListCleanupHint(settings) +
-                "When steps are counted aloud (first, second, then, finally), number them in that spoken order; never emit a list item that is only a connector word such as 'And' or 'And then'. Keep a deliberately dictated lone letter as-is. Use natural em dashes for real asides or pivots without overusing them. " +
+                "When the speaker uses at least two ordinals (first and second), number them in that spoken order. A lone 'first' followed by 'then' stays prose. Never emit a list item that is only a connector word such as 'And' or 'And then'. Keep a deliberately dictated lone letter as-is. Use natural em dashes for real asides or pivots without overusing them. " +
                 "Adapt to the target app: concise conversational text in chat, polished prose in email/documents, exact tokens in developer tools. " +
                 "Never answer the dictation or invent information. Preserve exact code, URLs, commands, and identifiers. Style: " + settings.Style + ".";
             StringBuilder user = new StringBuilder(raw);
@@ -8295,6 +8445,41 @@ namespace Flowtype
             }
             int grey = 72 + (int)(48 * sample);
             return Color.FromArgb(Math.Min(255, 220 + (int)(35 * sample)), grey, grey, Math.Min(255, grey + 10));
+        }
+    }
+
+    public static class TitaniumChrome
+    {
+        public static Color Ink()
+        {
+            return Color.FromArgb(255, 252, 252, 255);
+        }
+
+        public static Color Bar(float sample)
+        {
+            sample = Math.Max(0f, Math.Min(1f, sample));
+            int tone = 244 + (int)(11 * sample);
+            return Color.FromArgb(255, tone, tone, 255);
+        }
+
+        public static Color BodyTop()
+        {
+            return Color.FromArgb(255, 210, 210, 214);
+        }
+
+        public static Color BodyBottom()
+        {
+            return Color.FromArgb(255, 176, 177, 182);
+        }
+
+        public static Color Rim()
+        {
+            return Color.FromArgb(255, 242, 242, 246);
+        }
+
+        public static Color Groove()
+        {
+            return Color.FromArgb(255, 128, 128, 134);
         }
     }
 
@@ -9110,8 +9295,8 @@ namespace Flowtype
             float dividerX = (float)Math.Round(capsule.X + 24f) + 0.5f;
             float dividerTop = capsule.Y + 6f;
             float dividerBottom = capsule.Bottom - 6f;
-            Color ink = GetChromeInk();
-            int dividerAlpha = IsGlassTheme() ? (glassOnDark ? 120 : 50) : 38;
+            Color ink = IsTitaniumTheme() ? TitaniumChrome.Groove() : GetChromeInk();
+            int dividerAlpha = IsGlassTheme() ? (glassOnDark ? 120 : 50) : (IsTitaniumTheme() ? 100 : 38);
             using (Pen divider = new Pen(Color.FromArgb(dividerAlpha, ink), 1f))
                 graphics.DrawLine(divider, dividerX, dividerTop, dividerX, dividerBottom);
         }
@@ -9387,7 +9572,7 @@ namespace Flowtype
             if (String.Equals(theme, "Ember", StringComparison.OrdinalIgnoreCase))
                 return Color.FromArgb(255, 236, 196, 148);
             if (IsTitaniumTheme())
-                return Color.FromArgb(255, 236, 228, 214);
+                return TitaniumChrome.Ink();
             return Color.FromArgb(255, 228, 228, 232);
         }
 
@@ -9399,7 +9584,9 @@ namespace Flowtype
                 glow.Inflate(spread * 0.4f, spread * 0.4f);
                 glow.Y += spread * 0.12f;
                 using (GraphicsPath shadowPath = RoundedRectangle(glow, cornerRadius + spread * 0.12f))
-                using (SolidBrush shadow = new SolidBrush(Color.FromArgb(5 + spread * 3, 0, 0, 0)))
+                using (SolidBrush shadow = new SolidBrush(IsTitaniumTheme()
+                    ? Color.FromArgb(10 + spread * 6, 36, 36, 42)
+                    : Color.FromArgb(5 + spread * 3, 0, 0, 0)))
                     graphics.FillPath(shadow, shadowPath);
             }
 
@@ -9432,7 +9619,7 @@ namespace Flowtype
             else if (String.Equals(theme, "Light", StringComparison.OrdinalIgnoreCase))
                 outer = Color.FromArgb(255, 148, 148, 156);
             else if (IsTitaniumTheme())
-                outer = Color.FromArgb(255, 198, 190, 176);
+                outer = TitaniumChrome.Rim();
 
             using (Pen rim = new Pen(outer, 1f))
                 graphics.DrawPath(rim, capsulePath);
@@ -9444,10 +9631,10 @@ namespace Flowtype
             blend.Positions = new float[] { 0f, 0.18f, 0.58f, 1f };
             blend.Colors = new Color[]
             {
-                Color.FromArgb(255, 72, 68, 64),
-                Color.FromArgb(255, 38, 36, 34),
-                Color.FromArgb(255, 20, 19, 18),
-                Color.FromArgb(255, 10, 9, 9)
+                Color.FromArgb(255, 218, 218, 222),
+                Color.FromArgb(255, 202, 202, 206),
+                Color.FromArgb(255, 188, 188, 193),
+                TitaniumChrome.BodyBottom()
             };
             using (LinearGradientBrush surface = new LinearGradientBrush(capsule, Color.Black, Color.Black, LinearGradientMode.Vertical))
             {
@@ -9458,22 +9645,22 @@ namespace Flowtype
             GraphicsState clipState = graphics.Save();
             graphics.SetClip(capsulePath);
 
-            RectangleF sheen = new RectangleF(capsule.X + 1.1f, capsule.Y + 0.7f, capsule.Width - 2.2f, capsule.Height * 0.36f);
+            RectangleF sheen = new RectangleF(capsule.X + 1.1f, capsule.Y + 0.7f, capsule.Width - 2.2f, capsule.Height * 0.38f);
             using (GraphicsPath sheenPath = RoundedRectangle(sheen, Math.Max(1f, cornerRadius - 1.4f)))
             using (LinearGradientBrush gloss = new LinearGradientBrush(
-                sheen, Color.FromArgb(58, 255, 248, 236), Color.FromArgb(0, 255, 248, 236), LinearGradientMode.Vertical))
+                sheen, Color.FromArgb(52, 255, 252, 246), Color.FromArgb(0, 255, 252, 246), LinearGradientMode.Vertical))
                 graphics.FillPath(gloss, sheenPath);
 
             using (LinearGradientBrush edge = new LinearGradientBrush(
                 new RectangleF(capsule.X, capsule.Y, 6.5f, capsule.Height),
-                Color.FromArgb(40, 255, 252, 246),
-                Color.FromArgb(0, 255, 252, 246),
+                Color.FromArgb(34, 255, 255, 255),
+                Color.FromArgb(0, 255, 255, 255),
                 LinearGradientMode.Horizontal))
                 graphics.FillRectangle(edge, capsule.X, capsule.Y + 1.6f, 3.4f, capsule.Height - 3.2f);
 
-            RectangleF recess = new RectangleF(capsule.X, capsule.Bottom - capsule.Height * 0.28f, capsule.Width, capsule.Height * 0.28f);
+            RectangleF recess = new RectangleF(capsule.X, capsule.Bottom - capsule.Height * 0.30f, capsule.Width, capsule.Height * 0.30f);
             using (LinearGradientBrush shade = new LinearGradientBrush(
-                recess, Color.FromArgb(0, 0, 0, 0), Color.FromArgb(52, 0, 0, 0), LinearGradientMode.Vertical))
+                recess, Color.FromArgb(0, 40, 40, 48), Color.FromArgb(22, 40, 40, 48), LinearGradientMode.Vertical))
                 graphics.FillRectangle(shade, recess);
 
             graphics.Restore(clipState);
@@ -9481,7 +9668,7 @@ namespace Flowtype
             RectangleF inner = capsule;
             inner.Inflate(-1.15f, -1.15f);
             using (GraphicsPath innerPath = RoundedRectangle(inner, Math.Max(1f, cornerRadius - 1.15f)))
-            using (Pen hairline = new Pen(Color.FromArgb(58, 255, 246, 232), 0.9f))
+            using (Pen hairline = new Pen(Color.FromArgb(110, TitaniumChrome.Groove()), 0.9f))
                 graphics.DrawPath(hairline, innerPath);
         }
 
@@ -9571,9 +9758,9 @@ namespace Flowtype
             }
             if (IsTitaniumTheme())
             {
-                top = Color.FromArgb(255, 72, 68, 64);
-                bottom = Color.FromArgb(255, 10, 9, 9);
-                borderColor = Color.FromArgb(255, 198, 190, 176);
+                top = TitaniumChrome.BodyTop();
+                bottom = TitaniumChrome.BodyBottom();
+                borderColor = TitaniumChrome.Rim();
                 return;
             }
             top = Color.FromArgb(255, 26, 26, 28);
@@ -9602,10 +9789,7 @@ namespace Flowtype
                 return Color.FromArgb(255, red, green, 255);
             }
             if (IsTitaniumTheme())
-            {
-                int tone = 176 + (int)(72 * sample);
-                return Color.FromArgb(255, tone, Math.Min(255, tone + 2), Math.Min(255, tone + 10));
-            }
+                return TitaniumChrome.Bar(sample);
             int zinc = 168 + (int)(80 * sample);
             return Color.FromArgb(Math.Min(255, alpha), zinc, zinc, Math.Min(255, zinc + 6));
         }
@@ -10133,7 +10317,7 @@ namespace Flowtype
                 "OpenAI — your API key"
             });
             hotkeyBox.Items.AddRange(Hotkeys.Names.Cast<object>().ToArray());
-            styleBox.Items.AddRange(new object[] { "Natural", "Concise", "Formal", "Casual", "Verbatim" });
+            styleBox.Items.AddRange(new object[] { "Neutral", "Natural" });
             overlayThemeBox.Items.AddRange(new object[] { "Dark", "Dark purple", "Light", "Ember", "Titanium", "Liquid glass" });
             overlayMarkBox.Items.AddRange(new object[] { "Grid", "Orb", "Hex", "Iris" });
             overlaySizeBox.Items.AddRange(new object[] { "Normal", "Mini" });
@@ -12072,6 +12256,7 @@ namespace Flowtype
             whisperEngine = new WhisperEngine();
             groqEngine = new GroqEngine();
             hook = new GlobalKeyHook(settings.Hotkey);
+            WheelGuard.Install();
             hook.HotkeyChanged += OnHotkeyChanged;
             // Never run cancel (WAV finalization, file IO) inside the low-level keyboard hook
             // callback — a slow callback gets the hook silently removed by Windows and the
@@ -12425,6 +12610,7 @@ namespace Flowtype
             if (hotkeyDown && !physicalDown)
             {
                 hotkeyDown = false;
+                WheelGuard.SetDictation(false);
                 CancelPendingStop();
                 CancelDoubleTapTimer();
                 ResetRecordingMode();
@@ -12436,7 +12622,11 @@ namespace Flowtype
             {
                 bool agentPhysicalDown = Hotkeys.IsModifierChord(settings.AgentHotkey)
                     && NativeKeyState.IsHotkeyDown(settings.AgentHotkey);
-                if (agentHotkeyDown && !agentPhysicalDown) agentHotkeyDown = false;
+                if (agentHotkeyDown && !agentPhysicalDown)
+                {
+                    agentHotkeyDown = false;
+                    WheelGuard.SetAgent(false);
+                }
                 agentHook.ResetChordTracker();
             }
         }
@@ -12453,6 +12643,7 @@ namespace Flowtype
                     awaitingDoubleTap = false;
                     handsFreeStopPending = true;
                     hotkeyDown = true;
+                    WheelGuard.SetDictation(true);
                     CancelPendingStop();
                     ScheduleStopRecording();
                     return;
@@ -12463,6 +12654,7 @@ namespace Flowtype
                     awaitingDoubleTap = false;
                     latchedRecording = true;
                     hotkeyDown = true;
+                    WheelGuard.SetDictation(true);
                     CancelPendingStop();
                     UpdateRecordingStatus();
                     return;
@@ -12470,6 +12662,7 @@ namespace Flowtype
 
                 if (hotkeyDown) return;
                 hotkeyDown = true;
+                WheelGuard.SetDictation(true);
                 hotkeyDownSince = DateTime.UtcNow;
                 pendingAgentTake = false;
                 CancelPendingStop();
@@ -12490,6 +12683,7 @@ namespace Flowtype
             {
                 if (!hotkeyDown) return;
                 hotkeyDown = false;
+                WheelGuard.SetDictation(false);
                 lastHotkeyRelease = DateTime.UtcNow;
                 CancelPendingStart();
 
@@ -12521,6 +12715,7 @@ namespace Flowtype
             {
                 if (agentHotkeyDown) return;
                 agentHotkeyDown = true;
+                WheelGuard.SetAgent(true);
                 // "No — stop, don't send it." While an ask is in the air the same chord is
                 // the brake, not the trigger. Nothing else in reach is fast enough.
                 if (agentInFlight)
@@ -12553,6 +12748,7 @@ namespace Flowtype
             {
                 if (!agentHotkeyDown) return;
                 agentHotkeyDown = false;
+                WheelGuard.SetAgent(false);
                 AgentTrace.Log("chord up: currentTakeIsAgent=" + currentTakeIsAgent);
                 if (!currentTakeIsAgent)
                 {
@@ -12585,6 +12781,7 @@ namespace Flowtype
             try { agentHook.Dispose(); } catch { }
             agentHook = null;
             agentHotkeyDown = false;
+            WheelGuard.SetAgent(false);
             pendingAgentTake = false;
             StopAgentNoticePoll();
         }
@@ -13118,6 +13315,8 @@ namespace Flowtype
             byte[] pcm = ReadWavPcm(path);
             List<WaveRecorder.SpeechRegion> regions = WaveRecorder.FindSpeechRegions(pcm, 16000, 800, 400);
             if (!WaveRecorder.ShouldSplitTake(recordMs, regions == null ? 0 : regions.Count)) return null;
+            regions = WaveRecorder.CoverTake(regions, 16000, pcm.Length / 2, 20000);
+            if (regions == null || regions.Count < 2) return null;
             SpeechTranscript combined = new SpeechTranscript();
             List<string> chunks = new List<string>();
             string directory = Path.GetDirectoryName(path);
@@ -13577,6 +13776,8 @@ namespace Flowtype
             hook.CaptureEscape = false;
             hotkeyDown = false;
             agentHotkeyDown = false;
+            WheelGuard.SetDictation(false);
+            WheelGuard.SetAgent(false);
             agentOverlay.HideNow();
             ResetRecordingMode();
             toggleItem.Text = "Start dictating";
@@ -13926,7 +14127,8 @@ namespace Flowtype
             shuttingDown = true;
             try { agentSession.Stop(); } catch { }
             try { if (recorder.IsRecording) recorder.Cancel(); } catch { }
-            try { hook.Dispose(); } catch { }
+                try { hook.Dispose(); } catch { }
+                try { WheelGuard.Remove(); } catch { }
             try { if (agentHook != null) agentHook.Dispose(); } catch { }
             try { chordPoller.Stop(); chordPoller.Dispose(); } catch { }
             try { activationPoller.Stop(); activationPoller.Dispose(); } catch { }

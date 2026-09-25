@@ -13,7 +13,7 @@ namespace Flowtype.Tests
         {
             int failures = 0;
             failures += AssertEqual("self correction", "I want pizza no I want pasta.", TextProcessor.Clean("I want pizza no I want pasta.", AppSettings.Defaults()));
-            failures += AssertEqual("repeated words", "The cat.", TextProcessor.Clean("the the cat", AppSettings.Defaults()));
+            failures += AssertEqual("repeated words", "The cat.", TextProcessor.Clean("the the cat", NaturalStyle()));
             failures += AssertEqual("fuzzy dictionary", "Open Settings.", FuzzySettingsTest());
             failures += AssertEqual("prompt echo", "How do you think the integration will be",
                 TextProcessor.StripPromptHallucinations(
@@ -68,7 +68,31 @@ namespace Flowtype.Tests
             failures += AssertFalse("short take is not silence-split", WaveRecorder.ShouldSplitTake(8000, 3));
             failures += AssertTrue("long take with pauses is silence-split", WaveRecorder.ShouldSplitTake(25000, 2));
             failures += AssertFalse("one long island is not silence-split", WaveRecorder.ShouldSplitTake(25000, 1));
-            failures += AssertFalse("too many islands skip the split", WaveRecorder.ShouldSplitTake(25000, 11));
+            failures += AssertTrue("many pauses still split a long take", WaveRecorder.ShouldSplitTake(90000, 14));
+            failures += AssertTrue("wheel is ignored while the talk chord is held", WheelGuard.ShouldSwallow(true, 0x020A));
+            failures += AssertFalse("wheel works when the talk chord is up", WheelGuard.ShouldSwallow(false, 0x020A));
+            failures += AssertFalse("clicks are not eaten while talking", WheelGuard.ShouldSwallow(true, 0x0201));
+            List<WaveRecorder.SpeechRegion> islands = new List<WaveRecorder.SpeechRegion>();
+            for (int index = 0; index < 12; index++)
+            {
+                WaveRecorder.SpeechRegion island = new WaveRecorder.SpeechRegion();
+                island.StartSample = index * 16000 * 4;
+                island.EndSample = island.StartSample + 16000 * 3;
+                islands.Add(island);
+            }
+            int coveredSamples = 55 * 16000;
+            List<WaveRecorder.SpeechRegion> covered = WaveRecorder.CoverTake(islands, 16000, coveredSamples, 20000);
+            failures += AssertTrue("long note stays in more than one piece", covered.Count >= 2);
+            bool chunksFit = true;
+            for (int index = 0; index < covered.Count; index++)
+            {
+                int span = covered[index].EndSample - covered[index].StartSample + 1;
+                if (span > 16000 * 28) chunksFit = false;
+            }
+            failures += AssertTrue("covered chunks stay inside a whisper window", chunksFit);
+            failures += AssertEqual("quiet tail stays in the last piece",
+                (coveredSamples - 1).ToString(),
+                covered[covered.Count - 1].EndSample.ToString());
             failures += AssertEqual("agent heard label", "heard", AgentOverlay.StatusWord(AgentOverlay.Stage.Heard));
             failures += AssertEqual("agent thinking label", "thinking", AgentOverlay.StatusWord(AgentOverlay.Stage.Thinking));
             failures += AssertTrue("agent hold cap is 12 seconds", AgentOverlay.MaxHoldMs == 12000);
@@ -225,7 +249,7 @@ namespace Flowtype.Tests
             failures += AssertFalse(TranscriptionQuality.IsLikelyThanksHallucination("Thank you for coming.", 0.8, 9.0));
             failures += AssertEqual("embedded lone T",
                 "So we need to finish the project by Friday and then send it to the client for review.",
-                TextProcessor.Clean("So we need to finish the project by Friday and T then send it to the client for review", AppSettings.Defaults()));
+                TextProcessor.Clean("So we need to finish the project by Friday and T then send it to the client for review", NaturalStyle()));
             failures += AssertEqual("mid prompt echo",
                 "The integration is working well and we should ship tomorrow.",
                 TextProcessor.Clean("The integration is working well Target window 1x garbage and we should ship tomorrow", AppSettings.Defaults()));
@@ -236,10 +260,28 @@ namespace Flowtype.Tests
             failures += AssertEqual("cue letter kept",
                 "The drive letter is P okay.",
                 TextProcessor.Clean("the drive letter is P okay", AppSettings.Defaults()));
-            failures += AssertContains("1.", TextProcessor.Clean("first get milk second get bread third get eggs", AppSettings.Defaults()));
-            failures += AssertContains("2. Get bread", TextProcessor.Clean("first get milk second get bread third get eggs", AppSettings.Defaults()));
-            failures += AssertContains("3. Email the team",
+            AppSettings neutral = AppSettings.Defaults();
+            neutral.Style = "Neutral";
+            failures += AssertEqual("neutral keeps a dictated letter",
+                "We should ship the feature P before Friday morning.",
+                TextProcessor.Clean("we should ship the feature P before Friday morning", neutral));
+            failures += AssertEqual("neutral keeps a word said twice",
+                "I really really want this shipped.",
+                TextProcessor.Clean("I really really want this shipped", neutral));
+            failures += AssertEqual("natural still drops a doubled word",
+                "I really want this shipped.",
+                TextProcessor.Clean("I really really want this shipped", NaturalStyle()));
+            failures += AssertContains("1.", TextProcessor.Clean("first get milk second get bread third get eggs", NaturalStyle()));
+            failures += AssertContains("2. Get bread", TextProcessor.Clean("first get milk second get bread third get eggs", NaturalStyle()));
+            failures += AssertEqual("first plus thens stays prose",
+                "First check the logs, then restart the server, then email the team.",
                 TextProcessor.Clean("first check the logs, then restart the server, then email the team", AppSettings.Defaults()));
+            failures += AssertEqual("first I thought stays prose",
+                "First I thought it was broken, then I realized it was the mic, then it worked.",
+                TextProcessor.Clean("First I thought it was broken, then I realized it was the mic, then it worked.", AppSettings.Defaults()));
+            failures += AssertEqual("so first stays one sentence",
+                "So first, we look at the logs, then we restart, and then we email the team.",
+                TextProcessor.Clean("So first, we look at the logs, then we restart, and then we email the team.", AppSettings.Defaults()));
             failures += AssertEqual("no numbered list from prose mentioning ordinals",
                 "When I say first or second it puts it into a one and two order.",
                 TextProcessor.Clean("when I say first or second it puts it into a one and two order", AppSettings.Defaults()));
@@ -291,7 +333,7 @@ namespace Flowtype.Tests
             failures += AssertContains("- buy milk\n- get eggs",
                 TextProcessor.ApplyAlwaysEdits("buy milk next point get eggs", AppSettings.Defaults()));
             failures += AssertContains("2. Restart the server",
-                TextProcessor.Clean("first of all check the logs, second of all restart the server, finally email the team", AppSettings.Defaults()));
+                TextProcessor.Clean("first of all check the logs, second of all restart the server, finally email the team", NaturalStyle()));
             failures += AssertEqual("period noun kept",
                 "That went on for a long period of time.",
                 TextProcessor.Clean("that went on for a long period of time", AppSettings.Defaults()));
@@ -329,7 +371,7 @@ namespace Flowtype.Tests
                 "My goals for this week are exercise, reading, and finishing the prototype.",
                 TextProcessor.Clean("My goals for this week are exercise, reading, and finishing the prototype", AppSettings.Defaults()));
             failures += AssertContains("- Better tooling",
-                TextProcessor.Clean("here are the top three things we need, better tooling, clearer specs, and more time", AppSettings.Defaults()));
+                TextProcessor.Clean("here are the top three things we need, better tooling, clearer specs, and more time", NaturalStyle()));
             failures += AssertEqual("not preserved", "Not.", TextProcessor.Clean("not", AppSettings.Defaults()));
             failures += AssertEqual("split not healed", "Not.", TextProcessor.Clean("no t", AppSettings.Defaults()));
             failures += AssertEqual("split not in sentence", "I do not want.",
@@ -358,7 +400,7 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("you know you know", AppSettings.Defaults()));
             failures += AssertEqual("mid sentence you know still stripped",
                 "Something else.",
-                TextProcessor.Clean("something else, you know", AppSettings.Defaults()));
+                TextProcessor.Clean("something else, you know", NaturalStyle()));
             failures += AssertEqual("i meant is not i mean plus t", "I meant.",
                 TextProcessor.Clean("I meant", AppSettings.Defaults()));
             failures += AssertEqual("i meant to go stays", "I meant to go there.",
@@ -369,7 +411,7 @@ namespace Flowtype.Tests
                 TextProcessor.Clean("I mean", AppSettings.Defaults()));
             failures += AssertEqual("trailing i mean filler still stripped",
                 "Something else.",
-                TextProcessor.Clean("something else, I mean", AppSettings.Defaults()));
+                TextProcessor.Clean("something else, I mean", NaturalStyle()));
             failures += AssertEqual("hello does not lose the first syllable", "Hello.",
                 TextProcessor.Clean("hello", AppSettings.Defaults()));
             failures += AssertEqual("the stays the", "The.",
@@ -559,9 +601,18 @@ namespace Flowtype.Tests
             failures += AssertTrue("paste releases Win and Ctrl leftovers",
                 Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0x5B) >= 0
                 && Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0xA2) >= 0);
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.97"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.104"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.96", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.103", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("default style is neutral", "Neutral", AppSettings.Defaults().Style);
+            AppSettings retiredStyle = AppSettings.Defaults();
+            retiredStyle.Style = "Verbatim";
+            retiredStyle.Repair();
+            failures += AssertEqual("retired styles become neutral", "Neutral", retiredStyle.Style);
+            AppSettings naturalKept = AppSettings.Defaults();
+            naturalKept.Style = "Natural";
+            naturalKept.Repair();
+            failures += AssertEqual("natural style kept", "Natural", naturalKept.Style);
             failures += AssertTrue(ForegroundContext.CanRestoreOver("hello from dictation", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver("", "hello from dictation"));
             failures += AssertTrue(ForegroundContext.CanRestoreOver(null, "hello from dictation"));
@@ -604,6 +655,12 @@ namespace Flowtype.Tests
             titaniumTheme.OverlayTheme = "Titanium";
             titaniumTheme.Repair();
             failures += AssertEqual("titanium theme kept", "Titanium", titaniumTheme.OverlayTheme);
+            failures += AssertTrue("titanium ink is near white", TitaniumChrome.Ink().R > 240);
+            failures += AssertTrue("titanium bars are near white", TitaniumChrome.Bar(1f).R > 245);
+            failures += AssertTrue("titanium body is pro gray not paper white",
+                TitaniumChrome.BodyTop().R > 170 && TitaniumChrome.BodyTop().R < 230);
+            failures += AssertTrue("titanium body stays lighter than mid gray",
+                TitaniumChrome.BodyBottom().R > 160);
             failures += AssertEqual("default live mark is grid", "Grid", AppSettings.Defaults().OverlayMark);
             AppSettings hexMark = AppSettings.Defaults();
             hexMark.OverlayMark = "Hex";
@@ -973,6 +1030,13 @@ namespace Flowtype.Tests
             segment.Start = start;
             segment.End = end;
             return segment;
+        }
+
+        private static AppSettings NaturalStyle()
+        {
+            AppSettings settings = AppSettings.Defaults();
+            settings.Style = "Natural";
+            return settings;
         }
 
         private static byte[] MakePcmTone(int amplitude, double toneSeconds, double leadSilenceSeconds, double trailSilenceSeconds)

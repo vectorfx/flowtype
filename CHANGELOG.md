@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.3.103
+
+While the talk chord is held, the mouse wheel does nothing. That stops Ctrl+wheel from zooming the app you are dictating into. The chord keys are not touched.
+
+---
+
+## 1.3.102
+
+Writing style starts on **Neutral**. **Natural** is the other choice. Concise, Formal, Casual, and Verbatim are gone: they barely differed, and Neutral already keeps the words Natural was deleting.
+
+The mouse-wheel change from 1.3.101 is not in this build. It broke dictation and is gone.
+
+---
+
+## 1.3.100
+
+**Neutral** writing style leaves the words alone. A letter you dictate stays, and a word you say twice stays twice. Natural, Concise, Formal, Casual, and Verbatim are unchanged.
+
+---
+
+## 1.3.99
+
+Long voice notes no longer lose the ending. A take with lots of pauses is still split into pieces the recognizer can finish, and the last piece runs through the end of the recording so a quieter final sentence is not left out.
+
+---
+
+## 1.3.98
+
+Saying **first** no longer turns the take into a numbered list. "First I thought it was broken, then I realized, then it worked" stays a sentence. A list still forms when you actually count ("first … second …") or say **next point** / **next number**.
+
+---
+
+## 1.3.97
+
+Titanium recast: pro light-gray chassis, near-white meters, milled groove, bright machined rim. No more dark graphite.
+
+---
+
 ## 1.3.96
 
 Liquid glass no longer double-tints under **f.lux** / Night Light: the captured desktop is inverse-gamma'd before blur, so the overlay is warmed once like every other window. Frost, blur, and click-through are unchanged. If Windows Night Light is using a DWM color filter instead of a gamma ramp, the OS may still warm the grab — there is no second matrix to invert without breaking glass.

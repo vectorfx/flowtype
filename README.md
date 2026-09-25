@@ -144,7 +144,7 @@ Microphone boost is **off by default** — toggle it on under Input & performanc
 | Theme | |
 |---|---|
 | **Dark** *(default)* | Matte near-black |
-| **Titanium** | Machined graphite, champagne rim, steel bars |
+| **Titanium** | Pro light-gray chassis, near-white meters, machined titanium rim |
 | **Dark purple** · **Light** · **Ember** | Alternate looks |
 | **Liquid glass** | Frosted blur of the desktop behind the pill. f.lux / Night Light gamma is undone on the capture so the pill is not double-yellow |
 
