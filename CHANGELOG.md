@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.105
+
+Whisper spoken-loop hallucinations on Neutral (the default style):
+- Collapse comma-joined runaway cores ("just a couple of weeks ago" ×3 with "I was" / "it was" / "it's" wrappers → one)
+- Collapse adjacent long clause doubles ("I'm not sure if you're out of my mind, I'm not sure if you're out of my mind" → one)
+- These used to slip through because Neutral skips short phrase-dedupe, and the old loop stripper only fired on sentence endings (`.!?`)
+
+## 1.3.104
+
+The app no longer freezes the keyboard while it is saving a take or pasting it. Microphone open/close and the wave file stay off the UI thread. Cleanup of a long unpunctuated take can no longer sit for many seconds inside one regex. Clipboard reads and writes give up after a quarter-second instead of waiting forever. The voice meter no longer posts a UI message for every audio buffer.
+
 ## 1.3.103
 
 While the talk chord is held, the mouse wheel does nothing. That stops Ctrl+wheel from zooming the app you are dictating into. The chord keys are not touched.

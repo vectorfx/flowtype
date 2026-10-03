@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.103.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.103.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.105.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.105.0")]
 
 namespace Flowtype
 {
@@ -1684,21 +1684,24 @@ namespace Flowtype
 
         public List<PendingInsert> Finish(int sequence, PendingInsert job)
         {
-            if (job != null) waiting[sequence] = job;
-            else skipped.Add(sequence);
-            List<PendingInsert> drain = new List<PendingInsert>();
-            while (waiting.ContainsKey(next) || skipped.Contains(next))
+            lock (waiting)
             {
-                PendingInsert ready;
-                if (waiting.TryGetValue(next, out ready))
+                if (job != null) waiting[sequence] = job;
+                else skipped.Add(sequence);
+                List<PendingInsert> drain = new List<PendingInsert>();
+                while (waiting.ContainsKey(next) || skipped.Contains(next))
                 {
-                    drain.Add(ready);
-                    waiting.Remove(next);
+                    PendingInsert ready;
+                    if (waiting.TryGetValue(next, out ready))
+                    {
+                        drain.Add(ready);
+                        waiting.Remove(next);
+                    }
+                    else skipped.Remove(next);
+                    next++;
                 }
-                else skipped.Remove(next);
-                next++;
+                return drain;
             }
-            return drain;
         }
     }
 
@@ -3091,6 +3094,33 @@ namespace Flowtype
         // row) must paste again, so this must stay well under record+transcribe turnaround.
         private const int PasteDebounceMs = 300;
 
+        // Clipboard OLE calls can block until another app finishes delay-rendering.
+        // That call must not sit on the thread that owns the low-level keyboard hook.
+        public const int ClipboardBudgetMs = 250;
+
+        public static bool ShouldPasteOnCallingThread(bool callerIsUiMessagePump)
+        {
+            return !callerIsUiMessagePump;
+        }
+
+        public static bool TryClipboard(Action action, int timeoutMs)
+        {
+            if (action == null) return false;
+            Exception error = null;
+            Thread thread = new Thread((ThreadStart)delegate
+            {
+                try { action(); }
+                catch (Exception exception) { error = exception; }
+            });
+            thread.IsBackground = true;
+            thread.Name = "FlowtypeClipboard";
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            if (!thread.Join(Math.Max(40, timeoutMs))) return false;
+            if (error != null) throw error;
+            return true;
+        }
+
         public static ForegroundInfo Capture(bool includeContext)
         {
             ForegroundInfo result = new ForegroundInfo();
@@ -3426,16 +3456,20 @@ namespace Flowtype
         {
             pinnedClipboardHasText = false;
             pinnedClipboardText = null;
-            clipboardRemembered = true;
+            bool opened = false;
             try
             {
-                if (Clipboard.ContainsText())
+                opened = TryClipboard(delegate
                 {
-                    pinnedClipboardText = Clipboard.GetText();
-                    pinnedClipboardHasText = true;
-                }
+                    if (Clipboard.ContainsText())
+                    {
+                        pinnedClipboardText = Clipboard.GetText();
+                        pinnedClipboardHasText = true;
+                    }
+                }, ClipboardBudgetMs);
             }
             catch { }
+            clipboardRemembered = opened;
         }
 
         public static void ReapplyUserClipboard()
@@ -3443,10 +3477,13 @@ namespace Flowtype
             if (!clipboardRemembered) return;
             try
             {
-                if (pinnedClipboardHasText && pinnedClipboardText != null)
-                    Clipboard.SetText(pinnedClipboardText);
-                else
-                    Clipboard.Clear();
+                TryClipboard(delegate
+                {
+                    if (pinnedClipboardHasText && pinnedClipboardText != null)
+                        Clipboard.SetText(pinnedClipboardText);
+                    else
+                        Clipboard.Clear();
+                }, ClipboardBudgetMs);
             }
             catch { }
         }
@@ -3468,18 +3505,21 @@ namespace Flowtype
         {
             try
             {
-                string current = null;
-                try
+                TryClipboard(delegate
                 {
-                    if (Clipboard.ContainsText()) current = Clipboard.GetText();
-                }
-                catch { }
-                if (!CanRestoreOver(current, dictationPayload, pinnedClipboardHasText ? pinnedClipboardText : null))
-                    return;
-                if (pinnedClipboardHasText && pinnedClipboardText != null)
-                    Clipboard.SetText(pinnedClipboardText);
-                else
-                    Clipboard.Clear();
+                    string current = null;
+                    try
+                    {
+                        if (Clipboard.ContainsText()) current = Clipboard.GetText();
+                    }
+                    catch { }
+                    if (!CanRestoreOver(current, dictationPayload, pinnedClipboardHasText ? pinnedClipboardText : null))
+                        return;
+                    if (pinnedClipboardHasText && pinnedClipboardText != null)
+                        Clipboard.SetText(pinnedClipboardText);
+                    else
+                        Clipboard.Clear();
+                }, ClipboardBudgetMs);
             }
             catch { }
             ForgetClipboard();
@@ -3493,23 +3533,12 @@ namespace Flowtype
         public static void ScheduleClipboardRestore(string dictationPayload, int delayMs)
         {
             string payload = dictationPayload;
-            Control marshal = clipboardMarshal;
             int wait = delayMs < 80 ? 80 : delayMs;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Thread.Sleep(wait);
-                Action restore = delegate { RestoreRememberedClipboard(payload); };
-                try
-                {
-                    if (marshal != null && !marshal.IsDisposed && marshal.IsHandleCreated)
-                        marshal.BeginInvoke(restore);
-                    else
-                        restore();
-                }
-                catch
-                {
-                    try { restore(); } catch { }
-                }
+                try { RestoreRememberedClipboard(payload); }
+                catch { }
             });
         }
 
@@ -3736,18 +3765,19 @@ namespace Flowtype
             if (!clipboardRemembered) RememberClipboard();
 
             Exception clipError = null;
-            for (int attempt = 0; attempt < 6; attempt++)
+            for (int attempt = 0; attempt < 4; attempt++)
             {
                 try
                 {
-                    Clipboard.SetText(payload);
+                    if (!TryClipboard(delegate { Clipboard.SetText(payload); }, ClipboardBudgetMs))
+                        throw new TimeoutException("Clipboard did not answer in time.");
                     clipError = null;
                     break;
                 }
                 catch (Exception exception)
                 {
                     clipError = exception;
-                    Thread.Sleep(40 * (attempt + 1));
+                    if (attempt < 3) Thread.Sleep(30);
                 }
             }
             if (clipError != null) throw clipError;
@@ -4023,17 +4053,18 @@ namespace Flowtype
         private static bool TryClipboardOnly(string payload)
         {
             Exception last = null;
-            for (int attempt = 0; attempt < 6; attempt++)
+            for (int attempt = 0; attempt < 4; attempt++)
             {
                 try
                 {
-                    Clipboard.SetText(payload);
+                    if (!TryClipboard(delegate { Clipboard.SetText(payload); }, ClipboardBudgetMs))
+                        throw new TimeoutException("Clipboard did not answer in time.");
                     return false;
                 }
                 catch (Exception exception)
                 {
                     last = exception;
-                    Thread.Sleep(40 * (attempt + 1));
+                    if (attempt < 3) Thread.Sleep(30);
                 }
             }
             if (last != null) throw last;
@@ -4444,6 +4475,32 @@ namespace Flowtype
         public static bool ShouldAnnounceCapture(bool alreadyAnnounced, bool takeActive, int bytesRecorded)
         {
             return takeActive && !alreadyAnnounced && bytesRecorded > 0;
+        }
+
+        /// <summary>
+        /// waveInOpen / DrainCallbacks / WriteWave must not run on the WinForms message pump.
+        /// Cold open or WAV finalize on the UI thread freezes the capsule (and the app).
+        /// </summary>
+        public static bool MicIoAllowedOnUiMessagePump
+        {
+            get { return false; }
+        }
+
+        /// <summary>
+        /// Policy: only open the capture device from a worker thread (or when already open).
+        /// </summary>
+        public static bool ShouldOpenDeviceOnCallingThread(bool deviceAlreadyOpen, bool callerIsUiMessagePump)
+        {
+            if (deviceAlreadyOpen) return false;
+            return !callerIsUiMessagePump;
+        }
+
+        /// <summary>
+        /// Policy: take finalize (drain + WAV write) must leave the UI message pump.
+        /// </summary>
+        public static bool ShouldFinalizeTakeOnCallingThread(bool callerIsUiMessagePump)
+        {
+            return !callerIsUiMessagePump;
         }
 
         private readonly object gate = new object();
@@ -4943,6 +5000,9 @@ namespace Flowtype
 
         public string Stop()
         {
+            string output;
+            string pcm;
+            float gain;
             lock (micLock)
             {
                 if (!takeActive) return wavePath;
@@ -4958,8 +5018,9 @@ namespace Flowtype
                         rawStream = null;
                     }
                 }
-                WriteWave(rawPath, wavePath, MicGain);
-                try { File.Delete(rawPath); } catch { }
+                output = wavePath;
+                pcm = rawPath;
+                gain = MicGain;
                 preroll.Clear();
                 liveWindow.Clear();
                 ReleaseDevice();
@@ -4967,8 +5028,12 @@ namespace Flowtype
                 // voice pill mid-frame whenever a take ends (or the mic is toggled) while
                 // the overlay is still up.
                 if (keepWarm) QueueWarmOpen();
-                return wavePath;
             }
+            // WAV finalize is O(take length). Keep it outside micLock so warm-reopen can
+            // proceed, and never call Stop from the UI message pump.
+            WriteWave(pcm, output, gain);
+            try { File.Delete(pcm); } catch { }
+            return output;
         }
 
         private void QueueWarmOpen()
@@ -6790,9 +6855,12 @@ namespace Flowtype
             if (preferredTerms.Success && preferredTerms.Index >= 20)
                 text = text.Substring(0, preferredTerms.Index).TrimEnd(' ', '\t', '-', '–', '—', ',');
 
-            text = Regex.Replace(text, @"[\s\-–—,]*\b(?:Target window|Outro to)\b.*$", "", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, @"[\s,]*(?:Camp\.\d|P\.\$[%&$#@]*).*$", "", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "");
+            text = ReplaceBounded(text, @"[\s\-–—,]*\b(?:Target window|Outro to)\b.*$", "", RegexOptions.IgnoreCase);
+            text = ReplaceBounded(text, @"[\s,]*(?:Camp\.\d|P\.\$[%&$#@]*).*$", "", RegexOptions.IgnoreCase);
+            // The symbol class overlaps letters and spaces. Running it on ordinary prose
+            // backtracks for seconds and freezes the app. Skip it unless those marks exist.
+            if (text.IndexOfAny(new char[] { '%', '&', '$', '#', '@' }) >= 0)
+                text = ReplaceBounded(text, @"[\s,]*[A-Za-z0-9.\s]*[%&$#@]{2,}[A-Za-z0-9.%&$#@\s]*$", "", RegexOptions.None);
             text = Regex.Replace(text, @"[.!?]\s+(?:blank audio|no speech(?: detected)?)[.!?]*\s*$", ".", RegexOptions.IgnoreCase);
             text = TranscriptionQuality.StripSpeakerCreditHallucinations(text);
             text = text.Trim();
@@ -6896,11 +6964,24 @@ namespace Flowtype
             return text.Trim();
         }
 
+        private static string ReplaceBounded(string input, string pattern, string replacement, RegexOptions options)
+        {
+            if (input == null) return "";
+            try
+            {
+                return Regex.Replace(input, pattern, replacement, options, TimeSpan.FromMilliseconds(200));
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return input;
+            }
+        }
+
         private static string RemoveRepeatedPhrases(string text)
         {
             for (int pass = 0; pass < 3; pass++)
             {
-                string next = Regex.Replace(text,
+                string next = ReplaceBounded(text,
                     @"\b(?<phrase>[A-Za-z0-9']+(?:\s+[A-Za-z0-9']+){0,3})\s*[,]?\s+\k<phrase>\b",
                     "${phrase}", RegexOptions.IgnoreCase);
                 if (String.Equals(next, text, StringComparison.Ordinal)) break;
@@ -7008,7 +7089,7 @@ namespace Flowtype
             if (String.IsNullOrWhiteSpace(text) || text.Length < 40) return text;
             for (int pass = 0; pass < 2; pass++)
             {
-                string next = Regex.Replace(text,
+                string next = ReplaceBounded(text,
                     @"([^.!?\n""']{12,}[.!?]+)\s+\1+",
                     "$1", RegexOptions.IgnoreCase);
                 if (String.Equals(next, text, StringComparison.Ordinal)) break;
@@ -7016,13 +7097,33 @@ namespace Flowtype
             }
             for (int pass = 0; pass < 2; pass++)
             {
-                string next = Regex.Replace(text,
+                string next = ReplaceBounded(text,
                     @"(\b[A-Za-z0-9']+(?:\s+[A-Za-z0-9']+){2,8})\s*(?:\1\s*)+$",
                     "$1", RegexOptions.IgnoreCase);
                 if (String.Equals(next, text, StringComparison.Ordinal)) break;
                 text = next;
             }
-            return CollapseWrappedTerminalLoops(text);
+            // Neutral skips RemoveRepeatedPhrases. Whisper still emits comma-joined
+            // spoken loops with no .!? — collapse those here so style cannot turn them back on.
+            text = CollapseAdjacentLongPhraseRepeats(text);
+            text = CollapseWrappedTerminalLoops(text);
+            return CollapseWrappedCoreLoops(text);
+        }
+
+        // Exact "phrase, phrase" / "phrase phrase" where phrase is 5–12 words.
+        // Catches Neutral-style adjacent clause doubles the short RemoveRepeatedPhrases miss.
+        private static string CollapseAdjacentLongPhraseRepeats(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text) || text.Length < 40) return text;
+            for (int pass = 0; pass < 4; pass++)
+            {
+                string next = ReplaceBounded(text,
+                    @"\b(?<phrase>[A-Za-z0-9']+(?:\s+[A-Za-z0-9']+){4,11})\b(?:\s*[,;]?\s+)\k<phrase>\b",
+                    "${phrase}", RegexOptions.IgnoreCase);
+                if (String.Equals(next, text, StringComparison.Ordinal)) break;
+                text = next;
+            }
+            return text;
         }
 
         private sealed class WordSpan
@@ -7035,6 +7136,18 @@ namespace Flowtype
 
         private static string CollapseWrappedTerminalLoops(string text)
         {
+            return CollapseWrappedLoops(text, true, 4, 8, 3, 16);
+        }
+
+        // Same shape as terminal loops, but the repeated core need not end at .!?
+        // ("just a couple of weeks ago" ×3 with "I was" / "it was" / "it's" wrappers).
+        private static string CollapseWrappedCoreLoops(string text)
+        {
+            return CollapseWrappedLoops(text, false, 5, 8, 3, 12);
+        }
+
+        private static string CollapseWrappedLoops(string text, bool requireTerminal, int minN, int maxN, int minHits, int maxGapWords)
+        {
             if (String.IsNullOrWhiteSpace(text) || text.Length < 40) return text;
             List<WordSpan> words = TokenizeWordSpans(text);
             if (words.Count < 12) return text;
@@ -7043,12 +7156,12 @@ namespace Flowtype
             int bestN = 0;
             int bestFirst = -1;
             int bestLast = -1;
-            for (int n = 8; n >= 4; n--)
+            for (int n = maxN; n >= minN; n--)
             {
                 Dictionary<string, List<int>> hitsAt = new Dictionary<string, List<int>>(StringComparer.Ordinal);
                 for (int index = 0; index + n <= words.Count; index++)
                 {
-                    if (!words[index + n - 1].Terminal) continue;
+                    if (requireTerminal && !words[index + n - 1].Terminal) continue;
                     StringBuilder key = new StringBuilder();
                     for (int part = 0; part < n; part++)
                     {
@@ -7066,8 +7179,8 @@ namespace Flowtype
                 }
                 foreach (KeyValuePair<string, List<int>> pair in hitsAt)
                 {
-                    List<int> clustered = LongestCloseCluster(pair.Value, n, 16);
-                    if (clustered.Count < 3) continue;
+                    List<int> clustered = LongestCloseCluster(pair.Value, n, maxGapWords);
+                    if (clustered.Count < minHits) continue;
                     if (clustered.Count > bestCount || (clustered.Count == bestCount && n > bestN))
                     {
                         bestCount = clustered.Count;
@@ -7077,18 +7190,23 @@ namespace Flowtype
                     }
                 }
             }
-            if (bestCount < 3 || bestFirst < 0 || bestN <= 0) return text;
+            if (bestCount < minHits || bestFirst < 0 || bestN <= 0) return text;
 
+            // Keep the first hit's leading wrapper ("I was just…") and drop later copies
+            // plus the glue between them. Rest after the final copy is preserved.
             int keepEnd = words[bestFirst + bestN - 1].End;
             while (keepEnd < text.Length && (text[keepEnd] == '.' || text[keepEnd] == '?' || text[keepEnd] == '!' || text[keepEnd] == '"' || text[keepEnd] == '\''))
                 keepEnd++;
             int dropEnd = words[bestLast + bestN - 1].End;
-            while (dropEnd < text.Length && (Char.IsWhiteSpace(text[dropEnd]) || text[dropEnd] == '.' || text[dropEnd] == '?' || text[dropEnd] == '!' || text[dropEnd] == '"' || text[dropEnd] == '\''))
+            while (dropEnd < text.Length && (Char.IsWhiteSpace(text[dropEnd]) || text[dropEnd] == '.' || text[dropEnd] == '?' || text[dropEnd] == '!' || text[dropEnd] == '"' || text[dropEnd] == '\'' || text[dropEnd] == ',' || text[dropEnd] == ';'))
                 dropEnd++;
-            string kept = text.Substring(0, keepEnd).TrimEnd();
+            string kept = text.Substring(0, keepEnd).TrimEnd(' ', '\t', ',', ';');
             string rest = dropEnd < text.Length ? text.Substring(dropEnd).Trim() : "";
             if (rest.Length == 0) return kept;
-            return kept + " " + rest;
+            // Drop leading filler that only existed to glue the loop ("and then I was like,").
+            rest = Regex.Replace(rest, @"^(?:(?:and|then|so|anyway|now|like|you know|i mean|i don't know|i was like)[,.\s]*)+", "", RegexOptions.IgnoreCase).Trim();
+            if (rest.Length == 0) return kept;
+            return kept + ", " + rest;
         }
 
         private static List<int> LongestCloseCluster(List<int> hits, int n, int maxGapWords)
@@ -8677,10 +8795,32 @@ namespace Flowtype
         private bool exiting;
         private int overlaySession;
         private int pendingHideSession;
+        private float pendingMeterLevel;
+        private int pendingMeterFlag;
         private readonly Stopwatch revealClock = new Stopwatch();
         private const int RevealInMs = 160;
         private const int RevealOutMs = 120;
         public event Action MaximumDurationReached;
+
+        /// <summary>
+        /// Audio callbacks must not BeginInvoke a meter message per buffer — the 32ms
+        /// paint timer drains a pending level instead so the UI queue cannot back up.
+        /// </summary>
+        public static bool ShouldBeginInvokeMeter(bool invokeRequired)
+        {
+            return false;
+        }
+
+        /// <summary>
+        /// While the overlay timer is already pumping, size changes must not CopyFromScreen
+        /// inline. Defer via pendingGlassRecapture so a live-caption resize cannot stall
+        /// the message pump with a desktop grab + blur.
+        /// </summary>
+        public static bool ShouldCaptureGlassSynchronously(bool sizeChanged, bool overlayTimerRunning)
+        {
+            if (sizeChanged && overlayTimerRunning) return false;
+            return true;
+        }
 
         public void SetTheme(string value)
         {
@@ -8738,6 +8878,8 @@ namespace Flowtype
                         level *= 0.84f;
                         for (int index = 0; index < bands.Length; index++) bands[index] *= 0.82f;
                     }
+                    if (Interlocked.Exchange(ref pendingMeterFlag, 0) != 0)
+                        ApplyLevel(pendingMeterLevel);
                     if (elapsed.IsRunning && elapsed.Elapsed >= TimeSpan.FromMinutes(10) && !maxRaised)
                     {
                         maxRaised = true;
@@ -8817,13 +8959,15 @@ namespace Flowtype
             exiting = false;
             revealProgress = 0f;
             revealClock.Restart();
-            timer.Start();
             PositionOverlay();
             if (IsGlassTheme())
             {
                 glassRecaptureAttempts = 0;
+                // Capture before the timer starts so the first paint is frosted without
+                // racing a deferred tick, and without treating this as a size-change defer.
                 CaptureGlassBackdrop();
             }
+            timer.Start();
             if (!Visible) Show();
             RenderLayered();
         }
@@ -8932,7 +9076,10 @@ namespace Flowtype
                 if (IsGlassTheme() && Visible && !exiting)
                 {
                     glassRecaptureAttempts = 0;
-                    CaptureGlassBackdrop();
+                    if (ShouldCaptureGlassSynchronously(true, timer.Enabled))
+                        CaptureGlassBackdrop();
+                    else
+                        pendingGlassRecapture = true;
                 }
             }
             RenderLayered();
@@ -9211,7 +9358,15 @@ namespace Flowtype
             if (IsDisposed) return;
             if (InvokeRequired)
             {
-                try { BeginInvoke(new Action<float>(SetLevel), value); } catch { }
+                // Do not BeginInvoke per audio buffer — that floods the UI queue while
+                // RenderLayered already runs on the 32ms timer. Stash and let the tick drain.
+                if (ShouldBeginInvokeMeter(true))
+                {
+                    try { BeginInvoke(new Action<float>(SetLevel), value); } catch { }
+                    return;
+                }
+                pendingMeterLevel = value;
+                Interlocked.Exchange(ref pendingMeterFlag, 1);
                 return;
             }
             ApplyLevel(value);
@@ -12197,6 +12352,10 @@ namespace Flowtype
         private bool handsFreeStopPending;
         private bool notifyRecordingLimit;
         private bool notifyAgentHoldLimit;
+        private volatile bool micStartInflight;
+        private volatile bool micStopInflight;
+        private volatile bool stopAfterMicStart;
+        private volatile bool cancelAfterMicStart;
         private System.Windows.Forms.Timer doubleTapTimer;
         private System.Windows.Forms.Timer liveCaptionTimer;
         private int liveCaptionGeneration;
@@ -13086,6 +13245,19 @@ namespace Flowtype
             pendingStopTimer = null;
         }
 
+        private void OnUi(Action action)
+        {
+            if (action == null) return;
+            try
+            {
+                if (dispatcher != null && dispatcher.IsHandleCreated && dispatcher.InvokeRequired)
+                    dispatcher.Invoke(action);
+                else
+                    action();
+            }
+            catch { }
+        }
+
         private void ToggleRecording()
         {
             if (recorder.IsRecording)
@@ -13100,7 +13272,7 @@ namespace Flowtype
 
         private void StartRecording()
         {
-            if (shuttingDown || recorder.IsRecording) return;
+            if (shuttingDown || recorder.IsRecording || micStartInflight || micStopInflight) return;
             try
             {
                 if (settings.Engine == "OpenAI" && String.IsNullOrWhiteSpace(apiKey))
@@ -13123,52 +13295,54 @@ namespace Flowtype
                 }
                 currentTakeIsAgent = pendingAgentTake;
                 pendingAgentTake = false;
+                stopAfterMicStart = false;
+                cancelAfterMicStart = false;
                 recorder.MicGain = settings.EffectiveMicGain;
                 recordingPath = Path.Combine(store.RecoveryPath,
                     "Flowtype-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".wav");
-                Exception lastMicError = null;
-                for (int attempt = 0; attempt < 4; attempt++)
+                string path = recordingPath;
+                bool agentTake = currentTakeIsAgent;
+                micStartInflight = true;
+                // waveInOpen / Prime retries freeze the message pump — same class as the
+                // post-stop warm-reopen bug. Open the device on a worker, then paint UI.
+                ThreadPool.QueueUserWorkItem(delegate
                 {
+                    Exception lastMicError = null;
+                    for (int attempt = 0; attempt < 4; attempt++)
+                    {
+                        try
+                        {
+                            recorder.Start(path);
+                            lastMicError = null;
+                            break;
+                        }
+                        catch (Exception exception)
+                        {
+                            lastMicError = exception;
+                            if (attempt < 3)
+                            {
+                                try { recorder.Prime(); }
+                                catch { }
+                            }
+                        }
+                    }
                     try
                     {
-                        recorder.Start(recordingPath);
-                        lastMicError = null;
-                        break;
+                        dispatcher.BeginInvoke(new Action(delegate
+                        {
+                            FinishMicStart(agentTake, lastMicError);
+                        }));
                     }
-                    catch (Exception exception)
+                    catch
                     {
-                        lastMicError = exception;
-                        // Never Thread.Sleep on the UI thread here — that freezes the
-                        // voice pill if it is already visible (hands-free / re-arm).
-                        if (attempt < 3) recorder.Prime();
+                        micStartInflight = false;
+                        try { recorder.Cancel(); } catch { }
                     }
-                }
-                if (lastMicError != null) throw lastMicError;
-                // Seat and overlay after the mic is already rolling so the first word is not
-                // lost to window capture or waveInOpen.
-                agentSeat = currentTakeIsAgent ? ForegroundContext.Capture(false) : null;
-                AgentTrace.Log("StartRecording: agent=" + currentTakeIsAgent
-                    + (agentSeat != null ? " seat=" + agentSeat.ProcessName + " | " + agentSeat.Title : ""));
-                target = ForegroundContext.Capture(settings.ContextEnabled);
-                ForegroundContext.RememberClipboard();
-                recordTimer = Stopwatch.StartNew();
-                hook.CaptureEscape = true;
-                // Agent takes get the terminal HUD; dictation keeps the glass capsule.
-                if (currentTakeIsAgent)
-                {
-                    string who = agentSession.LiveRuntime;
-                    if (who.Length == 0) who = settings.AgentRuntime;
-                    agentOverlay.ShowListening(settings.AgentHotkey, settings.AgentEndpoint, who);
-                }
-                else
-                {
-                    overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark, settings.OverlaySize);
-                    StartLiveCaptions();
-                }
-                UpdateRecordingStatus();
+                });
             }
             catch (Exception exception)
             {
+                micStartInflight = false;
                 store.LogError(exception);
                 overlay.ShowFailure(ShortMessage(exception.Message));
                 Notify("Could not start recording", exception.Message, ToolTipIcon.Error);
@@ -13177,11 +13351,79 @@ namespace Flowtype
             }
         }
 
+        private void FinishMicStart(bool agentTake, Exception lastMicError)
+        {
+            micStartInflight = false;
+            if (shuttingDown)
+            {
+                try { recorder.Cancel(); } catch { }
+                return;
+            }
+            if (cancelAfterMicStart)
+            {
+                cancelAfterMicStart = false;
+                stopAfterMicStart = false;
+                try { recorder.Cancel(); } catch { }
+                ResetRecordingMode();
+                SetReady();
+                return;
+            }
+            if (lastMicError != null)
+            {
+                store.LogError(lastMicError);
+                overlay.ShowFailure(ShortMessage(lastMicError.Message));
+                Notify("Could not start recording", lastMicError.Message, ToolTipIcon.Error);
+                ResetRecordingMode();
+                SetReady();
+                return;
+            }
+            // Chord released while the worker was opening the mic — do not leave a ghost take.
+            bool chordStillDown = agentTake ? agentHotkeyDown : hotkeyDown;
+            if (stopAfterMicStart || (!chordStillDown && !latchedRecording))
+            {
+                stopAfterMicStart = false;
+                StopRecording();
+                return;
+            }
+            stopAfterMicStart = false;
+            // Seat and overlay after the mic is already rolling so the first word is not
+            // lost to window capture or waveInOpen.
+            currentTakeIsAgent = agentTake;
+            agentSeat = agentTake ? ForegroundContext.Capture(false) : null;
+            AgentTrace.Log("StartRecording: agent=" + agentTake
+                + (agentSeat != null ? " seat=" + agentSeat.ProcessName + " | " + agentSeat.Title : ""));
+            target = ForegroundContext.Capture(settings.ContextEnabled);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { ForegroundContext.RememberClipboard(); } catch { }
+            });
+            recordTimer = Stopwatch.StartNew();
+            hook.CaptureEscape = true;
+            if (agentTake)
+            {
+                string who = agentSession.LiveRuntime;
+                if (who.Length == 0) who = settings.AgentRuntime;
+                agentOverlay.ShowListening(settings.AgentHotkey, settings.AgentEndpoint, who);
+            }
+            else
+            {
+                overlay.ShowRecording(settings.Hotkey, settings.OverlayTheme, settings.OverlayMark, settings.OverlaySize);
+                StartLiveCaptions();
+            }
+            UpdateRecordingStatus();
+        }
+
         private void StopRecording()
         {
             StopLiveCaptions();
             CancelDoubleTapTimer();
             awaitingDoubleTap = false;
+            if (micStartInflight)
+            {
+                stopAfterMicStart = true;
+                return;
+            }
+            if (micStopInflight) return;
             if (!recorder.IsRecording)
             {
                 overlay.EnsureHidden();
@@ -13200,14 +13442,88 @@ namespace Flowtype
                 hook.CaptureEscape = false;
                 long recordMs = recordTimer != null ? recordTimer.ElapsedMilliseconds : 0;
                 recordTimer = null;
-                string path = recorder.Stop();
+                bool agentTake = currentTakeIsAgent;
+                currentTakeIsAgent = false;
+                ForegroundInfo intended = target;
                 toggleItem.Text = "Start dictating";
-                FileInfo file = new FileInfo(path);
-                if (recordMs < MinChordHoldMs || !file.Exists || file.Length < 5000)
+                if (agentTake)
+                {
+                    overlay.EnsureHidden();
+                    agentOverlay.ShowWorking("transcribing…");
+                }
+                statusItem.Text = agentTake ? "Asking agent…" : "Writing…";
+                micStopInflight = true;
+                // DrainCallbacks + WriteWave over a long take freeze the message pump when
+                // run here. Finalize on a worker; only chrome stayed on the UI above.
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    string path = null;
+                    Exception error = null;
+                    try { path = recorder.Stop(); }
+                    catch (Exception exception) { error = exception; }
+                    try
+                    {
+                        dispatcher.BeginInvoke(new Action(delegate
+                        {
+                            FinishMicStop(path, recordMs, intended, agentTake, error);
+                        }));
+                    }
+                    catch { micStopInflight = false; }
+                });
+            }
+            catch (Exception exception)
+            {
+                micStopInflight = false;
+                store.LogError(exception);
+                Notify("Recording failed", exception.Message, ToolTipIcon.Error);
+                ResetRecordingMode();
+                bool writing;
+                lock (jobGate) writing = inflightJobs > 0;
+                if (writing)
+                {
+                    overlay.ShowProcessing();
+                    statusItem.Text = "Writing…";
+                }
+                else
+                {
+                    processing = false;
+                    overlay.HideNow();
+                    SetReady();
+                }
+            }
+        }
+
+        private void FinishMicStop(string path, long recordMs, ForegroundInfo intended, bool agentTake, Exception error)
+        {
+            micStopInflight = false;
+            if (error != null)
+            {
+                store.LogError(error);
+                Notify("Recording failed", error.Message, ToolTipIcon.Error);
+                ResetRecordingMode();
+                bool writingFail;
+                lock (jobGate) writingFail = inflightJobs > 0;
+                if (writingFail)
+                {
+                    overlay.ShowProcessing();
+                    statusItem.Text = "Writing…";
+                }
+                else
+                {
+                    processing = false;
+                    overlay.HideNow();
+                    SetReady();
+                }
+                return;
+            }
+            try
+            {
+                FileInfo file = new FileInfo(path ?? "");
+                if (recordMs < MinChordHoldMs || path == null || !file.Exists || file.Length < 5000)
                 {
                     AgentTrace.Log("short take discarded: ms=" + recordMs + " bytes=" + (file.Exists ? file.Length : 0)
-                        + " agent=" + currentTakeIsAgent);
-                    if (currentTakeIsAgent) agentOverlay.HideNow();
+                        + " agent=" + agentTake);
+                    if (agentTake) agentOverlay.HideNow();
                     TryDelete(path);
                     ResetRecordingMode();
                     if (inflightJobs == 0)
@@ -13229,16 +13545,13 @@ namespace Flowtype
                     inflightJobs++;
                     processing = true;
                 }
-                bool agentTake = currentTakeIsAgent;
-                currentTakeIsAgent = false;
                 AgentTrace.Log("StopRecording: agent=" + agentTake + " recordMs=" + recordMs);
-                if (agentTake)
-                {
-                    overlay.EnsureHidden();
-                    agentOverlay.ShowWorking("transcribing…");
-                }
-                statusItem.Text = agentTake ? "Asking agent…" : "Writing…";
-                ProcessRecording(path, sequence, recordMs, target, agentTake);
+                // Paste, cleanup, and clipboard run off the hook thread. A stall there
+                // used to freeze the whole keyboard because the low-level hook lives here.
+                if (ForegroundContext.ShouldPasteOnCallingThread(dispatcher == null || !dispatcher.InvokeRequired))
+                    ProcessRecording(path, sequence, recordMs, intended, agentTake);
+                else
+                    ThreadPool.QueueUserWorkItem(delegate { ProcessRecording(path, sequence, recordMs, intended, agentTake); });
             }
             catch (Exception exception)
             {
@@ -13498,7 +13811,7 @@ namespace Flowtype
             try
             {
                 Stopwatch transcribeTimer = Stopwatch.StartNew();
-                SpeechTranscript transcript = await TranscribeTake(path, recordMs, intended, agentTake);
+                SpeechTranscript transcript = await TranscribeTake(path, recordMs, intended, agentTake).ConfigureAwait(false);
                 transcribeTimer.Stop();
                 transcribeMs = transcribeTimer.ElapsedMilliseconds;
                 ForegroundInfo delivery = ForegroundContext.Capture(settings.ContextEnabled);
@@ -13520,7 +13833,7 @@ namespace Flowtype
                     AgentTrace.Log("agent branch: ask=" + (ask.Length > 60 ? ask.Substring(0, 60) + "..." : ask));
                     if (ask.Length == 0)
                     {
-                        agentOverlay.ShowFailed("no speech detected");
+                        OnUi(delegate { agentOverlay.ShowFailed("no speech detected"); });
                         throw new InvalidOperationException("No speech was detected.");
                     }
                     try { dispatcher.Invoke(new Action(delegate { agentOverlay.ShowHeard(ask); })); }
@@ -13560,8 +13873,8 @@ namespace Flowtype
                     Stopwatch cleanTimer = Stopwatch.StartNew();
                     try
                     {
-                        if (settings.CleanupProvider == "OpenAI") finalText = await new OpenAiEngine().CleanupAsync(raw, delivery, settings, apiKey);
-                        else if (settings.CleanupProvider == "OpenRouter") finalText = await new OpenRouterEngine().CleanupAsync(raw, delivery, settings, openRouterKey);
+                        if (settings.CleanupProvider == "OpenAI") finalText = await new OpenAiEngine().CleanupAsync(raw, delivery, settings, apiKey).ConfigureAwait(false);
+                        else if (settings.CleanupProvider == "OpenRouter") finalText = await new OpenRouterEngine().CleanupAsync(raw, delivery, settings, openRouterKey).ConfigureAwait(false);
                         else if (settings.CleanupProvider == "Ollama")
                         {
                             Action<string> onDelta = delegate(string soFar)
@@ -13569,7 +13882,7 @@ namespace Flowtype
                                 try { overlay.SetProcessingPreview(soFar); }
                                 catch { }
                             };
-                            finalText = await new OllamaEngine().CleanupAsync(raw, delivery, settings, onDelta);
+                            finalText = await new OllamaEngine().CleanupAsync(raw, delivery, settings, onDelta).ConfigureAwait(false);
                         }
                         else finalText = TextProcessor.Clean(transcript, settings, delivery);
                     }
@@ -13614,43 +13927,56 @@ namespace Flowtype
             {
                 AgentTrace.Log("ProcessRecording error: " + exception.Message);
                 store.LogError(exception);
-                RememberDictation(raw, sequence);
+                string failedRaw = raw;
+                int failedSequence = sequence;
+                OnUi(delegate { RememberDictation(failedRaw, failedSequence); });
                 if (!queued) DrainInserts(insertQueue.Finish(sequence, null));
                 if (!settings.KeepFailedAudio) TryDelete(path);
                 string suffix = settings.KeepFailedAudio ? " The recording is in Recovery." : "";
-                Notify("Dictation failed", ShortMessage(exception.Message) + suffix, ToolTipIcon.Error);
+                string failedMessage = ShortMessage(exception.Message) + suffix;
+                OnUi(delegate { Notify("Dictation failed", failedMessage, ToolTipIcon.Error); });
             }
             finally
             {
                 bool idle;
+                bool showLimit = false;
+                bool showAgentLimit = false;
                 lock (jobGate)
                 {
                     inflightJobs--;
                     if (inflightJobs < 0) inflightJobs = 0;
                     idle = inflightJobs == 0 && !recorder.IsRecording;
                     if (idle) processing = false;
+                    if (notifyRecordingLimit)
+                    {
+                        notifyRecordingLimit = false;
+                        showLimit = true;
+                    }
+                    if (notifyAgentHoldLimit)
+                    {
+                        notifyAgentHoldLimit = false;
+                        showAgentLimit = true;
+                    }
                 }
-                if (notifyRecordingLimit)
+                bool stillRecording = recorder.IsRecording;
+                OnUi(delegate
                 {
-                    notifyRecordingLimit = false;
-                    Notify("Recording limit", "Dictation stopped at the 10-minute limit.", ToolTipIcon.Info);
-                }
-                if (notifyAgentHoldLimit)
-                {
-                    notifyAgentHoldLimit = false;
-                    Notify("Agent listen cap", "Agent listen stopped at 12 seconds.", ToolTipIcon.Info);
-                }
-                if (idle)
-                {
-                    overlay.HideNow();
-                    SetReady();
-                }
-                else if (recorder.IsRecording) UpdateRecordingStatus();
-                else
-                {
-                    overlay.ShowProcessing();
-                    statusItem.Text = "Writing…";
-                }
+                    if (showLimit)
+                        Notify("Recording limit", "Dictation stopped at the 10-minute limit.", ToolTipIcon.Info);
+                    if (showAgentLimit)
+                        Notify("Agent listen cap", "Agent listen stopped at 12 seconds.", ToolTipIcon.Info);
+                    if (idle)
+                    {
+                        overlay.HideNow();
+                        SetReady();
+                    }
+                    else if (stillRecording) UpdateRecordingStatus();
+                    else
+                    {
+                        overlay.ShowProcessing();
+                        statusItem.Text = "Writing…";
+                    }
+                });
             }
         }
 
@@ -13672,8 +13998,13 @@ namespace Flowtype
                     {
                         if (!String.IsNullOrWhiteSpace(job.Text))
                         {
-                            RememberDictation(job.Text, job.Sequence);
-                            Notify("Kept on clipboard", "Insert failed — your take may still be on the clipboard.", ToolTipIcon.Warning);
+                            string kept = job.Text;
+                            int keptSequence = job.Sequence;
+                            OnUi(delegate
+                            {
+                                RememberDictation(kept, keptSequence);
+                                Notify("Kept on clipboard", "Insert failed — your take may still be on the clipboard.", ToolTipIcon.Warning);
+                            });
                         }
                     }
                     catch { }
@@ -13715,30 +14046,44 @@ namespace Flowtype
                 }
                 if (inserted && !String.IsNullOrWhiteSpace(job.Text))
                 {
-                    RememberDictation(job.Text, job.Sequence);
                     lastDictationWord = LastWord(job.Text);
-                    UpdateDictionaryFixItem();
                     lastInsertTarget = job.Delivery;
                     canUndoInsert = true;
-                    if (undoLastItem != null) undoLastItem.Enabled = true;
-                    if (settings.CompletionSound) RecordingCue.PlayComplete();
-                    if (settings.ShowInsertNotification) Notify("Inserted", ShortPreview(job.Text), ToolTipIcon.Info);
+                    string remembered = job.Text;
+                    int rememberedSequence = job.Sequence;
+                    string preview = ShortPreview(job.Text);
+                    bool sound = settings.CompletionSound;
+                    bool toast = settings.ShowInsertNotification;
+                    OnUi(delegate
+                    {
+                        RememberDictation(remembered, rememberedSequence);
+                        UpdateDictionaryFixItem();
+                        if (undoLastItem != null) undoLastItem.Enabled = true;
+                        if (sound) RecordingCue.PlayComplete();
+                        if (toast) Notify("Inserted", preview, ToolTipIcon.Info);
+                    });
                 }
                 else if (!String.IsNullOrWhiteSpace(job.Text))
                 {
-                    RememberDictation(job.Text, job.Sequence);
                     lastDictationWord = LastWord(job.Text);
-                    UpdateDictionaryFixItem();
-                    if (ForegroundContext.LastDeliveryNeedsShiftPaste)
+                    bool shiftPaste = ForegroundContext.LastDeliveryNeedsShiftPaste;
+                    string remembered = job.Text;
+                    int rememberedSequence = job.Sequence;
+                    OnUi(delegate
                     {
-                        statusItem.Text = "Copied — click your field and press Ctrl+Shift+V";
-                        Notify("Kept on clipboard", "This field wants Ctrl+Shift+V. Your take is on the clipboard if nothing appeared.", ToolTipIcon.Info);
-                    }
-                    else
-                    {
-                        statusItem.Text = "Copied — click your field and press Ctrl+V";
-                        Notify("Kept on clipboard", "Couldn't drop it in, so it's on your clipboard. Click the field and press Ctrl+V.", ToolTipIcon.Info);
-                    }
+                        RememberDictation(remembered, rememberedSequence);
+                        UpdateDictionaryFixItem();
+                        if (shiftPaste)
+                        {
+                            statusItem.Text = "Copied — click your field and press Ctrl+Shift+V";
+                            Notify("Kept on clipboard", "This field wants Ctrl+Shift+V. Your take is on the clipboard if nothing appeared.", ToolTipIcon.Info);
+                        }
+                        else
+                        {
+                            statusItem.Text = "Copied — click your field and press Ctrl+V";
+                            Notify("Kept on clipboard", "Couldn't drop it in, so it's on your clipboard. Click the field and press Ctrl+V.", ToolTipIcon.Info);
+                        }
+                    });
                 }
         }
 
@@ -13746,15 +14091,18 @@ namespace Flowtype
         {
             if (!canUndoInsert)
             {
-                Notify("Nothing to undo", "No recent dictation to reverse.", ToolTipIcon.Info);
+                OnUi(delegate { Notify("Nothing to undo", "No recent dictation to reverse.", ToolTipIcon.Info); });
                 return;
             }
             if (intended != null && intended.Handle != IntPtr.Zero)
                 ForegroundContext.TryFocus(intended);
             ForegroundContext.UndoLastInsert();
             canUndoInsert = false;
-            if (undoLastItem != null) undoLastItem.Enabled = false;
-            statusItem.Text = "Undid last dictation";
+            OnUi(delegate
+            {
+                if (undoLastItem != null) undoLastItem.Enabled = false;
+                statusItem.Text = "Undid last dictation";
+            });
         }
 
         private static string ShortPreview(string text)
@@ -13766,13 +14114,12 @@ namespace Flowtype
 
         private void CancelRecording()
         {
-            if (!recorder.IsRecording) return;
-            try
+            if (micStartInflight)
             {
-                recorder.Cancel();
-                TryDelete(recordingPath);
+                cancelAfterMicStart = true;
+                return;
             }
-            catch (Exception exception) { store.LogError(exception); }
+            if (!recorder.IsRecording && !micStopInflight) return;
             hook.CaptureEscape = false;
             hotkeyDown = false;
             agentHotkeyDown = false;
@@ -13781,18 +14128,36 @@ namespace Flowtype
             agentOverlay.HideNow();
             ResetRecordingMode();
             toggleItem.Text = "Start dictating";
-            bool writing;
-            lock (jobGate) writing = inflightJobs > 0;
-            if (writing)
+            string path = recordingPath;
+            // Cancel → Stop does DrainCallbacks + WriteWave; keep that off the UI pump.
+            ThreadPool.QueueUserWorkItem(delegate
             {
-                overlay.ShowProcessing();
-                statusItem.Text = "Writing…";
-            }
-            else
-            {
-                overlay.HideNow();
-                SetReady();
-            }
+                try { recorder.Cancel(); }
+                catch (Exception exception)
+                {
+                    try { store.LogError(exception); } catch { }
+                }
+                try { if (!String.IsNullOrWhiteSpace(path)) TryDelete(path); } catch { }
+                try
+                {
+                    dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        bool writing;
+                        lock (jobGate) writing = inflightJobs > 0;
+                        if (writing)
+                        {
+                            overlay.ShowProcessing();
+                            statusItem.Text = "Writing…";
+                        }
+                        else
+                        {
+                            overlay.HideNow();
+                            SetReady();
+                        }
+                    }));
+                }
+                catch { }
+            });
         }
 
         private void SetReady()

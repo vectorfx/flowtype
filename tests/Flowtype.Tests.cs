@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Text;
 using Flowtype;
 
 namespace Flowtype.Tests
@@ -31,6 +33,22 @@ namespace Flowtype.Tests
                 lectureLoop.IndexOf("why did they reversal into the EPA", StringComparison.OrdinalIgnoreCase) >= 0);
             failures += AssertTrue("lecture loop collapses wrapped reversal question",
                 CountPhrase(lectureLoop, "what are the reversal") <= 1);
+            // Neutral is the live default. Comma-run spoken loops have no .!? so the
+            // sentence-terminal stripper never fires — and Neutral skips RemoveRepeatedPhrases.
+            string spokenCommaLoop = TextProcessor.Clean(
+                "running goal that people can follow onto interactive in the sense that, you know, they give David 6 6,7-10, I think, you know, the last one I was just a couple of weeks ago, it was just a couple of weeks ago, and then I was like, I don't know, it's just a couple of weeks ago, and I was like, I'm not sure if you're out of my mind, I'm not sure if you're out of my mind",
+                AppSettings.Defaults());
+            failures += AssertTrue("spoken comma loop keeps the real lead-in",
+                spokenCommaLoop.IndexOf("running goal", StringComparison.OrdinalIgnoreCase) >= 0);
+            failures += AssertTrue("spoken comma loop collapses couple-of-weeks runaway",
+                CountPhrase(spokenCommaLoop, "couple of weeks") <= 1);
+            failures += AssertTrue("spoken comma loop collapses adjacent out-of-my-mind repeat",
+                CountPhrase(spokenCommaLoop, "out of my mind") <= 1);
+            failures += AssertEqual("adjacent long clause repeat collapses on Neutral",
+                "I'm not sure if you're out of my mind.",
+                TextProcessor.Clean(
+                    "I'm not sure if you're out of my mind, I'm not sure if you're out of my mind",
+                    AppSettings.Defaults()));
             failures += AssertEqual("spread topic repeats stay",
                 "The federal reserve raised rates. Later the federal reserve paused. Then the federal reserve cut.",
                 TextProcessor.Clean("The federal reserve raised rates. Later the federal reserve paused. Then the federal reserve cut.", AppSettings.Defaults()));
@@ -72,6 +90,38 @@ namespace Flowtype.Tests
             failures += AssertTrue("wheel is ignored while the talk chord is held", WheelGuard.ShouldSwallow(true, 0x020A));
             failures += AssertFalse("wheel works when the talk chord is up", WheelGuard.ShouldSwallow(false, 0x020A));
             failures += AssertFalse("clicks are not eaten while talking", WheelGuard.ShouldSwallow(true, 0x0201));
+            failures += AssertFalse("mic IO must not run on the UI message pump", WaveRecorder.MicIoAllowedOnUiMessagePump);
+            failures += AssertFalse("cold mic open is forbidden on the UI pump",
+                WaveRecorder.ShouldOpenDeviceOnCallingThread(false, true));
+            failures += AssertTrue("cold mic open is allowed off the UI pump",
+                WaveRecorder.ShouldOpenDeviceOnCallingThread(false, false));
+            failures += AssertFalse("already-open mic does not reopen on the caller",
+                WaveRecorder.ShouldOpenDeviceOnCallingThread(true, false));
+            failures += AssertFalse("take finalize is forbidden on the UI pump",
+                WaveRecorder.ShouldFinalizeTakeOnCallingThread(true));
+            failures += AssertTrue("take finalize is allowed off the UI pump",
+                WaveRecorder.ShouldFinalizeTakeOnCallingThread(false));
+            failures += AssertFalse("meter updates must not BeginInvoke per buffer",
+                RecordingOverlay.ShouldBeginInvokeMeter(true));
+            failures += AssertFalse("live size-change must not sync-capture glass while timer runs",
+                RecordingOverlay.ShouldCaptureGlassSynchronously(true, true));
+            failures += AssertTrue("first glass capture may run before the timer",
+                RecordingOverlay.ShouldCaptureGlassSynchronously(false, false));
+            failures += AssertTrue("glass capture may run sync when the timer is stopped",
+                RecordingOverlay.ShouldCaptureGlassSynchronously(true, false));
+            failures += AssertFalse("paste and clipboard must not run on the UI pump",
+                ForegroundContext.ShouldPasteOnCallingThread(true));
+            failures += AssertTrue("paste and clipboard may run off the UI pump",
+                ForegroundContext.ShouldPasteOnCallingThread(false));
+            StringBuilder unpunctuated = new StringBuilder();
+            for (int word = 0; word < 2500; word++) unpunctuated.Append("alpha beta ");
+            Stopwatch cleanupClock = Stopwatch.StartNew();
+            string cleanedLong = TextProcessor.Clean(unpunctuated.ToString(), AppSettings.Defaults());
+            cleanupClock.Stop();
+            failures += AssertTrue("long unpunctuated cleanup cannot stall the hook thread",
+                cleanupClock.ElapsedMilliseconds < 1500);
+            failures += AssertTrue("long unpunctuated cleanup keeps the words",
+                cleanedLong.IndexOf("alpha", StringComparison.OrdinalIgnoreCase) >= 0);
             List<WaveRecorder.SpeechRegion> islands = new List<WaveRecorder.SpeechRegion>();
             for (int index = 0; index < 12; index++)
             {
@@ -601,9 +651,9 @@ namespace Flowtype.Tests
             failures += AssertTrue("paste releases Win and Ctrl leftovers",
                 Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0x5B) >= 0
                 && Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0xA2) >= 0);
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.104"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.106"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.103", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.105", FlowtypeVersion.CurrentLabel);
             failures += AssertEqual("default style is neutral", "Neutral", AppSettings.Defaults().Style);
             AppSettings retiredStyle = AppSettings.Defaults();
             retiredStyle.Style = "Verbatim";
