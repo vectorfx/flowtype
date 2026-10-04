@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.106
+
+Long takes:
+- Recording cap is **30 minutes** (was 10). Hitting the cap still finalizes the take.
+- Cap takes always keep the WAV in Recovery, always save history, paste into the field, and leave a clipboard backup — even if those settings are off. A failed transcription after the cap never deletes the recording.
+
 ## 1.3.105
 
 Whisper spoken-loop hallucinations on Neutral (the default style):

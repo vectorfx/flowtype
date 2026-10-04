@@ -604,7 +604,8 @@ namespace Flowtype.Tests
                 AppUpdater.PickReleaseZipUrl(liteOnly));
             failures += AssertTimeout("short clip turbo floor", 60, AudioTranscriptionTimeouts.ForWavFile("", true).TotalSeconds);
             failures += AssertTimeout("short clip standard floor", 90, AudioTranscriptionTimeouts.ForWavFile("", false).TotalSeconds);
-            failures += AssertTimeout("ten minute clip", 600, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
+            failures += AssertTimeout("ten minute clip scales under 30m ceiling", 1530, AudioTranscriptionTimeouts.ForAudioSeconds(600, false).TotalSeconds);
+            failures += AssertTimeout("thirty minute clip hits ceiling", 1800, AudioTranscriptionTimeouts.ForAudioSeconds(1800, false).TotalSeconds);
             failures += AssertEqual("duplicate block removed",
                 "Hello world this is a test.",
                 TextProcessor.RemoveExactDuplicateBlocks("Hello world this is a test. --- Hello world this is a test."));
@@ -651,9 +652,21 @@ namespace Flowtype.Tests
             failures += AssertTrue("paste releases Win and Ctrl leftovers",
                 Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0x5B) >= 0
                 && Array.IndexOf(ForegroundContext.PasteModifierVirtualKeys, 0xA2) >= 0);
-            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.106"));
+            failures += AssertTrue(FlowtypeVersion.IsNewerThanCurrent("v1.3.107"));
             failures += AssertFalse(FlowtypeVersion.IsNewerThanCurrent("v" + FlowtypeVersion.CurrentLabel));
-            failures += AssertEqual("version label", "1.3.105", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("version label", "1.3.106", FlowtypeVersion.CurrentLabel);
+            failures += AssertEqual("recording cap is 30 minutes", "30",
+                RecordingOverlay.MaxRecordingMinutes.ToString());
+            failures += AssertTrue("limit take always keeps the wav",
+                TakeSafety.ShouldPreserveAudio(true, false, false));
+            failures += AssertTrue("failed take keeps wav when setting on",
+                TakeSafety.ShouldPreserveAudio(false, true, true));
+            failures += AssertFalse("short success can delete wav when setting off",
+                TakeSafety.ShouldPreserveAudio(false, false, false));
+            failures += AssertTrue("limit take leaves text on clipboard",
+                TakeSafety.ShouldLeaveOnClipboard(true, false));
+            failures += AssertTrue("limit take always saves history",
+                TakeSafety.ShouldSaveHistory(true, false));
             failures += AssertEqual("default style is neutral", "Neutral", AppSettings.Defaults().Style);
             AppSettings retiredStyle = AppSettings.Defaults();
             retiredStyle.Style = "Verbatim";

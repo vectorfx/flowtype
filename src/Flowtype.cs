@@ -25,8 +25,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.105.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.105.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.106.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.106.0")]
 
 namespace Flowtype
 {
@@ -5625,11 +5625,36 @@ namespace Flowtype
         }
     }
 
+    // Rules for "never lose a take" — especially when the recording cap fires.
+    public static class TakeSafety
+    {
+        public static bool ShouldPreserveAudio(bool hitRecordingLimit, bool failed, bool keepFailedSetting)
+        {
+            if (hitRecordingLimit) return true;
+            if (failed && keepFailedSetting) return true;
+            return false;
+        }
+
+        public static bool ShouldLeaveOnClipboard(bool hitRecordingLimit, bool autoPasteSetting)
+        {
+            if (hitRecordingLimit) return true;
+            return autoPasteSetting;
+        }
+
+        public static bool ShouldSaveHistory(bool hitRecordingLimit, bool saveHistorySetting)
+        {
+            if (hitRecordingLimit) return true;
+            return saveHistorySetting;
+        }
+    }
+
     public static class AudioTranscriptionTimeouts
     {
         private const int MinTurboSeconds = 60;
         private const int MinStandardSeconds = 90;
-        private const int MaxSeconds = 600;
+        // Ceiling for one API/local call. Long takes are silence-split into ~20s
+        // chunks; this only matters if a single island is huge.
+        private const int MaxSeconds = 1800;
 
         public static TimeSpan ForWavFile(string wavePath, bool turbo)
         {
@@ -8802,6 +8827,15 @@ namespace Flowtype
         private const int RevealOutMs = 120;
         public event Action MaximumDurationReached;
 
+        // Hard stop for a single take. Hitting this still finalizes, transcribes,
+        // pastes, and keeps Recovery audio — see TakeSafety.
+        public const int MaxRecordingMinutes = 30;
+
+        public static TimeSpan MaxRecording
+        {
+            get { return TimeSpan.FromMinutes(MaxRecordingMinutes); }
+        }
+
         /// <summary>
         /// Audio callbacks must not BeginInvoke a meter message per buffer — the 32ms
         /// paint timer drains a pending level instead so the UI queue cannot back up.
@@ -8880,7 +8914,7 @@ namespace Flowtype
                     }
                     if (Interlocked.Exchange(ref pendingMeterFlag, 0) != 0)
                         ApplyLevel(pendingMeterLevel);
-                    if (elapsed.IsRunning && elapsed.Elapsed >= TimeSpan.FromMinutes(10) && !maxRaised)
+                    if (elapsed.IsRunning && elapsed.Elapsed >= MaxRecording && !maxRaised)
                     {
                         maxRaised = true;
                         Action handler = MaximumDurationReached;
@@ -13901,15 +13935,18 @@ namespace Flowtype
                 if (!TextProcessor.IsMeaningfulInsert(finalText) && !pressEnter)
                     throw new InvalidOperationException("Speech was too unclear to insert. Hold the hotkey a moment longer and try again.");
 
+                bool hitLimit;
+                lock (jobGate) hitLimit = notifyRecordingLimit;
                 PendingInsert job = new PendingInsert();
                 job.Text = finalText;
                 job.PressEnter = pressEnter;
                 job.Delivery = delivery;
-                job.AutoPaste = settings.AutoPaste;
+                // Limit takes always leave a clipboard backup even if AutoPaste is off.
+                job.AutoPaste = TakeSafety.ShouldLeaveOnClipboard(hitLimit, settings.AutoPaste);
                 job.Sequence = sequence;
                 DrainInserts(insertQueue.Finish(sequence, job));
                 queued = true;
-                if (settings.SaveHistory)
+                if (TakeSafety.ShouldSaveHistory(hitLimit, settings.SaveHistory))
                 {
                     HistoryEntry entry = new HistoryEntry();
                     entry.CreatedUtc = DateTime.UtcNow;
@@ -13919,7 +13956,8 @@ namespace Flowtype
                     entry.Engine = settings.Engine;
                     history.Add(entry);
                 }
-                TryDelete(path);
+                if (!TakeSafety.ShouldPreserveAudio(hitLimit, false, settings.KeepFailedAudio))
+                    TryDelete(path);
                 totalTimer.Stop();
                 LatencyStats.Update(recordMs, transcribeMs, cleanMs, totalTimer.ElapsedMilliseconds);
             }
@@ -13929,10 +13967,23 @@ namespace Flowtype
                 store.LogError(exception);
                 string failedRaw = raw;
                 int failedSequence = sequence;
-                OnUi(delegate { RememberDictation(failedRaw, failedSequence); });
+                bool hitLimit;
+                lock (jobGate) hitLimit = notifyRecordingLimit;
+                OnUi(delegate
+                {
+                    RememberDictation(failedRaw, failedSequence);
+                    if (!String.IsNullOrWhiteSpace(failedRaw))
+                    {
+                        try { Clipboard.SetText(failedRaw); }
+                        catch { }
+                    }
+                });
                 if (!queued) DrainInserts(insertQueue.Finish(sequence, null));
-                if (!settings.KeepFailedAudio) TryDelete(path);
-                string suffix = settings.KeepFailedAudio ? " The recording is in Recovery." : "";
+                bool keepAudio = TakeSafety.ShouldPreserveAudio(hitLimit, true, settings.KeepFailedAudio);
+                if (!keepAudio) TryDelete(path);
+                string suffix = keepAudio ? " The recording is in Recovery." : "";
+                if (hitLimit && !String.IsNullOrWhiteSpace(failedRaw))
+                    suffix = " Partial text is on the clipboard." + suffix;
                 string failedMessage = ShortMessage(exception.Message) + suffix;
                 OnUi(delegate { Notify("Dictation failed", failedMessage, ToolTipIcon.Error); });
             }
@@ -13962,7 +14013,10 @@ namespace Flowtype
                 OnUi(delegate
                 {
                     if (showLimit)
-                        Notify("Recording limit", "Dictation stopped at the 10-minute limit.", ToolTipIcon.Info);
+                        Notify("Recording limit",
+                            "Dictation stopped at the " + RecordingOverlay.MaxRecordingMinutes +
+                            "-minute limit. Your take was finalized — check the field and clipboard.",
+                            ToolTipIcon.Info);
                     if (showAgentLimit)
                         Notify("Agent listen cap", "Agent listen stopped at 12 seconds.", ToolTipIcon.Info);
                     if (idle)
